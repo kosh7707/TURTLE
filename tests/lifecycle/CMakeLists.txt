@@ -7,3 +7,7 @@ target_link_libraries(turtle_lifecycle_test PRIVATE turtle_lifecycle)
 add_dependencies(turtle_lifecycle_test turtle_runtime_probe)
 add_test(NAME lifecycle_fresh_isolated_samples COMMAND turtle_lifecycle_test "${CMAKE_BINARY_DIR}/adapters")
 set_tests_properties(lifecycle_fresh_isolated_samples PROPERTIES TIMEOUT 30)
+add_executable(turtle_runtime_tls_test tls_test.cpp)
+target_include_directories(turtle_runtime_tls_test PRIVATE ../../third_party)
+target_link_libraries(turtle_runtime_tls_test PRIVATE turtle_lifecycle)
+# The integration owner supplies a generated local PKI directory when invoking this target.

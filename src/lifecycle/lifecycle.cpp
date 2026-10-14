@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <memory>
 #include <algorithm>
+#include <type_traits>
 namespace turtle::lifecycle {
 namespace {
 struct Module {
@@ -40,8 +41,8 @@ struct Capture {
  std::uint64_t first_receive=0;
  bool heap_supported=false;
  model::Snapshot snapshot() noexcept {auto value=meter.read();if(!heap_supported)value.heap.reset();return value;}
- void event(model::EventKind kind, model::Location location=model::Location::Boundary) noexcept {
-  model::Event e; e.kind=kind;e.location=location;e.connection=connection;e.sequence=++sequence;e.call=call;e.call_id=call_id;e.snapshot=snapshot();buffer.append(e);
+ void event(model::EventKind kind, model::Location location=model::Location::Boundary, std::int64_t result=0) noexcept {
+  model::Event e; e.kind=kind;e.location=location;e.result=result;e.connection=connection;e.sequence=++sequence;e.call=call;e.call_id=call_id;e.snapshot=snapshot();buffer.append(e);
  }
  static void observe(void* p,const transport::Observation& o) noexcept {
   auto& c=*static_cast<Capture*>(p);
@@ -58,7 +59,11 @@ struct Capture {
  }
  template<class F> auto invoke(model::Call operation,F&& f) {
   call=operation;++call_id;event(model::EventKind::CallBegin);
-  auto result=f();event(model::EventKind::CallEnd);return result;
+  auto result=f();
+  std::int64_t code=0;
+  if constexpr(std::is_same_v<decltype(result),AppResult>) code=static_cast<int>(result.step);
+  else if constexpr(std::is_enum_v<decltype(result)>) code=static_cast<int>(result);
+  event(model::EventKind::CallEnd,model::Location::Boundary,code);return result;
  }
  void wait(Step step,control::Waiter& waiter,control::Deadline deadline) {
   if(step!=Step::WantRead&&step!=Step::WantWrite)throw std::runtime_error("adapter operation failed");
@@ -89,14 +94,19 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
   Module module((std::filesystem::path(config.adapter_directory)/((role==Role::Client?config.client_adapter:config.server_adapter)+".so")).string());auto& api=module.api;
   HostServices host{meter.allocator(),{&capture,keylog},{&capture,plaintext},config.mode==model::Mode::Memory,config.mode==model::Mode::Trace};
   auto saved=load_context(config,role);info.loaded_context_size=saved.size();
-  capture.call=model::Call::Setup;capture.event(model::EventKind::SetupBegin);
+  const auto setup_begin=meter.read();
   std::unique_ptr<Context,decltype(api.teardown)> context(api.setup(role,config.tls,host,saved),api.teardown);
-  capture.event(model::EventKind::SetupEnd);
+  const auto setup_end=meter.read();
   if(!context)throw std::runtime_error("adapter setup failed");
   info.declaration=api.declaration(context.get());
   if(!saved.empty()&&!info.declaration.context_serialization)throw std::runtime_error("adapter cannot restore context");
   info.capabilities.heap_tracking=info.capabilities.heap_tracking&&info.declaration.allocator_hooks;
   capture.heap_supported=info.capabilities.heap_tracking;
+  auto setup_event=[&](model::EventKind kind,model::Snapshot snapshot) {
+   if(!capture.heap_supported)snapshot.heap.reset();
+   model::Event event;event.kind=kind;event.call=model::Call::Setup;event.sequence=++capture.sequence;event.snapshot=snapshot;buffer.append(event);
+  };
+  setup_event(model::EventKind::SetupBegin,setup_begin);setup_event(model::EventKind::SetupEnd,setup_end);
   if(!config.tls.framework_io) {info.observation_level="library-only";info.incomplete.push_back("native socket I/O has no framework byte or kernel capture");}
   if(info.declaration.is_mock)info.incomplete.push_back("mock: no TLS encryption or certificate verification");
   for(std::size_t i=0;i<count;++i) {
@@ -156,7 +166,7 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
   auto output=api.save(context.get());info.saved_context_size=output.size();capture.call=model::Call::Save;capture.event(model::EventKind::Save);writer.write_context(output);
   context.reset();info.clock_end=measure::clock_pair();
   info.perf_complete=info.capabilities.perf;
-  for(const auto& e:buffer.events())if(e.snapshot.perf_enabled&&e.snapshot.perf_running&&*e.snapshot.perf_running<*e.snapshot.perf_enabled)info.perf_complete=false;
+  for(const auto& e:buffer.events())if(!e.snapshot.cycles||!e.snapshot.instructions||!e.snapshot.perf_enabled||!e.snapshot.perf_running||*e.snapshot.perf_running<*e.snapshot.perf_enabled)info.perf_complete=false;
   if(buffer.overflowed())throw std::runtime_error("capture buffer overflow");
  } catch(const std::exception& error) {info.valid=false;info.invalid_reason=error.what();info.clock_end=measure::clock_pair();}
  for(int fd:sockets)if(fd>=0)::close(fd);
