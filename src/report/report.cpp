@@ -84,13 +84,15 @@ Json partition(const Json& header,const std::vector<Json>& input) {
         Json result={{"connection",index},{"valid",false}};
         if (events.empty()) {result["reason"]="missing boundary events";results.push_back(result);continue;}
         std::optional<std::uint64_t> start,end;
+        const Json* start_event=nullptr;
+        const Json* end_event=nullptr;
         const bool client=header.at("role")=="client";
         for (const auto* e:events) {
             const auto k=kind(*e);
             if (!start && ((client && k=="CALL_BEGIN" && e->at("call")=="handshake") ||
-                (!client && k=="IO_RECV_RETURN" && e->value("transferred",0ULL)>0))) start=time(*e);
+                (!client && k=="IO_RECV_RETURN" && e->value("transferred",0ULL)>0))) {start=time(*e);start_event=e;}
             if (k=="CALL_END" && e->at("call")==(client?"app_recv":"app_send") &&
-                e->value("result",0LL)==2) end=time(*e);
+                e->value("result",0LL)==2) {end=time(*e);end_event=e;}
         }
         if (!start || !end || *end<*start) {
             result["reason"]="missing successful measurement boundaries";results.push_back(result);continue;
@@ -124,6 +126,24 @@ Json partition(const Json& header,const std::vector<Json>& input) {
             {"elapsed_ns",elapsed},{"computation_ns",computation},{"io_ns",io},
             {"wait_ns",wait},{"gap_ns",gap},{"segments",segments},
             {"end_definition","successful_application_call_end"}});
+        for(const char* metric:{"thread_cpu_ns","cycles","instructions"}) {
+            result[metric]=nullptr;
+            const bool supported=std::string(metric)=="thread_cpu_ns" ||
+                header.value("perf_complete",false);
+            if(supported && start_event->contains(metric) && end_event->contains(metric) &&
+               !start_event->at(metric).is_null() && !end_event->at(metric).is_null()) {
+                const auto a=start_event->at(metric).get<std::uint64_t>();
+                const auto b=end_event->at(metric).get<std::uint64_t>();
+                if(b>=a)result[metric]=b-a;
+            }
+        }
+        result["heap_peak_bytes"]=nullptr;
+        for(const auto* e:events) {
+            if(time(*e)<*start || time(*e)>*end || !e->contains("heap") || e->at("heap").is_null())continue;
+            const auto peak=e->at("heap").at("interval_peak").get<std::uint64_t>();
+            if(result["heap_peak_bytes"].is_null() || peak>result["heap_peak_bytes"].get<std::uint64_t>())
+                result["heap_peak_bytes"]=peak;
+        }
         if (!consistent) result["reason"]="boundary nesting/order or interval conservation failed";
         results.push_back(result);
     }
@@ -165,11 +185,12 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
             {"loaded_context",header.value("loaded_context_size",0)>0},
             {"library",header.at("declaration").value("library","")},
             {"library_version",header.at("declaration").value("version","")},
-            {"is_mock",header.at("declaration").value("is_mock",false)},{"correction","raw"}};
+            {"is_mock",header.at("declaration").value("is_mock",false)},{"correction","raw"},
+            {"timing_interpretation",header.at("mode")=="timing"?"performance":"diagnostic_only"}};
         auto& group=collected[dimensions.dump()];group.dimensions=dimensions;
         for(const auto& p:parts) {
-            for(const auto* metric:{"elapsed_ns","computation_ns","io_ns","wait_ns","gap_ns"})
-                group.metrics[metric].push_back(p.at(metric).get<double>());
+            for(const auto* metric:{"elapsed_ns","computation_ns","io_ns","wait_ns","gap_ns","thread_cpu_ns","cycles","instructions","heap_peak_bytes"})
+                if(p.contains(metric) && !p.at(metric).is_null())group.metrics[metric].push_back(p.at(metric).get<double>());
             group.batches[header.at("batch").get<std::uint64_t>()].push_back(p.at("elapsed_ns").get<double>());
         }
     }
@@ -190,7 +211,23 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
         svg(output/filename,group.metrics.at("elapsed_ns"));
         item["distribution_svg"]=filename;groups.push_back(item);
     }
-    Json result={{"schema",1},{"groups",groups},{"samples",samples},{"invalid_samples",invalid},
+    Json comparisons=Json::array();
+    for(std::size_t a=0;a<groups.size();++a)for(std::size_t b=a+1;b<groups.size();++b) {
+        auto da=groups[a]["dimensions"],db=groups[b]["dimensions"];
+        if(da["mode"]!="timing" || db["mode"]!="timing")continue;
+        for(const char* field:{"profile_hash","library","library_version"}){da.erase(field);db.erase(field);}
+        if(da!=db)continue;
+        const auto av=groups[a]["metrics"]["elapsed_ns"]["values"].get<std::vector<double>>();
+        const auto bv=groups[b]["metrics"]["elapsed_ns"]["values"].get<std::vector<double>>();
+        const auto c=compare(av,bv);
+        const auto batch_range=std::max(groups[a]["batch_stq2_range_ns"].get<double>(),
+                                        groups[b]["batch_stq2_range_ns"].get<double>());
+        comparisons.push_back({{"group_a",a},{"group_b",b},{"difference_b_minus_a_ns",c.difference},
+            {"lower_95_ns",c.lower},{"upper_95_ns",c.upper},{"distinguishable",c.distinguishable},
+            {"method","independent_percentile_bootstrap"},{"seed",1},{"replicates",2000},
+            {"batch_variation_warning",batch_range>std::abs(c.difference)}});
+    }
+    Json result={{"schema",1},{"comparisons",comparisons},{"groups",groups},{"samples",samples},{"invalid_samples",invalid},
         {"notes",{"Endpoint roles are never added together.","Kernel timestamps are excluded from L0 partitions.",
                   "Raw boundary times; no calibration subtraction is applied.",
                   "Missing or multiplexed counters are not synthesized."}}};

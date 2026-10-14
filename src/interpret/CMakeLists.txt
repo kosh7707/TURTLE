@@ -1,0 +1,7 @@
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+add_library(turtle_interpret interpret.cpp)
+target_compile_features(turtle_interpret PUBLIC cxx_std_20)
+target_include_directories(turtle_interpret PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party")
+target_link_libraries(turtle_interpret PRIVATE OpenSSL::Crypto)
+add_executable(turtle-interpret main.cpp)
+target_link_libraries(turtle-interpret PRIVATE turtle_interpret)
