@@ -88,9 +88,10 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
  std::vector<std::unique_ptr<control::Waiter>> waiters;waiters.reserve(count);
  control::Waiter control_waiter(control_fd);
  try {
-  info.environment=capability::inspect_environment();info.capabilities=meter.capabilities();info.calibration=meter.calibrate(config.calibration_samples);
+  info.environment=capability::inspect_environment();info.capabilities=meter.capabilities();
   info.pinned_cpu=role==Role::Client?config.client_cpu:config.server_cpu;
   if(config.pin_cores) {std::string reason;info.capabilities.affinity=capability::pin_to_cpu(info.pinned_cpu,reason);if(!info.capabilities.affinity)info.capabilities.warnings.push_back(reason);}
+  info.calibration=meter.calibrate(config.calibration_samples);
   Module module((std::filesystem::path(config.adapter_directory)/((role==Role::Client?config.client_adapter:config.server_adapter)+".so")).string());auto& api=module.api;
   HostServices host{meter.allocator(),{&capture,keylog},{&capture,plaintext},config.mode==model::Mode::Memory,config.mode==model::Mode::Trace};
   auto saved=load_context(config,role);info.loaded_context_size=saved.size();
