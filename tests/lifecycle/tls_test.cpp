@@ -1,8 +1,8 @@
 #include "lifecycle/lifecycle.hpp"
-#include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <unistd.h>
 int main(int argc, char** argv) {
     if (argc < 3 || argc > 5)

@@ -1,8 +1,8 @@
 #include "control/control.hpp"
+#include <stdexcept>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <stdexcept>
 int main() {
     int pair[2];
     if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair))

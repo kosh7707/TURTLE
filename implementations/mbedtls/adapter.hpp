@@ -29,8 +29,8 @@ struct MbedContext final : Context {
     mbedtls_pk_context own_key;
     std::array<int, 2> ciphersuites{MBEDTLS_TLS1_3_AES_128_GCM_SHA256, 0};
     std::array<std::uint16_t, 2> groups{MBEDTLS_SSL_IANA_TLS_GROUP_SECP256R1, 0};
-    std::array<std::uint16_t, 2> signature_algorithms{
-        MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256, MBEDTLS_TLS1_3_SIG_NONE};
+    std::array<std::uint16_t, 2> signature_algorithms{MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256,
+                                                      MBEDTLS_TLS1_3_SIG_NONE};
     bool psa_initialized = false;
     bool allocator_installed = false;
 };
@@ -51,5 +51,4 @@ struct MbedConnection final : Connection {
     bool handshake_done = false;
 };
 
-}  // namespace turtle::mbedtls_adapter
-
+} // namespace turtle::mbedtls_adapter

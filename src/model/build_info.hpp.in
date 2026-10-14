@@ -1,0 +1,4 @@
+#pragma once
+namespace turtle::model::detail {
+inline constexpr char build_information[] = R"TURTLE(@TURTLE_BUILD_INFORMATION@)TURTLE";
+}

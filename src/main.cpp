@@ -1,9 +1,9 @@
+#include "capability/capability.hpp"
 #include "config/config.hpp"
 #include "lifecycle/lifecycle.hpp"
-#include "capability/capability.hpp"
 #include "measure/measure.hpp"
-#include <iostream>
 #include <exception>
+#include <iostream>
 int main(int argc, char** argv) {
     try {
         auto command = turtle::config::parse(argc, argv);
@@ -16,8 +16,20 @@ int main(int argc, char** argv) {
             turtle::measure::Meter meter(command.run.mode, command.run.perf);
             const auto& caps = meter.capabilities();
             std::cout << "kernel: " << environment.kernel << "\nCPU: " << environment.cpu_model
-                      << "\nperf: " << caps.perf << " (" << caps.perf_note
-                      << ")\nstack: " << caps.stack_tracking << " (" << caps.stack_note << ")\n";
+                      << "\ncompiler: " << environment.compiler
+                      << "\nallowed logical CPUs: " << environment.allowed_cpus.size()
+                      << "\nverified physical cores: " << environment.physical_cpus.size()
+                      << "\ngovernor: " << environment.governor << "\nboost: " << environment.boost
+                      << "\nmonotonic resolution (ns): " << caps.monotonic_resolution_ns
+                      << "\nthread CPU resolution (ns): " << caps.thread_cpu_resolution_ns
+                      << "\nperf: " << caps.perf << " (" << caps.perf_note << ")"
+                      << "\nheap: memory mode + adapter allocator hooks required"
+                      << "\nstack: " << caps.stack_tracking << " (" << caps.stack_note << ")"
+                      << "\nreceive timestamps: probed on each measured TCP connection"
+                      << "\nTX/NIC timestamps, eBPF and packet capture: not implemented\n";
+            for (const auto& warning : environment.warnings) {
+                std::cout << "warning: " << warning << '\n';
+            }
             return 0;
         }
         return turtle::lifecycle::run(command.run);

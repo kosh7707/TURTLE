@@ -17,11 +17,40 @@ inline constexpr const char* framework_version = "0.1.0";
 enum class Mode { Timing, Memory, Trace };
 enum class Direction { Sent, Received };
 enum class Location { Boundary, Framework, Kernel, Hardware, Syscall, Library };
-enum class Call { None, Setup, Open, Handshake, Verification, Negotiated, AppSend, AppRecv, Close, Save, Teardown };
+enum class Call {
+    None,
+    Setup,
+    Open,
+    Handshake,
+    Verification,
+    Negotiated,
+    AppSend,
+    AppRecv,
+    Close,
+    Save,
+    Teardown
+};
 enum class EventKind {
-    SetupBegin, SetupEnd, TcpReady, OpenBegin, OpenEnd, CallBegin, CallEnd,
-    IoSendEnter, IoSendReturn, IoRecvEnter, IoRecvReturn, WaitBegin, WaitEnd,
-    KernelRx, KernelTxSched, KernelTxSnd, KernelTxAck, CloseBegin, CloseEnd, Save
+    SetupBegin,
+    SetupEnd,
+    TcpReady,
+    OpenBegin,
+    OpenEnd,
+    CallBegin,
+    CallEnd,
+    IoSendEnter,
+    IoSendReturn,
+    IoRecvEnter,
+    IoRecvReturn,
+    WaitBegin,
+    WaitEnd,
+    KernelRx,
+    KernelTxSched,
+    KernelTxSnd,
+    KernelTxAck,
+    CloseBegin,
+    CloseEnd,
+    Save
 };
 
 struct RunConfig {
@@ -183,5 +212,6 @@ const char* name(EventKind value) noexcept;
 const char* name(Verification value) noexcept;
 const char* name(Step value) noexcept;
 std::string fingerprint(const std::string& text);
+const char* build_information() noexcept;
 
-}  // namespace turtle::model
+} // namespace turtle::model

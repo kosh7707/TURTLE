@@ -9,7 +9,7 @@
 namespace turtle::measure {
 
 class Meter {
-public:
+  public:
     explicit Meter(model::Mode mode, bool request_perf = true);
     ~Meter();
     Meter(const Meter&) = delete;
@@ -18,11 +18,12 @@ public:
     Allocator allocator() noexcept;
     const model::Capabilities& capabilities() const noexcept;
     model::Calibration calibrate(std::size_t repetitions);
-private:
+
+  private:
     struct State;
     std::unique_ptr<State> state_;
 };
 
 model::ClockPair clock_pair() noexcept;
 
-}  // namespace turtle::measure
+} // namespace turtle::measure

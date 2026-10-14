@@ -12,4 +12,4 @@ model::Environment inspect_environment();
 bool pin_to_cpu(int cpu, std::string& explanation);
 void choose_cpus(model::RunConfig& config, const model::Environment& environment);
 
-}  // namespace turtle::capability
+} // namespace turtle::capability

@@ -51,7 +51,9 @@ MbedConnection::MbedConnection(MbedContext& selected_context, const Io& selected
     error_text[0] = '\0';
 }
 
-MbedConnection::~MbedConnection() { mbedtls_ssl_free(&ssl); }
+MbedConnection::~MbedConnection() {
+    mbedtls_ssl_free(&ssl);
+}
 
 void MbedConnection::set_error(int code) noexcept {
     last_error = code;
@@ -65,7 +67,7 @@ void MbedConnection::set_error(const char* text) noexcept {
     error_text[length] = '\0';
 }
 
-}  // namespace turtle::mbedtls_adapter
+} // namespace turtle::mbedtls_adapter
 
 namespace {
 
@@ -127,8 +129,7 @@ bool supported_config(const turtle::Role role, const turtle::TlsConfig& config,
 }
 
 bool is_p256_ecdsa_key(const mbedtls_pk_context& key) noexcept {
-    return mbedtls_pk_can_do(&key, MBEDTLS_PK_ECDSA) != 0 &&
-           mbedtls_pk_get_bitlen(&key) == 256;
+    return mbedtls_pk_can_do(&key, MBEDTLS_PK_ECDSA) != 0 && mbedtls_pk_get_bitlen(&key) == 256;
 }
 
 int configure_credentials(MbedContext& context) noexcept {
@@ -157,8 +158,7 @@ int configure_credentials(MbedContext& context) noexcept {
     if (result != 0) {
         return result;
     }
-    if (!is_p256_ecdsa_key(context.own_key) ||
-        !is_p256_ecdsa_key(context.own_certificate.pk)) {
+    if (!is_p256_ecdsa_key(context.own_key) || !is_p256_ecdsa_key(context.own_certificate.pk)) {
         return MBEDTLS_ERR_SSL_BAD_CONFIG;
     }
     return mbedtls_ssl_conf_own_cert(&context.ssl_config, &context.own_certificate,
@@ -173,20 +173,20 @@ int send_callback(void* opaque, const unsigned char* buffer, std::size_t size) {
     }
     const turtle::IoResult result = connection.io.send(connection.io.context, buffer, size);
     switch (result.status) {
-        case turtle::IoStatus::Ok:
-            if (result.bytes == 0 || result.bytes > size ||
-                result.bytes > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-                return MBEDTLS_ERR_NET_SEND_FAILED;
-            }
-            return static_cast<int>(result.bytes);
-        case turtle::IoStatus::WantRead:
-            return MBEDTLS_ERR_SSL_WANT_READ;
-        case turtle::IoStatus::WantWrite:
-            return MBEDTLS_ERR_SSL_WANT_WRITE;
-        case turtle::IoStatus::Closed:
-            return MBEDTLS_ERR_NET_CONN_RESET;
-        case turtle::IoStatus::Failed:
+    case turtle::IoStatus::Ok:
+        if (result.bytes == 0 || result.bytes > size ||
+            result.bytes > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
             return MBEDTLS_ERR_NET_SEND_FAILED;
+        }
+        return static_cast<int>(result.bytes);
+    case turtle::IoStatus::WantRead:
+        return MBEDTLS_ERR_SSL_WANT_READ;
+    case turtle::IoStatus::WantWrite:
+        return MBEDTLS_ERR_SSL_WANT_WRITE;
+    case turtle::IoStatus::Closed:
+        return MBEDTLS_ERR_NET_CONN_RESET;
+    case turtle::IoStatus::Failed:
+        return MBEDTLS_ERR_NET_SEND_FAILED;
     }
     return MBEDTLS_ERR_NET_SEND_FAILED;
 }
@@ -199,20 +199,20 @@ int recv_callback(void* opaque, unsigned char* buffer, std::size_t size) {
     }
     const turtle::IoResult result = connection.io.recv(connection.io.context, buffer, size);
     switch (result.status) {
-        case turtle::IoStatus::Ok:
-            if (result.bytes > size ||
-                result.bytes > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-                return MBEDTLS_ERR_NET_RECV_FAILED;
-            }
-            return static_cast<int>(result.bytes);
-        case turtle::IoStatus::WantRead:
-            return MBEDTLS_ERR_SSL_WANT_READ;
-        case turtle::IoStatus::WantWrite:
-            return MBEDTLS_ERR_SSL_WANT_WRITE;
-        case turtle::IoStatus::Closed:
-            return 0;
-        case turtle::IoStatus::Failed:
+    case turtle::IoStatus::Ok:
+        if (result.bytes > size ||
+            result.bytes > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
             return MBEDTLS_ERR_NET_RECV_FAILED;
+        }
+        return static_cast<int>(result.bytes);
+    case turtle::IoStatus::WantRead:
+        return MBEDTLS_ERR_SSL_WANT_READ;
+    case turtle::IoStatus::WantWrite:
+        return MBEDTLS_ERR_SSL_WANT_WRITE;
+    case turtle::IoStatus::Closed:
+        return 0;
+    case turtle::IoStatus::Failed:
+        return MBEDTLS_ERR_NET_RECV_FAILED;
     }
     return MBEDTLS_ERR_NET_RECV_FAILED;
 }
@@ -223,20 +223,20 @@ char hexadecimal_digit(unsigned value) noexcept {
 
 const char* key_log_label(mbedtls_ssl_key_export_type type) noexcept {
     switch (type) {
-        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_EARLY_SECRET:
-            return "CLIENT_EARLY_TRAFFIC_SECRET";
-        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_EARLY_EXPORTER_SECRET:
-            return "EARLY_EXPORTER_SECRET";
-        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_HANDSHAKE_TRAFFIC_SECRET:
-            return "CLIENT_HANDSHAKE_TRAFFIC_SECRET";
-        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_SERVER_HANDSHAKE_TRAFFIC_SECRET:
-            return "SERVER_HANDSHAKE_TRAFFIC_SECRET";
-        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_APPLICATION_TRAFFIC_SECRET:
-            return "CLIENT_TRAFFIC_SECRET_0";
-        case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_SERVER_APPLICATION_TRAFFIC_SECRET:
-            return "SERVER_TRAFFIC_SECRET_0";
-        case MBEDTLS_SSL_KEY_EXPORT_TLS12_MASTER_SECRET:
-            return nullptr;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_EARLY_SECRET:
+        return "CLIENT_EARLY_TRAFFIC_SECRET";
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_EARLY_EXPORTER_SECRET:
+        return "EARLY_EXPORTER_SECRET";
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_HANDSHAKE_TRAFFIC_SECRET:
+        return "CLIENT_HANDSHAKE_TRAFFIC_SECRET";
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_SERVER_HANDSHAKE_TRAFFIC_SECRET:
+        return "SERVER_HANDSHAKE_TRAFFIC_SECRET";
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_APPLICATION_TRAFFIC_SECRET:
+        return "CLIENT_TRAFFIC_SECRET_0";
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_SERVER_APPLICATION_TRAFFIC_SECRET:
+        return "SERVER_TRAFFIC_SECRET_0";
+    case MBEDTLS_SSL_KEY_EXPORT_TLS12_MASTER_SECRET:
+        return nullptr;
     }
     return nullptr;
 }
@@ -280,7 +280,9 @@ void export_keys_callback(void* opaque, mbedtls_ssl_key_export_type type,
     }
 }
 
-const char* name() noexcept { return kLibraryName; }
+const char* name() noexcept {
+    return kLibraryName;
+}
 
 turtle::Declaration declaration(const turtle::Context* base) {
     turtle::Declaration result;
@@ -299,9 +301,11 @@ turtle::Declaration declaration(const turtle::Context* base) {
     result.extra_threads = false;
     result.context_serialization = false;
     result.is_mock = false;
-    result.memory_note = result.allocator_hooks
-        ? "Mbed TLS allocations use host callbacks; excludes adapter C++ objects and caller buffers"
-        : "TLS allocator hooks are not installed in timing mode; TLS heap is unobserved";
+    result.memory_note =
+        result.allocator_hooks
+            ? "Mbed TLS allocations use host callbacks; excludes adapter C++ objects and caller "
+              "buffers"
+            : "TLS allocator hooks are not installed in timing mode; TLS heap is unobserved";
     if (base == nullptr) {
         return result;
     }
@@ -309,8 +313,7 @@ turtle::Declaration declaration(const turtle::Context* base) {
 }
 
 turtle::Context* setup(turtle::Role role, const turtle::TlsConfig& config,
-                       const turtle::HostServices& services,
-                       std::span<const std::uint8_t> saved) {
+                       const turtle::HostServices& services, std::span<const std::uint8_t> saved) {
     if (!supported_config(role, config, saved)) {
         return nullptr;
     }
@@ -354,11 +357,10 @@ turtle::Context* setup(turtle::Role role, const turtle::TlsConfig& config,
         return nullptr;
     }
 
-    const int endpoint = role == turtle::Role::Client ? MBEDTLS_SSL_IS_CLIENT
-                                                       : MBEDTLS_SSL_IS_SERVER;
+    const int endpoint =
+        role == turtle::Role::Client ? MBEDTLS_SSL_IS_CLIENT : MBEDTLS_SSL_IS_SERVER;
     result = mbedtls_ssl_config_defaults(&context->ssl_config, endpoint,
-                                         MBEDTLS_SSL_TRANSPORT_STREAM,
-                                         MBEDTLS_SSL_PRESET_DEFAULT);
+                                         MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
     if (result != 0) {
         delete context;
         if (services.memory_mode) {
@@ -372,8 +374,8 @@ turtle::Context* setup(turtle::Role role, const turtle::TlsConfig& config,
     mbedtls_ssl_conf_ciphersuites(&context->ssl_config, context->ciphersuites.data());
     mbedtls_ssl_conf_groups(&context->ssl_config, context->groups.data());
     mbedtls_ssl_conf_sig_algs(&context->ssl_config, context->signature_algorithms.data());
-    mbedtls_ssl_conf_tls13_key_exchange_modes(
-        &context->ssl_config, MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL);
+    mbedtls_ssl_conf_tls13_key_exchange_modes(&context->ssl_config,
+                                              MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL);
     if (role == turtle::Role::Client) {
         mbedtls_ssl_conf_authmode(&context->ssl_config, MBEDTLS_SSL_VERIFY_REQUIRED);
         mbedtls_ssl_conf_session_tickets(&context->ssl_config,
@@ -381,9 +383,9 @@ turtle::Context* setup(turtle::Role role, const turtle::TlsConfig& config,
         mbedtls_ssl_conf_tls13_enable_signal_new_session_tickets(
             &context->ssl_config, MBEDTLS_SSL_TLS1_3_SIGNAL_NEW_SESSION_TICKETS_DISABLED);
     } else {
-        mbedtls_ssl_conf_authmode(&context->ssl_config,
-                                  config.mutual_auth ? MBEDTLS_SSL_VERIFY_REQUIRED
-                                                     : MBEDTLS_SSL_VERIFY_NONE);
+        mbedtls_ssl_conf_authmode(&context->ssl_config, config.mutual_auth
+                                                            ? MBEDTLS_SSL_VERIFY_REQUIRED
+                                                            : MBEDTLS_SSL_VERIFY_NONE);
         mbedtls_ssl_conf_new_session_tickets(&context->ssl_config, 0);
     }
     result = configure_credentials(*context);
@@ -468,8 +470,8 @@ turtle::Verification peer_verification(turtle::Connection* base) {
         return turtle::Verification::Failed;
     }
     const auto& connection = *static_cast<const MbedConnection*>(base);
-    const bool verification_applies = connection.context.role == turtle::Role::Client ||
-                                      connection.context.config->mutual_auth;
+    const bool verification_applies =
+        connection.context.role == turtle::Role::Client || connection.context.config->mutual_auth;
     if (!verification_applies) {
         return turtle::Verification::NotApplicable;
     }
@@ -506,8 +508,7 @@ turtle::Negotiated negotiated(turtle::Connection* base) {
     return result;
 }
 
-turtle::AppResult app_send(turtle::Connection* base, const std::uint8_t* data,
-                           std::size_t size) {
+turtle::AppResult app_send(turtle::Connection* base, const std::uint8_t* data, std::size_t size) {
     if (base == nullptr || data == nullptr || size == 0) {
         return {};
     }
@@ -543,7 +544,9 @@ void close(turtle::Connection* connection) noexcept {
     delete static_cast<MbedConnection*>(connection);
 }
 
-std::vector<std::uint8_t> save(turtle::Context*) { return {}; }
+std::vector<std::uint8_t> save(turtle::Context*) {
+    return {};
+}
 
 void teardown(turtle::Context* base) noexcept {
     auto* context = static_cast<MbedContext*>(base);
@@ -554,7 +557,7 @@ void teardown(turtle::Context* base) noexcept {
     }
 }
 
-}  // namespace
+} // namespace
 
 extern "C" turtle::ImplementationApi turtle_adapter_v1() {
     return {turtle::adapter_api_version,

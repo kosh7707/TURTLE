@@ -15,4 +15,4 @@ struct Command {
 Command parse(int argc, char** argv);
 std::string usage();
 
-}  // namespace turtle::config
+} // namespace turtle::config

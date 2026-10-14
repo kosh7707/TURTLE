@@ -19,4 +19,4 @@ int connect_loopback(std::uint16_t port);
 // otherwise the reason it is not ready for a TLS handshake.
 std::string check_ready(int fd);
 
-}  // namespace turtle::tcp
+} // namespace turtle::tcp

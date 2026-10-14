@@ -41,7 +41,8 @@ int main() {
     heap = *memory.read().heap;
     assert(heap.live == 33 && heap.peak == 33 && heap.interval_peak == 33);
     assert(heap.allocations == 2 && heap.frees == 1 && heap.allocated_total == 50);
-    void* failed = allocator.reallocate(allocator.context, block, std::numeric_limits<std::size_t>::max());
+    void* failed =
+        allocator.reallocate(allocator.context, block, std::numeric_limits<std::size_t>::max());
     assert(!failed && memory.read().heap->live == 33);
     block = allocator.reallocate(allocator.context, block, 5);
     assert(block);

@@ -22,8 +22,7 @@ struct WolfContext final : Context {
     wolfSSL_Free_cb previous_free = nullptr;
     wolfSSL_Realloc_cb previous_realloc = nullptr;
 
-    WolfContext(Role value_role, const TlsConfig& value_config,
-                const HostServices& value_services)
+    WolfContext(Role value_role, const TlsConfig& value_config, const HostServices& value_services)
         : role(value_role), config(value_config), services(value_services) {}
 };
 
@@ -38,5 +37,4 @@ struct WolfConnection final : Connection {
         : context(value_context), io(value_io) {}
 };
 
-}  // namespace turtle::wolfssl_adapter
-
+} // namespace turtle::wolfssl_adapter

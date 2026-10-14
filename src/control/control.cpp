@@ -1,13 +1,13 @@
 #include "control/control.hpp"
-#include <sys/epoll.h>
-#include <sys/socket.h>
-#include <sys/resource.h>
-#include <sys/wait.h>
-#include <unistd.h>
 #include <cerrno>
 #include <csignal>
 #include <stdexcept>
+#include <sys/epoll.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
 #include <thread>
+#include <unistd.h>
 namespace turtle::control {
 Waiter::Waiter(int fd) : fd_(fd), epoll_(::epoll_create1(EPOLL_CLOEXEC)) {
     if (epoll_ < 0)

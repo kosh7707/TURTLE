@@ -8,4 +8,4 @@ namespace turtle::lifecycle {
 
 int run(const model::RunConfig& config);
 
-}  // namespace turtle::lifecycle
+} // namespace turtle::lifecycle

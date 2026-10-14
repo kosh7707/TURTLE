@@ -27,7 +27,7 @@ struct PlaintextMessage {
 };
 
 class Buffer {
-public:
+  public:
     explicit Buffer(const Limits& limits);
     ~Buffer();
     Buffer(const Buffer&) = delete;
@@ -40,13 +40,14 @@ public:
                           std::span<const std::uint8_t> bytes) noexcept;
     std::span<const model::Event> events() const noexcept;
     std::span<const std::uint8_t> bytes(std::size_t connection,
-                                       model::Direction direction) const noexcept;
+                                        model::Direction direction) const noexcept;
     std::string_view keylog() const noexcept;
     std::span<const PlaintextMessage> plaintext_messages() const noexcept;
     std::span<const std::uint8_t> plaintext_bytes() const noexcept;
     bool overflowed() const noexcept;
     std::size_t dropped() const noexcept;
-private:
+
+  private:
     struct State;
     std::unique_ptr<State> state_;
 };
@@ -54,16 +55,17 @@ private:
 // Open every artifact before resource limits are applied. Each role writes its
 // own files after measurement, avoiding large IPC transfers while the parent waits.
 class Writer {
-public:
+  public:
     Writer(const std::string& sample_directory, Role role, std::size_t connections);
     ~Writer();
     Writer(const Writer&) = delete;
     Writer& operator=(const Writer&) = delete;
     void write(const model::SampleInfo& info, const Buffer& buffer);
     void write_context(std::span<const std::uint8_t> saved);
-private:
+
+  private:
     struct State;
     std::unique_ptr<State> state_;
 };
 
-}  // namespace turtle::record
+} // namespace turtle::record

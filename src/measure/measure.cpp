@@ -4,10 +4,10 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
-#include <stdexcept>
 #include <ctime>
+#include <limits>
 #include <linux/perf_event.h>
+#include <stdexcept>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -30,13 +30,15 @@ int open_counter(std::uint64_t config, int group) {
     attr.disabled = group == -1;
     attr.exclude_kernel = 1;
     attr.exclude_hv = 1;
-    attr.read_format = PERF_FORMAT_GROUP | PERF_FORMAT_TOTAL_TIME_ENABLED |
-                       PERF_FORMAT_TOTAL_TIME_RUNNING;
-    return static_cast<int>(syscall(SYS_perf_event_open, &attr, 0, -1, group,
-                                    PERF_FLAG_FD_CLOEXEC));
+    attr.read_format =
+        PERF_FORMAT_GROUP | PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+    return static_cast<int>(
+        syscall(SYS_perf_event_open, &attr, 0, -1, group, PERF_FLAG_FD_CLOEXEC));
 }
-struct alignas(std::max_align_t) Allocation { std::size_t size; };
-}
+struct alignas(std::max_align_t) Allocation {
+    std::size_t size;
+};
+} // namespace
 
 struct Meter::State {
     model::Capabilities capabilities;
@@ -45,8 +47,10 @@ struct Meter::State {
     int instructions = -1;
 
     ~State() {
-        if (instructions >= 0) ::close(instructions);
-        if (cycles >= 0) ::close(cycles);
+        if (instructions >= 0)
+            ::close(instructions);
+        if (cycles >= 0)
+            ::close(cycles);
     }
     void added(std::size_t size) noexcept {
         heap.live += size;
@@ -57,18 +61,25 @@ struct Meter::State {
     }
     static void* allocate(void* opaque, std::size_t size) noexcept {
         auto& self = *static_cast<State*>(opaque);
-        if (!self.capabilities.heap_tracking) return std::malloc(size);
-        if (size > std::numeric_limits<std::size_t>::max() - sizeof(Allocation)) return nullptr;
+        if (!self.capabilities.heap_tracking)
+            return std::malloc(size);
+        if (size > std::numeric_limits<std::size_t>::max() - sizeof(Allocation))
+            return nullptr;
         auto* block = static_cast<Allocation*>(std::malloc(sizeof(Allocation) + size));
-        if (!block) return nullptr;
+        if (!block)
+            return nullptr;
         block->size = size;
         self.added(size);
         return block + 1;
     }
     static void deallocate(void* opaque, void* ptr) noexcept {
         auto& self = *static_cast<State*>(opaque);
-        if (!self.capabilities.heap_tracking) { std::free(ptr); return; }
-        if (!ptr) return;
+        if (!self.capabilities.heap_tracking) {
+            std::free(ptr);
+            return;
+        }
+        if (!ptr)
+            return;
         auto* block = static_cast<Allocation*>(ptr) - 1;
         self.heap.live -= block->size;
         ++self.heap.frees;
@@ -76,14 +87,21 @@ struct Meter::State {
     }
     static void* reallocate(void* opaque, void* ptr, std::size_t size) noexcept {
         auto& self = *static_cast<State*>(opaque);
-        if (!self.capabilities.heap_tracking) return std::realloc(ptr, size);
-        if (!ptr) return allocate(opaque, size);
-        if (size == 0) { deallocate(opaque, ptr); return nullptr; }
-        if (size > std::numeric_limits<std::size_t>::max() - sizeof(Allocation)) return nullptr;
+        if (!self.capabilities.heap_tracking)
+            return std::realloc(ptr, size);
+        if (!ptr)
+            return allocate(opaque, size);
+        if (size == 0) {
+            deallocate(opaque, ptr);
+            return nullptr;
+        }
+        if (size > std::numeric_limits<std::size_t>::max() - sizeof(Allocation))
+            return nullptr;
         auto* old = static_cast<Allocation*>(ptr) - 1;
         const auto old_size = old->size;
         auto* block = static_cast<Allocation*>(std::realloc(old, sizeof(Allocation) + size));
-        if (!block) return nullptr;
+        if (!block)
+            return nullptr;
         block->size = size;
         self.heap.live -= old_size;
         ++self.heap.frees;
@@ -96,9 +114,11 @@ Meter::Meter(model::Mode mode, bool request_perf) : state_(std::make_unique<Stat
     auto& caps = state_->capabilities;
     timespec resolution{};
     caps.monotonic_clock = clock_getres(CLOCK_MONOTONIC, &resolution) == 0;
-    if (caps.monotonic_clock) caps.monotonic_resolution_ns = nanoseconds(resolution);
+    if (caps.monotonic_clock)
+        caps.monotonic_resolution_ns = nanoseconds(resolution);
     caps.thread_cpu_clock = clock_getres(CLOCK_THREAD_CPUTIME_ID, &resolution) == 0;
-    if (caps.thread_cpu_clock) caps.thread_cpu_resolution_ns = nanoseconds(resolution);
+    if (caps.thread_cpu_clock)
+        caps.thread_cpu_resolution_ns = nanoseconds(resolution);
     if (!caps.monotonic_clock || !caps.thread_cpu_clock)
         throw std::runtime_error("required measurement clock is unavailable");
     caps.heap_tracking = mode == model::Mode::Memory;
@@ -106,26 +126,32 @@ Meter::Meter(model::Mode mode, bool request_perf) : state_(std::make_unique<Stat
     caps.hardware_note = "Hardware timestamps are not configured by the meter";
     caps.trace_note = "No syscall tracing or packet capture configured";
     caps.perf_note = "Disabled by configuration";
-    if (!request_perf) return;
+    if (!request_perf)
+        return;
     state_->cycles = open_counter(PERF_COUNT_HW_CPU_CYCLES, -1);
     if (state_->cycles >= 0)
         state_->instructions = open_counter(PERF_COUNT_HW_INSTRUCTIONS, state_->cycles);
     if (state_->cycles < 0 || state_->instructions < 0 ||
         ioctl(state_->cycles, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP) < 0 ||
         ioctl(state_->cycles, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP) < 0) {
-        caps.perf_note = std::string("Per-thread user-space perf group unavailable: ") + std::strerror(errno);
+        caps.perf_note =
+            std::string("Per-thread user-space perf group unavailable: ") + std::strerror(errno);
         return;
     }
     caps.perf = true;
-    caps.perf_note = "Per-thread user-space cycles/instructions; unscaled group counts; check enabled/running";
+    caps.perf_note =
+        "Per-thread user-space cycles/instructions; unscaled group counts; check enabled/running";
 }
 
 Meter::~Meter() = default;
 model::Snapshot Meter::read(bool reset_heap_interval) noexcept {
     model::Snapshot result;
     if (state_->capabilities.perf) {
-        struct { std::uint64_t count, enabled, running, cycles, instructions; } values{};
-        if (::read(state_->cycles, &values, sizeof(values)) == sizeof(values) && values.count == 2) {
+        struct {
+            std::uint64_t count, enabled, running, cycles, instructions;
+        } values{};
+        if (::read(state_->cycles, &values, sizeof(values)) == sizeof(values) &&
+            values.count == 2) {
             result.cycles = values.cycles;
             result.instructions = values.instructions;
             result.perf_enabled = values.enabled;
@@ -136,14 +162,17 @@ model::Snapshot Meter::read(bool reset_heap_interval) noexcept {
     result.monotonic_ns = clock_ns(CLOCK_MONOTONIC);
     if (state_->capabilities.heap_tracking) {
         result.heap = state_->heap;
-        if (reset_heap_interval) state_->heap.interval_peak = state_->heap.live;
+        if (reset_heap_interval)
+            state_->heap.interval_peak = state_->heap.live;
     }
     return result;
 }
 Allocator Meter::allocator() noexcept {
     return {state_.get(), State::allocate, State::reallocate, State::deallocate};
 }
-const model::Capabilities& Meter::capabilities() const noexcept { return state_->capabilities; }
+const model::Capabilities& Meter::capabilities() const noexcept {
+    return state_->capabilities;
+}
 model::Calibration Meter::calibrate(std::size_t repetitions) {
     model::Calibration result;
     result.elapsed_ns.reserve(repetitions);
@@ -170,4 +199,4 @@ model::ClockPair clock_pair() noexcept {
     pair.monotonic_after_ns = clock_ns(CLOCK_MONOTONIC);
     return pair;
 }
-}  // namespace turtle::measure
+} // namespace turtle::measure

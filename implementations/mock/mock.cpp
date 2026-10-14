@@ -1,6 +1,6 @@
 #include "turtle/adapter.hpp"
-#include <cstdlib>
 #include <algorithm>
+#include <cstdlib>
 namespace {
 using namespace turtle;
 struct MockContext : Context {

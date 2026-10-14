@@ -1,11 +1,11 @@
 #include "transport/channel.hpp"
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <fcntl.h>
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdexcept>
+#include <sys/socket.h>
 namespace turtle::transport {
 namespace {
 IoResult transfer(Channel& channel, bool sending, std::uint8_t* data, std::size_t size) noexcept {

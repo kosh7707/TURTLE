@@ -23,13 +23,27 @@ endif()
 
 add_library(turtle_model src/model/model.cpp)
 target_include_directories(turtle_model PUBLIC src include)
+string(TOUPPER "${CMAKE_BUILD_TYPE}" build_type_upper)
+set(TURTLE_SOURCE_REVISION "unavailable")
+find_package(Git QUIET)
+if(Git_FOUND)
+  execute_process(COMMAND "${GIT_EXECUTABLE}" describe --always --dirty
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    OUTPUT_VARIABLE TURTLE_SOURCE_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+endif()
+set(TURTLE_BUILD_INFORMATION
+  "compiler=${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}; path=${CMAKE_CXX_COMPILER}; type=${CMAKE_BUILD_TYPE}; flags=${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${build_type_upper}}; standard=C++20; warnings=-Wall -Wextra -Wpedantic; werror=${TURTLE_WARNINGS_AS_ERRORS}; source=${TURTLE_SOURCE_REVISION}")
+configure_file(src/model/build_info.hpp.in generated/model/build_info.hpp @ONLY)
+file(WRITE "${CMAKE_BINARY_DIR}/build-manifest.txt" "${TURTLE_BUILD_INFORMATION}\n")
+target_include_directories(turtle_model PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 add_library(turtle_config src/config/config.cpp)
 target_link_libraries(turtle_config PUBLIC turtle_model)
 target_include_directories(turtle_config SYSTEM PRIVATE third_party)
 foreach(module control transport measure capability record lifecycle report)
   add_subdirectory(src/${module})
 endforeach()
-if(TURTLE_WITH_INTERPRETER AND EXISTS "${PROJECT_SOURCE_DIR}/src/interpret/CMakeLists.txt")
+if(TURTLE_WITH_INTERPRETER)
   add_subdirectory(src/interpret)
 endif()
 add_executable(turtle src/main.cpp)

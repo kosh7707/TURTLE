@@ -1,7 +1,7 @@
 #pragma once
-#include <turtle/adapter.hpp>
-#include <openssl/ssl.h>
 #include <array>
+#include <openssl/ssl.h>
+#include <turtle/adapter.hpp>
 
 namespace turtle::openssl_adapter {
 struct State final : Context {
@@ -24,4 +24,4 @@ struct Session final : Connection {
     Session(State& s, const Io& i) : state(s), io(i) {}
     ~Session() override;
 };
-}
+} // namespace turtle::openssl_adapter

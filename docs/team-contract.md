@@ -4,7 +4,7 @@
 
 ## 소유권과 실행
 
-- 공개 어댑터 계약은 `include/turtle/adapter.hpp`입니다. 기존 `implementation.hpp`는 이전 mock 실행의 계약이며 새 구현에서 사용하지 않습니다. 이전 계약의 제거와 테스트 이전은 worker-1이 리더와 조율합니다.
+- 공개 어댑터 계약은 `include/turtle/adapter.hpp`입니다. 이전 mock 전용 `implementation.hpp` 계약과 시험은 새 계약의 회귀 시험으로 옮긴 뒤 제거했습니다.
 - 어댑터는 공유 모듈 하나로 빌드하고 `extern "C" turtle::ImplementationApi turtle_adapter_v1()`를 내보냅니다. 함수표는 값으로 반환합니다. 소유 상태를 가진 전역 객체나 싱글톤은 만들지 않습니다.
 - 역할 프로세스가 필요한 어댑터 하나를 `dlopen()`으로 불러옵니다. 지휘 프로세스에서는 TLS 라이브러리를 초기화하지 않습니다. 클라이언트와 서버의 모듈은 달라도 됩니다.
 - 모듈 파일은 빌드 폴더의 `adapters/<이름>.so`에 둡니다. 실행 인자로 다른 모듈 폴더를 지정할 수 있습니다.

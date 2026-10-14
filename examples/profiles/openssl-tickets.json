@@ -1,0 +1,18 @@
+{
+  "name": "p256-ecdsa-openssl-tickets-2",
+  "pki": "../../pki/default",
+  "tls": {
+    "version": "TLS1.3",
+    "cipher": "TLS_AES_128_GCM_SHA256",
+    "group": "secp256r1",
+    "signature": "ecdsa_secp256r1_sha256",
+    "server_name": "localhost",
+    "mutual_auth": false,
+    "compatibility_ccs": true,
+    "framework_io": true,
+    "tickets": 2,
+    "application_bytes": 32
+  },
+  "socket": {"tcp_nodelay": true, "send_buffer": 65536, "receive_buffer": 65536},
+  "technique": {"name": "ticket-boundary-observation", "note": "no session resumption"}
+}

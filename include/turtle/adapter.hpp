@@ -29,7 +29,7 @@ struct Io {
     void* context = nullptr;
     IoResult (*send)(void*, const std::uint8_t*, std::size_t) noexcept = nullptr;
     IoResult (*recv)(void*, std::uint8_t*, std::size_t) noexcept = nullptr;
-    int native_socket = -1;  // borrowed; only for explicitly declared native-I/O comparisons
+    int native_socket = -1; // borrowed; only for explicitly declared native-I/O comparisons
 };
 
 struct Allocator {
@@ -46,8 +46,8 @@ struct KeyLogSink {
 
 struct PlaintextSink {
     void* context = nullptr;
-    bool (*append)(void*, bool outgoing, unsigned content_type,
-                   const std::uint8_t*, std::size_t) noexcept = nullptr;
+    bool (*append)(void*, bool outgoing, unsigned content_type, const std::uint8_t*,
+                   std::size_t) noexcept = nullptr;
 };
 
 struct HostServices {
@@ -73,7 +73,7 @@ struct TlsConfig {
     bool framework_io = true;
     std::uint32_t tickets = 0;
     std::size_t application_bytes = 32;
-    std::size_t record_size_limit = 0;  // zero means no requested extension
+    std::size_t record_size_limit = 0; // zero means no requested extension
     bool certificate_compression = false;
 };
 
@@ -102,8 +102,12 @@ struct Negotiated {
     bool peer_certificate_present = false;
 };
 
-struct Context { virtual ~Context() = default; };
-struct Connection { virtual ~Connection() = default; };
+struct Context {
+    virtual ~Context() = default;
+};
+struct Connection {
+    virtual ~Connection() = default;
+};
 
 // The role runtime owns contexts and connections through these lifecycle calls.
 // Config and HostServices outlive Context; Io outlives Connection. A retry uses
@@ -130,7 +134,7 @@ using AdapterEntry = ImplementationApi (*)();
 inline constexpr std::uint32_t adapter_api_version = 1;
 inline constexpr const char* adapter_entry_name = "turtle_adapter_v1";
 
-}  // namespace turtle
+} // namespace turtle
 
 // Each adapter module exports this function. It returns a function table by
 // value, not a singleton instance. Library initialization belongs to setup().

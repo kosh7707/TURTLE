@@ -9,3 +9,5 @@
 *.gcda
 *.gcno
 compile_commands.json
+__pycache__/
+*.py[cod]
