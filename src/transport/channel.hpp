@@ -17,4 +17,4 @@ struct Channel {
     Io io() noexcept;
 };
 bool configure(int fd, bool nodelay, int send_buffer, int receive_buffer, bool timestamps);
-}
+} // namespace turtle::transport
