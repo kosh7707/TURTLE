@@ -1,0 +1,11 @@
+/build*/
+/.vs/
+/.omx/
+/.deps/
+/results/
+/artifacts/
+/pki/
+*.profraw
+*.gcda
+*.gcno
+compile_commands.json
