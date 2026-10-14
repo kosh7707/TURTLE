@@ -1,0 +1,6 @@
+find_package(OpenSSL 3.0 REQUIRED)
+add_library(turtle_adapter_openssl MODULE adapter.cpp)
+target_include_directories(turtle_adapter_openssl PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../include)
+target_link_libraries(turtle_adapter_openssl PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+set_target_properties(turtle_adapter_openssl PROPERTIES PREFIX "" OUTPUT_NAME "openssl" LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/adapters")
+target_compile_features(turtle_adapter_openssl PRIVATE cxx_std_20)
