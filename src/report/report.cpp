@@ -138,8 +138,10 @@ Json partition(const Json& header,const std::vector<Json>& input) {
             }
         }
         result["heap_peak_bytes"]=nullptr;
+        if(start_event->contains("heap") && !start_event->at("heap").is_null())
+            result["heap_peak_bytes"]=start_event->at("heap").at("live");
         for(const auto* e:events) {
-            if(time(*e)<*start || time(*e)>*end || !e->contains("heap") || e->at("heap").is_null())continue;
+            if(time(*e)<=*start || time(*e)>*end || !e->contains("heap") || e->at("heap").is_null())continue;
             const auto peak=e->at("heap").at("interval_peak").get<std::uint64_t>();
             if(result["heap_peak_bytes"].is_null() || peak>result["heap_peak_bytes"].get<std::uint64_t>())
                 result["heap_peak_bytes"]=peak;

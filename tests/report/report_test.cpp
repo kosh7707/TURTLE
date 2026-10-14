@@ -48,6 +48,9 @@ int main(){
     assert(measured["thread_cpu_ns"]==30 && measured["cycles"]==60 && measured["instructions"]==90);
     header["perf_complete"]=false;
     assert(partition(header,events)[0]["cycles"].is_null());
+    events.front()["heap"]={{"live",10},{"interval_peak",1000}};
+    events.back()["heap"]={{"live",10},{"interval_peak",20}};
+    assert(partition(header,events)[0]["heap_peak_bytes"]==20);
     auto kernel=events.front();kernel["location"]="kernel";kernel["monotonic_ns"]=999999;
     events.insert(events.begin()+2,kernel);
     assert(partition(header,events)[0]["elapsed_ns"]==30);
