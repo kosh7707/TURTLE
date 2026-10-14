@@ -8,9 +8,175 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 namespace turtle::report {
 namespace {
 using Json=nlohmann::json;
+
+constexpr std::string_view alternate_elapsed = "client_hello_to_finished_send_elapsed_ns";
+constexpr std::string_view alternate_thread_cpu =
+    "client_hello_to_finished_send_thread_cpu_ns";
+constexpr std::string_view alternate_cycles = "client_hello_to_finished_send_cycles";
+
+std::uint64_t time(const Json& event) {
+    return event.at("monotonic_ns").get<std::uint64_t>();
+}
+
+std::optional<Json> read_json(const std::filesystem::path& path) {
+    std::ifstream file(path);
+    if (!file) {
+        return std::nullopt;
+    }
+    try {
+        Json value;
+        file >> value;
+        return value;
+    } catch (const Json::exception&) {
+        return std::nullopt;
+    }
+}
+
+bool successful_send(const Json& event) {
+    return event.value("kind", "") == "IO_SEND_RETURN" &&
+           event.value("transferred", std::uint64_t{0}) > 0 &&
+           event.value("stream_end", std::uint64_t{0}) >
+               event.value("stream_begin", std::uint64_t{0});
+}
+
+bool overlaps(const Json& event, const Json& range) {
+    const auto begin = event.at("stream_begin").get<std::uint64_t>();
+    const auto end = event.at("stream_end").get<std::uint64_t>();
+    return range.at("begin").get<std::uint64_t>() < end &&
+           range.at("end").get<std::uint64_t>() > begin;
+}
+
+const Json* one_message(const Json& direction, std::string_view name) {
+    const Json* found = nullptr;
+    for (const auto& message : direction.at("messages")) {
+        if (message.value("name", "") != name) {
+            continue;
+        }
+        if (found != nullptr) {
+            return nullptr;
+        }
+        found = &message;
+    }
+    return found;
+}
+
+std::optional<Json> alternate_window(const Json& header,
+                                     const std::vector<Json>& events,
+                                     const Json& decoded_connection) {
+    if (header.at("role") != "client" ||
+        !decoded_connection.value("decryption_complete", false) ||
+        !decoded_connection.contains("client_sent")) {
+        return std::nullopt;
+    }
+    const auto& direction = decoded_connection.at("client_sent");
+    if (!direction.value("decryption_complete", false) || !direction.contains("messages")) {
+        return std::nullopt;
+    }
+    const auto* client_hello = one_message(direction, "ClientHello");
+    const auto* finished = one_message(direction, "Finished");
+    if (client_hello == nullptr || finished == nullptr ||
+        !client_hello->contains("record_stream_ranges") ||
+        client_hello->at("record_stream_ranges").empty() ||
+        !finished->contains("record_stream_ranges") ||
+        finished->at("record_stream_ranges").empty()) {
+        return std::nullopt;
+    }
+
+    const auto connection = decoded_connection.at("connection").get<std::size_t>();
+    const Json* start = nullptr;
+    const Json* end = nullptr;
+    std::uint64_t finished_envelope_end = 0;
+    for (const auto& range : finished->at("record_stream_ranges")) {
+        finished_envelope_end =
+            std::max(finished_envelope_end, range.at("end").get<std::uint64_t>());
+    }
+    for (const auto& event : events) {
+        if (event.at("connection") != connection || !successful_send(event)) {
+            continue;
+        }
+        if (start == nullptr) {
+            for (const auto& range : client_hello->at("record_stream_ranges")) {
+                if (overlaps(event, range)) {
+                    start = &event;
+                    break;
+                }
+            }
+        }
+        const auto stream_begin = event.at("stream_begin").get<std::uint64_t>();
+        const auto stream_end = event.at("stream_end").get<std::uint64_t>();
+        if (stream_begin < finished_envelope_end && stream_end >= finished_envelope_end) {
+            end = &event;
+            break;
+        }
+    }
+    if (start == nullptr || end == nullptr || time(*end) < time(*start)) {
+        return std::nullopt;
+    }
+
+    Json result = {
+        {"definition", "client_hello_send_return_to_client_finished_send_return"},
+        {"start_event_sequence", start->at("sequence")},
+        {"end_event_sequence", end->at("sequence")},
+        {"elapsed_ns", time(*end) - time(*start)},
+        {"thread_cpu_ns", nullptr},
+        {"cycles", nullptr},
+        {"mapping", "record_envelope_overlap"},
+        {"client_hello_bundled", client_hello->value("bundled", false)},
+        {"finished_bundled", finished->value("bundled", false)},
+        {"separate_plaintext_message_cpu_time_available", false},
+        {"limitation",
+         "The boundaries map I/O events to TLS record envelopes. A record or I/O return may "
+         "contain multiple plaintext messages, so this is not separate plaintext-message CPU "
+         "time."},
+    };
+    for (const char* metric : {"thread_cpu_ns", "cycles"}) {
+        const bool supported = std::string_view(metric) == "thread_cpu_ns" ||
+                               header.value("perf_complete", false);
+        if (!supported || !start->contains(metric) || !end->contains(metric) ||
+            start->at(metric).is_null() || end->at(metric).is_null()) {
+            continue;
+        }
+        const auto first = start->at(metric).get<std::uint64_t>();
+        const auto last = end->at(metric).get<std::uint64_t>();
+        if (last >= first) {
+            result[metric] = last - first;
+        }
+    }
+    return result;
+}
+
+std::optional<std::map<std::size_t, Json>> decoded_connections(const Json& header,
+                                                               const Json& decoded) {
+    if (decoded.value("schema", 0) != 1 || !decoded.contains("sample") ||
+        decoded.at("sample") != header.at("sample") || !decoded.contains("role") ||
+        decoded.at("role") != header.at("role") || !decoded.contains("connections") ||
+        !decoded.at("connections").is_array()) {
+        return std::nullopt;
+    }
+    std::map<std::size_t, Json> by_index;
+    for (const auto& connection : decoded.at("connections")) {
+        if (!connection.contains("connection")) {
+            return std::nullopt;
+        }
+        const auto index = connection.at("connection").get<std::size_t>();
+        if (!by_index.emplace(index, connection).second) {
+            return std::nullopt;
+        }
+    }
+    if (by_index.size() != header.at("connections").size()) {
+        return std::nullopt;
+    }
+    for (const auto& connection : header.at("connections")) {
+        if (!by_index.contains(connection.at("index").get<std::size_t>())) {
+            return std::nullopt;
+        }
+    }
+    return by_index;
+}
 double weighted(const std::vector<double>& sorted, unsigned first, unsigned last) {
     long double sum=0;
     const auto n=sorted.size();
@@ -24,7 +190,6 @@ bool boundary(const Json& e) {
     const auto l=e.at("location").get<std::string>();
     return l=="implementation_boundary" || l=="framework";
 }
-std::uint64_t time(const Json& e) { return e.at("monotonic_ns").get<std::uint64_t>(); }
 std::string kind(const Json& e) { return e.at("kind").get<std::string>(); }
 Json distribution(const std::vector<double>& values) {
     const auto s=statistics(values);
@@ -174,6 +339,23 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
         std::vector<Json> events;
         while(std::getline(file,line)) if(!line.empty()) events.push_back(Json::parse(line));
         auto parts=partition(header,events);
+        auto sidecar_path = path;
+        sidecar_path.replace_extension(".decoded.json");
+        if (const auto decoded = read_json(sidecar_path)) {
+            try {
+                if (const auto connections = decoded_connections(header, *decoded)) {
+                    for (auto& part : parts) {
+                        const auto index = part.at("connection").get<std::size_t>();
+                        const auto window = alternate_window(header, events, connections->at(index));
+                        if (window) {
+                            part["client_hello_to_finished_send"] = *window;
+                        }
+                    }
+                }
+            } catch (const Json::exception&) {
+                // An incomplete optional sidecar never changes the raw-only report.
+            }
+        }
         bool valid=header.value("valid",false);
         for(const auto& p:parts) valid=valid && p.value("valid",false);
         if(parts.empty()) valid=false;
@@ -203,6 +385,19 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
         for(const auto& p:parts) {
             for(const auto* metric:{"elapsed_ns","computation_ns","io_ns","wait_ns","gap_ns","thread_cpu_ns","cycles","instructions","heap_peak_bytes"})
                 if(p.contains(metric) && !p.at(metric).is_null())group.metrics[metric].push_back(p.at(metric).get<double>());
+            if (p.contains("client_hello_to_finished_send")) {
+                const auto& window = p.at("client_hello_to_finished_send");
+                group.metrics[std::string(alternate_elapsed)].push_back(
+                    window.at("elapsed_ns").get<double>());
+                if (!window.at("thread_cpu_ns").is_null()) {
+                    group.metrics[std::string(alternate_thread_cpu)].push_back(
+                        window.at("thread_cpu_ns").get<double>());
+                }
+                if (!window.at("cycles").is_null()) {
+                    group.metrics[std::string(alternate_cycles)].push_back(
+                        window.at("cycles").get<double>());
+                }
+            }
             group.batches[header.at("batch").get<std::uint64_t>()].push_back(p.at("elapsed_ns").get<double>());
         }
     }
@@ -212,6 +407,14 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
         (void)key;
         Json item={{"dimensions",group.dimensions},{"metrics",Json::object()},{"batches",Json::array()}};
         for(const auto& [name,values]:group.metrics) item["metrics"][name]=distribution(values);
+        if (group.metrics.contains(std::string(alternate_elapsed))) {
+            item["client_hello_to_finished_send"] = {
+                {"mapping", "record_envelope_overlap"},
+                {"separate_plaintext_message_cpu_time_available", false},
+                {"limitation",
+                 "A TLS record or I/O return may contain multiple plaintext messages."},
+            };
+        }
         std::vector<double> batch_stq;
         for(const auto& [batch,values]:group.batches) {
             auto d=distribution(values);d["batch"]=batch;item["batches"].push_back(d);
@@ -227,7 +430,12 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
     for(std::size_t a=0;a<groups.size();++a)for(std::size_t b=a+1;b<groups.size();++b) {
         auto da=groups[a]["dimensions"],db=groups[b]["dimensions"];
         if(da["mode"]!="timing" || db["mode"]!="timing")continue;
-        for(const char* field:{"profile_hash","library","library_version","build_options"}){da.erase(field);db.erase(field);}
+        const auto role = da.at("role").get<std::string>();
+        const char* own_adapter = role == "client" ? "client_adapter" : "server_adapter";
+        for (const char* field : {own_adapter, "library", "library_version", "build_options"}) {
+            da.erase(field);
+            db.erase(field);
+        }
         if(da!=db)continue;
         const auto av=groups[a]["metrics"]["elapsed_ns"]["values"].get<std::vector<double>>();
         const auto bv=groups[b]["metrics"]["elapsed_ns"]["values"].get<std::vector<double>>();
@@ -236,7 +444,10 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
                                         groups[b]["batch_stq2_range_ns"].get<double>());
         comparisons.push_back({{"group_a",a},{"group_b",b},{"difference_b_minus_a_ns",c.difference},
             {"lower_95_ns",c.lower},{"upper_95_ns",c.upper},{"distinguishable",c.distinguishable},
-            {"method","independent_percentile_bootstrap"},{"interpretation","exploratory_profile_varying_not_equivalence"},{"seed",1},{"replicates",2000},
+            {"method","independent_percentile_bootstrap"},
+            {"interpretation","exploratory_adapter_candidate_not_equivalence"},
+            {"eligibility","same_conditions_and_fixed_peer_except_measured_adapter_identity"},
+            {"seed",1},{"replicates",2000},
             {"batch_variation_warning",batch_range>std::abs(c.difference)}});
     }
     Json result={{"schema",1},{"comparisons",comparisons},{"groups",groups},{"samples",samples},{"invalid_samples",invalid},

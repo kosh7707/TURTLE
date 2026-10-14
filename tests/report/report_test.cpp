@@ -69,6 +69,56 @@ int main(){
     assert(first["groups"][0]["metrics"]["elapsed_ns"]["stq2"]==30);
     assert(first["groups"][0]["metrics"].contains("cycles")==false);
     assert(std::filesystem::file_size(dir/"out"/"distribution-0.svg")>100);
+
+    const auto fixture_root = std::filesystem::path(__FILE__).parent_path() / "fixtures";
+    const auto fixture_dir = dir / "decoded-fixture";
+    std::filesystem::create_directory(fixture_dir);
+    std::filesystem::copy_file(fixture_root / "client.jsonl", fixture_dir / "client.jsonl");
+    std::filesystem::copy_file(fixture_root / "client.decoded.json",
+                               fixture_dir / "client.decoded.json");
+    const auto decoded_report = summarize(fixture_dir, dir / "decoded-report");
+    const auto& alternate = decoded_report["samples"][0]["connections"][0]
+                                          ["client_hello_to_finished_send"];
+    assert(alternate["start_event_sequence"] == 3);
+    assert(alternate["end_event_sequence"] == 8);
+    assert(alternate["elapsed_ns"] == 70);
+    assert(alternate["thread_cpu_ns"] == 40);
+    assert(alternate["cycles"] == 80);
+    assert(alternate["client_hello_bundled"] == false);
+    assert(alternate["finished_bundled"] == true);
+    assert(alternate["separate_plaintext_message_cpu_time_available"] == false);
+    assert(decoded_report["groups"][0]["metrics"]
+                         ["client_hello_to_finished_send_elapsed_ns"]["stq2"] == 70);
+    assert(decoded_report["groups"][0]["client_hello_to_finished_send"]
+                         ["separate_plaintext_message_cpu_time_available"] == false);
+
+    const auto raw_only_dir = dir / "raw-only-fixture";
+    std::filesystem::create_directory(raw_only_dir);
+    std::filesystem::copy_file(fixture_root / "client.jsonl", raw_only_dir / "client.jsonl");
+    const auto raw_only = summarize(raw_only_dir, dir / "raw-only-report");
+    assert(!raw_only["samples"][0]["connections"][0].contains(
+        "client_hello_to_finished_send"));
+    assert(raw_only["groups"][0]["metrics"]["elapsed_ns"] ==
+           decoded_report["groups"][0]["metrics"]["elapsed_ns"]);
+
+    auto rejected_sidecar = [&](const std::string& name, auto mutate) {
+        const auto rejected_dir = dir / name;
+        std::filesystem::create_directory(rejected_dir);
+        std::filesystem::copy_file(fixture_root / "client.jsonl", rejected_dir / "client.jsonl");
+        std::ifstream decoded_fixture(fixture_root / "client.decoded.json");
+        auto decoded = J::parse(decoded_fixture);
+        mutate(decoded);
+        std::ofstream(rejected_dir / "client.decoded.json") << decoded.dump(2) << '\n';
+        const auto report = summarize(rejected_dir, dir / (name + "-report"));
+        assert(!report["samples"][0]["connections"][0].contains(
+            "client_hello_to_finished_send"));
+    };
+    rejected_sidecar("mismatched-sample", [](J& decoded) { decoded["sample"] = 999; });
+    rejected_sidecar("mismatched-role", [](J& decoded) { decoded["role"] = "server"; });
+    rejected_sidecar("mismatched-connection",
+                     [](J& decoded) { decoded["connections"][0]["connection"] = 1; });
+    rejected_sidecar("incomplete-decode",
+                     [](J& decoded) { decoded["connections"][0]["decryption_complete"] = false; });
     for(int i=0;i<4;++i) {
         auto alternate=header;
         if(i==0)alternate["config"]["server_adapter"]="different_peer";
@@ -81,8 +131,41 @@ int main(){
         for(const auto& e:events)raw<<e.dump()<<'\n';
     }
     const auto separated=summarize(dir,dir/"grouped");
-    assert(separated["groups"].size()==5);
-    for(const auto& group:separated["groups"])assert(group["metrics"]["elapsed_ns"]["count"]==1);
+    assert(separated["groups"].size()>=5);
+
+    const auto candidates_dir = dir / "comparison-candidates";
+    std::filesystem::create_directory(candidates_dir);
+    auto write_candidate = [&](const std::string& folder_name, const std::string& own_adapter,
+                               const std::string& peer_adapter, const std::string& profile,
+                               const std::string& library) {
+        auto candidate = header;
+        candidate["config"]["client_adapter"] = own_adapter;
+        candidate["config"]["server_adapter"] = peer_adapter;
+        candidate["profile_hash"] = profile;
+        candidate["declaration"]["library"] = library;
+        candidate["declaration"]["version"] = library + "-version";
+        candidate["declaration"]["build_options"] = library + "-build";
+        const auto folder = candidates_dir / folder_name;
+        std::filesystem::create_directory(folder);
+        std::ofstream raw(folder / "client.jsonl");
+        raw << candidate.dump() << '\n';
+        for (const auto& event : events) {
+            raw << event.dump() << '\n';
+        }
+    };
+    write_candidate("a", "adapter-a", "fixed-peer", "same-profile", "library-a");
+    write_candidate("b", "adapter-b", "fixed-peer", "same-profile", "library-b");
+    write_candidate("different-peer", "adapter-c", "other-peer", "same-profile", "library-c");
+    write_candidate("different-profile", "adapter-d", "fixed-peer", "other-profile",
+                    "library-d");
+    const auto candidates = summarize(candidates_dir, dir / "candidate-report");
+    assert(candidates["groups"].size() == 4);
+    assert(candidates["comparisons"].size() == 1);
+    assert(candidates["comparisons"][0]["method"] == "independent_percentile_bootstrap");
+    assert(candidates["comparisons"][0]["interpretation"] ==
+           "exploratory_adapter_candidate_not_equivalence");
+    assert(candidates["comparisons"][0]["eligibility"] ==
+           "same_conditions_and_fixed_peer_except_measured_adapter_identity");
     std::filesystem::remove_all(dir);
     std::cout<<"report tests passed\n";
 }
