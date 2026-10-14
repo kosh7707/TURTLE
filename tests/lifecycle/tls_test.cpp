@@ -20,6 +20,19 @@ int main(int argc,char** argv) {
    for(const char* sample:{"sample-000001","sample-000002"})for(const char* role:{"client","server"}) {
     std::ifstream in(std::filesystem::path(config.output_directory)/sample/(std::string(role)+".jsonl"));std::string line;std::getline(in,line);auto data=nlohmann::json::parse(line);
     if(!data.at("valid").get<bool>()||data.at("declaration").at("is_mock").get<bool>())throw std::runtime_error("not a valid real TLS sample");
+    std::vector<std::size_t> sent(config.warmups+1),received(config.warmups+1);
+    while(std::getline(in,line)) {
+     const auto event=nlohmann::json::parse(line);
+     const auto index=event.at("connection").get<std::size_t>();
+     if(event.at("call")=="negotiated" && event.at("sequence").get<std::uint64_t>()<=data.at("connections").at(index).at("end_sequence").get<std::uint64_t>())throw std::runtime_error("negotiated metadata inside measured boundary");
+     if(event.at("kind")=="CALL_END" && (event.at("call")=="app_send"||event.at("call")=="app_recv")) {
+      const auto bytes=event.at("transferred").get<std::size_t>();
+      if(event.at("requested").get<std::size_t>()==0||bytes>event.at("requested").get<std::size_t>())throw std::runtime_error("application byte fields incorrect");
+      if(event.at("result")==static_cast<int>(turtle::Step::Done)&&bytes==0)throw std::runtime_error("successful application result missing bytes");
+      (event.at("call")=="app_send"?sent:received).at(index)+=bytes;
+     }
+    }
+    for(std::size_t i=0;i<sent.size();++i)if(sent[i]!=config.tls.application_bytes||received[i]!=config.tls.application_bytes)throw std::runtime_error("application byte totals differ");
     for(const auto& c:data.at("connections"))if(c.at("negotiated").at("version")!="TLS1.3"||!c.at("application_verified").get<bool>())throw std::runtime_error("TLS or application result missing");
    }
   }

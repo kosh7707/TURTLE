@@ -41,8 +41,8 @@ struct Capture {
  std::uint64_t first_receive=0;
  bool heap_supported=false;
  model::Snapshot snapshot() noexcept {auto value=meter.read();if(!heap_supported)value.heap.reset();return value;}
- void event(model::EventKind kind, model::Location location=model::Location::Boundary, std::int64_t result=0) noexcept {
-  model::Event e; e.kind=kind;e.location=location;e.result=result;e.connection=connection;e.sequence=++sequence;e.call=call;e.call_id=call_id;e.snapshot=snapshot();buffer.append(e);
+ void event(model::EventKind kind, model::Location location=model::Location::Boundary, std::int64_t result=0, std::size_t requested=0, std::size_t transferred=0) noexcept {
+  model::Event e; e.kind=kind;e.location=location;e.result=result;e.requested=requested;e.transferred=transferred;e.connection=connection;e.sequence=++sequence;e.call=call;e.call_id=call_id;e.snapshot=snapshot();buffer.append(e);
  }
  static void observe(void* p,const transport::Observation& o) noexcept {
   auto& c=*static_cast<Capture*>(p);
@@ -57,13 +57,13 @@ struct Capture {
    if(o.kernel_realtime_ns) { e.kind=model::EventKind::KernelRx;e.location=model::Location::Kernel;e.sequence=++c.sequence;e.raw_timestamp_ns=o.kernel_realtime_ns;c.buffer.append(e); }
   }
  }
- template<class F> auto invoke(model::Call operation,F&& f) {
-  call=operation;++call_id;event(model::EventKind::CallBegin);
+ template<class F> auto invoke(model::Call operation,F&& f,std::size_t requested=0) {
+  call=operation;++call_id;event(model::EventKind::CallBegin,model::Location::Boundary,0,requested);
   auto result=f();
-  std::int64_t code=0;
-  if constexpr(std::is_same_v<decltype(result),AppResult>) code=static_cast<int>(result.step);
+  std::int64_t code=0;std::size_t transferred=0;
+  if constexpr(std::is_same_v<decltype(result),AppResult>) {code=static_cast<int>(result.step);transferred=result.bytes;}
   else if constexpr(std::is_enum_v<decltype(result)>) code=static_cast<int>(result);
-  event(model::EventKind::CallEnd,model::Location::Boundary,code);return result;
+  event(model::EventKind::CallEnd,model::Location::Boundary,code,requested,transferred);return result;
  }
  void wait(Step step,control::Waiter& waiter,control::Deadline deadline) {
   if(step!=Step::WantRead&&step!=Step::WantWrite)throw std::runtime_error("adapter operation failed");
@@ -131,24 +131,28 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
    std::unique_ptr<Connection,decltype(api.close)> tls(api.open(context.get(),io),api.close);
    capture.event(model::EventKind::OpenEnd);if(!tls)throw std::runtime_error("adapter open failed");
    control::barrier(control_waiter,deadline);
+   auto adapter_failure=[&](const char* operation) {
+    const char* detail=api.error?api.error(tls.get()):nullptr;
+    throw std::runtime_error(std::string(operation)+": "+(detail&&*detail?detail:"adapter did not provide a diagnostic"));
+   };
    connection.start_sequence=capture.sequence+1;
    for(;;) {
     if(std::chrono::steady_clock::now()>=deadline)throw std::runtime_error("handshake deadline exceeded");
     auto step=capture.invoke(model::Call::Handshake,[&]{return api.handshake_step(tls.get());});
     if(step==Step::Done)break;
+    if(step==Step::Failed)adapter_failure("handshake failed");
     capture.wait(step,*waiters[i],deadline);
    }
    connection.verification=capture.invoke(model::Call::Verification,[&]{return api.peer_verification(tls.get());});
    if(connection.verification==Verification::Failed||((role==Role::Client||config.tls.mutual_auth)&&connection.verification!=Verification::Passed))throw std::runtime_error("peer verification did not pass");
-   connection.negotiated=capture.invoke(model::Call::Negotiated,[&]{return api.negotiated(tls.get());});
-   if(!info.declaration.is_mock&&(connection.negotiated.version!="TLS1.3"||connection.negotiated.resumed||connection.negotiated.hello_retry_request))throw std::runtime_error("not a normal full TLS 1.3 handshake");
    auto application=[&](bool sending) {
     std::size_t offset=0;
     while(offset<outgoing.size()) {
      if(std::chrono::steady_clock::now()>=deadline)throw std::runtime_error("application deadline exceeded");
      const auto remaining=outgoing.size()-offset;
-     auto r=capture.invoke(sending?model::Call::AppSend:model::Call::AppRecv,[&]{return sending?api.app_send(tls.get(),outgoing.data()+offset,remaining):api.app_recv(tls.get(),incoming.data()+offset,remaining);});
-     if(r.bytes>remaining||r.step==Step::Failed)throw std::runtime_error("application operation failed");
+     auto r=capture.invoke(sending?model::Call::AppSend:model::Call::AppRecv,[&]{return sending?api.app_send(tls.get(),outgoing.data()+offset,remaining):api.app_recv(tls.get(),incoming.data()+offset,remaining);},remaining);
+     if(r.step==Step::Failed)adapter_failure(sending?"application send failed":"application receive failed");
+     if(r.bytes>remaining)throw std::runtime_error("application returned too many bytes");
      if(r.step==Step::WantRead||r.step==Step::WantWrite) {if(r.bytes)throw std::runtime_error("retry returned bytes");capture.wait(r.step,*waiters[i],deadline);continue;}
      if(!r.bytes)throw std::runtime_error("application made no progress");
      offset+=r.bytes;
@@ -159,7 +163,21 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
    connection.application_verified=true;
    connection.end_sequence=capture.sequence;
    if(role==Role::Server&&capture.first_receive)connection.start_sequence=capture.first_receive;
-   info.connections.push_back(connection);
+   // String-valued metadata and validation belong after the measured endpoint boundary.
+   connection.negotiated=capture.invoke(model::Call::Negotiated,[&]{return api.negotiated(tls.get());});
+   if(!info.declaration.is_mock) {
+    const auto& negotiated=connection.negotiated;
+    if(negotiated.version!="TLS1.3"||negotiated.resumed||negotiated.hello_retry_request)throw std::runtime_error("not a normal full TLS 1.3 handshake");
+    auto check_field=[&](const std::string& actual,const std::string& requested,const char* field) {
+     if(actual.empty())info.incomplete.push_back(std::string("negotiated ")+field+" is unobserved; requested value is not a measurement");
+     else if(actual!=requested)throw std::runtime_error(std::string("negotiated ")+field+" differs from requested profile");
+    };
+    check_field(negotiated.cipher,config.tls.cipher,"cipher");
+    check_field(negotiated.group,config.tls.group,"group");
+    check_field(negotiated.signature,config.tls.signature,"signature");
+    if((role==Role::Client||config.tls.mutual_auth)&&!negotiated.peer_certificate_present)throw std::runtime_error("required peer certificate was not observed");
+   }
+   info.connections.push_back(std::move(connection));
    control::barrier(control_waiter,deadline);
    capture.call=model::Call::Close;capture.event(model::EventKind::CloseBegin);tls.reset();capture.event(model::EventKind::CloseEnd);
    ::close(sockets[i]);sockets[i]=-1;
