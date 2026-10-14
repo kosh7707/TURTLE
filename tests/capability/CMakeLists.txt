@@ -1,0 +1,4 @@
+add_executable(turtle_capability_test capability_test.cpp)
+target_link_libraries(turtle_capability_test PRIVATE turtle_capability)
+target_compile_options(turtle_capability_test PRIVATE -UNDEBUG)
+add_test(NAME capability COMMAND turtle_capability_test)

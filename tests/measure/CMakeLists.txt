@@ -1,0 +1,4 @@
+add_executable(turtle_measure_test measure_test.cpp)
+target_link_libraries(turtle_measure_test PRIVATE turtle_measure)
+target_compile_options(turtle_measure_test PRIVATE -UNDEBUG)
+add_test(NAME measure COMMAND turtle_measure_test)
