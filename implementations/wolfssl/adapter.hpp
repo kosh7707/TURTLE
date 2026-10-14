@@ -4,6 +4,7 @@
 
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/memory.h>
 
 #include <string>
 
@@ -16,6 +17,10 @@ struct WolfContext final : Context {
     WOLFSSL_CTX* ssl_context = nullptr;
     std::string setup_error;
     bool library_initialized = false;
+    bool allocator_installed = false;
+    wolfSSL_Malloc_cb previous_malloc = nullptr;
+    wolfSSL_Free_cb previous_free = nullptr;
+    wolfSSL_Realloc_cb previous_realloc = nullptr;
 
     WolfContext(Role value_role, const TlsConfig& value_config,
                 const HostServices& value_services)

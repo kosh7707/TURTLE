@@ -2,6 +2,7 @@
 
 #include <mbedtls/error.h>
 #include <mbedtls/net_sockets.h>
+#include <mbedtls/platform.h>
 #include <mbedtls/psa_util.h>
 #include <mbedtls/ssl_ciphersuites.h>
 #include <mbedtls/version.h>
@@ -11,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <new>
@@ -76,6 +78,35 @@ constexpr char kGroup[] = "secp256r1";
 constexpr char kSignature[] = "ecdsa_secp256r1_sha256";
 constexpr char kTls13[] = "TLS1.3";
 constexpr char kNoError[] = "";
+
+// Mbed TLS's platform allocator API has no user argument. Role processes use
+// one context, so this non-owning thread-local bridge is active only for that
+// context's lifetime.
+thread_local const turtle::Allocator* active_allocator = nullptr;
+
+void* host_calloc(std::size_t count, std::size_t size) {
+    if (active_allocator == nullptr ||
+        (size != 0 && count > std::numeric_limits<std::size_t>::max() / size)) {
+        return nullptr;
+    }
+    const std::size_t bytes = count * size;
+    void* pointer = active_allocator->allocate(active_allocator->context, bytes);
+    if (pointer != nullptr) {
+        std::memset(pointer, 0, bytes);
+    }
+    return pointer;
+}
+
+void host_free(void* pointer) {
+    if (active_allocator != nullptr) {
+        active_allocator->deallocate(active_allocator->context, pointer);
+    }
+}
+
+void release_allocator() noexcept {
+    (void)mbedtls_platform_set_calloc_free(std::calloc, std::free);
+    active_allocator = nullptr;
+}
 
 bool supported_config(const turtle::Role role, const turtle::TlsConfig& config,
                       const std::span<const std::uint8_t> saved) noexcept {
@@ -256,18 +287,21 @@ turtle::Declaration declaration(const turtle::Context* base) {
     result.library = kLibraryName;
     result.version = MBEDTLS_VERSION_STRING_FULL;
     result.build_options =
-        "TLS 1.3; callback I/O; ECDSA P-256; AES-128-GCM; negotiated group and "
+        "TLS 1.3; callback I/O; ECDSA P-256; AES-128-GCM; MBEDTLS_PLATFORM_MEMORY; "
+        "negotiated group and "
         "signature inferred from single-item allow-lists; HelloRetryRequest not observed";
     result.context_description = "No resumable context; tickets are disabled";
     result.callback_io = true;
-    result.allocator_hooks = false;
+    const auto* context = static_cast<const MbedContext*>(base);
+    result.allocator_hooks = context != nullptr && context->allocator_installed;
     result.key_log = true;
     result.plaintext_hook = false;
     result.extra_threads = false;
     result.context_serialization = false;
     result.is_mock = false;
-    result.memory_note =
-        "Host allocator hooks are not implemented in this build; Mbed TLS exposes process-global hooks";
+    result.memory_note = result.allocator_hooks
+        ? "Mbed TLS allocations use host callbacks; excludes adapter C++ objects and caller buffers"
+        : "TLS allocator hooks are not installed in timing mode; TLS heap is unobserved";
     if (base == nullptr) {
         return result;
     }
@@ -280,13 +314,32 @@ turtle::Context* setup(turtle::Role role, const turtle::TlsConfig& config,
     if (!supported_config(role, config, saved)) {
         return nullptr;
     }
+    if (services.memory_mode) {
+        const auto& allocator = services.allocator;
+        if (active_allocator != nullptr || allocator.allocate == nullptr ||
+            allocator.reallocate == nullptr || allocator.deallocate == nullptr) {
+            return nullptr;
+        }
+        active_allocator = &allocator;
+        if (mbedtls_platform_set_calloc_free(host_calloc, host_free) != 0) {
+            active_allocator = nullptr;
+            return nullptr;
+        }
+    }
     auto* context = new (std::nothrow) MbedContext(role, config, services);
     if (context == nullptr) {
+        if (services.memory_mode) {
+            release_allocator();
+        }
         return nullptr;
     }
+    context->allocator_installed = services.memory_mode;
 
     if (psa_crypto_init() != PSA_SUCCESS) {
         delete context;
+        if (services.memory_mode) {
+            release_allocator();
+        }
         return nullptr;
     }
     context->psa_initialized = true;
@@ -295,6 +348,9 @@ turtle::Context* setup(turtle::Role role, const turtle::TlsConfig& config,
                                        personalization, sizeof(personalization) - 1);
     if (result != 0) {
         delete context;
+        if (services.memory_mode) {
+            release_allocator();
+        }
         return nullptr;
     }
 
@@ -305,6 +361,9 @@ turtle::Context* setup(turtle::Role role, const turtle::TlsConfig& config,
                                          MBEDTLS_SSL_PRESET_DEFAULT);
     if (result != 0) {
         delete context;
+        if (services.memory_mode) {
+            release_allocator();
+        }
         return nullptr;
     }
     mbedtls_ssl_conf_rng(&context->ssl_config, mbedtls_ctr_drbg_random, &context->drbg);
@@ -330,6 +389,9 @@ turtle::Context* setup(turtle::Role role, const turtle::TlsConfig& config,
     result = configure_credentials(*context);
     if (result != 0) {
         delete context;
+        if (services.memory_mode) {
+            release_allocator();
+        }
         return nullptr;
     }
     return context;
@@ -483,7 +545,14 @@ void close(turtle::Connection* connection) noexcept {
 
 std::vector<std::uint8_t> save(turtle::Context*) { return {}; }
 
-void teardown(turtle::Context* context) noexcept { delete static_cast<MbedContext*>(context); }
+void teardown(turtle::Context* base) noexcept {
+    auto* context = static_cast<MbedContext*>(base);
+    const bool allocator_installed = context != nullptr && context->allocator_installed;
+    delete context;
+    if (allocator_installed) {
+        release_allocator();
+    }
+}
 
 }  // namespace
 

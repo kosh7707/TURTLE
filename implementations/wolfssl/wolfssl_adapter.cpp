@@ -19,6 +19,7 @@
 namespace {
 
 using turtle::AppResult;
+using turtle::Allocator;
 using turtle::Connection;
 using turtle::Context;
 using turtle::Declaration;
@@ -38,6 +39,29 @@ constexpr const char* kCipher = "TLS_AES_128_GCM_SHA256";
 constexpr const char* kWolfCipher = "TLS13-AES128-GCM-SHA256";
 constexpr const char* kGroup = "secp256r1";
 constexpr const char* kSignature = "ecdsa_secp256r1_sha256";
+
+// wolfSSL's allocator registration has no user argument. Each role runs in a
+// fresh process, so a non-owning thread-local bridge safely scopes callbacks to
+// the one memory-mode context in that role process.
+thread_local const Allocator* active_allocator = nullptr;
+
+void* host_allocate(std::size_t size) {
+    return active_allocator == nullptr
+               ? nullptr
+               : active_allocator->allocate(active_allocator->context, size);
+}
+
+void host_deallocate(void* pointer) {
+    if (active_allocator != nullptr) {
+        active_allocator->deallocate(active_allocator->context, pointer);
+    }
+}
+
+void* host_reallocate(void* pointer, std::size_t size) {
+    return active_allocator == nullptr
+               ? nullptr
+               : active_allocator->reallocate(active_allocator->context, pointer, size);
+}
 
 void set_wolf_error(WolfConnection& connection, const char* operation, int error) {
     char detail[WOLFSSL_MAX_ERROR_SZ] = {};
@@ -190,26 +214,29 @@ bool load_identity(WolfContext& context, const std::string& certificate,
 
 const char* adapter_name() noexcept { return "wolfssl"; }
 
-Declaration declaration(const Context*) {
+Declaration declaration(const Context* base) {
     Declaration value;
     value.library = "wolfSSL";
     value.version = kWolfSslVersion;
     value.build_options =
         "TLS1.3,ECC,secp256r1,AES128-GCM,OPENSSL_EXTRA,SECRET_CALLBACK,"
-        "SESSION_TICKET,TLS13_MIDDLEBOX_COMPAT; key log is sink-only (no file); "
+        "SESSION_TICKET,TLS13_MIDDLEBOX_COMPAT,WOLFSSL_GETRANDOM; "
+        "key log is sink-only (no file); "
         "version/cipher/group/signature/resumption are queried from wolfSSL; "
         "hello_retry_request=false is inferred from the forced single P-256 key share";
     value.context_description =
         "full handshake only; session tickets disabled; HRR has no wolfSSL observation hook";
     value.callback_io = true;
-    value.allocator_hooks = false;
+    const auto* context = dynamic_cast<const WolfContext*>(base);
+    value.allocator_hooks = context != nullptr && context->allocator_installed;
     value.key_log = true;
     value.plaintext_hook = false;
     value.extra_threads = false;
     value.context_serialization = false;
     value.is_mock = false;
-    value.memory_note =
-        "Host allocator hooks are not implemented in this build; wolfSSL exposes process-global hooks";
+    value.memory_note = value.allocator_hooks
+        ? "wolfSSL allocations use host callbacks; excludes adapter C++ objects and caller buffers"
+        : "TLS allocator hooks are not installed in timing mode; TLS heap is unobserved";
     return value;
 }
 
@@ -222,6 +249,26 @@ Context* setup(Role role, const TlsConfig& config, const HostServices& services,
     context->setup_error = unsupported_reason(config, saved);
     if (!context->setup_error.empty()) {
         return context;
+    }
+    if (services.memory_mode) {
+        const auto& allocator = context->services.allocator;
+        if (active_allocator != nullptr || allocator.allocate == nullptr ||
+            allocator.reallocate == nullptr || allocator.deallocate == nullptr) {
+            context->setup_error =
+                "wolfSSL memory mode requires one context and all allocator callbacks";
+            return context;
+        }
+        (void)wolfSSL_GetAllocators(&context->previous_malloc,
+                                    &context->previous_free,
+                                    &context->previous_realloc);
+        active_allocator = &allocator;
+        if (wolfSSL_SetAllocators(host_allocate, host_deallocate,
+                                  host_reallocate) != 0) {
+            active_allocator = nullptr;
+            context->setup_error = "wolfSSL_SetAllocators failed";
+            return context;
+        }
+        context->allocator_installed = true;
     }
     if (wolfSSL_Init() != WOLFSSL_SUCCESS) {
         context->setup_error = "wolfSSL_Init failed";
@@ -494,6 +541,12 @@ void teardown(Context* base) noexcept {
     }
     if (context->library_initialized) {
         (void)wolfSSL_Cleanup();
+    }
+    if (context->allocator_installed) {
+        (void)wolfSSL_SetAllocators(context->previous_malloc,
+                                    context->previous_free,
+                                    context->previous_realloc);
+        active_allocator = nullptr;
     }
     delete context;
 }

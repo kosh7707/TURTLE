@@ -6,6 +6,7 @@
 #include <cstring>
 #include <memory>
 #include <stdexcept>
+#include <string_view>
 
 namespace turtle::openssl_adapter {
 namespace { void release_allocator(); }
@@ -29,6 +30,11 @@ void release_allocator() {
     active_allocator = nullptr;
 }
 void require(bool ok, const char* what) { if (!ok) throw std::runtime_error(what); }
+void set_error_text(Session& session, std::string_view text) noexcept {
+    const auto copied = std::min(text.size(), session.error.size() - 1);
+    std::copy_n(text.data(), copied, session.error.data());
+    session.error[copied] = '\0';
+}
 int bio_create(BIO* bio) { BIO_set_init(bio, 1); return 1; }
 int bio_destroy(BIO*) { return 1; }
 long bio_control(BIO*, int command, long, void*) { return command == BIO_CTRL_FLUSH ? 1 : 0; }
@@ -66,7 +72,7 @@ void message(int outgoing, int, int type, const void* bytes, std::size_t size, S
 }
 Step result(Session& s, int rc) {
     if (s.sink_failed) {
-        std::strcpy(s.error.data(), "capture sink exhausted");
+        set_error_text(s, "capture sink exhausted");
         return Step::Failed;
     }
     if (rc > 0) return Step::Done;
@@ -75,7 +81,7 @@ Step result(Session& s, int rc) {
     if (error == SSL_ERROR_WANT_WRITE) return Step::WantWrite;
     const auto code = ERR_peek_last_error();
     if (code) ERR_error_string_n(code, s.error.data(), s.error.size());
-    else std::strcpy(s.error.data(), "TLS operation failed or peer closed");
+    else set_error_text(s, "TLS operation failed or peer closed");
     return Step::Failed;
 }
 Context* setup(Role role, const TlsConfig& config, const HostServices& services,

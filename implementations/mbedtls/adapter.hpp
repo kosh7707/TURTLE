@@ -32,6 +32,7 @@ struct MbedContext final : Context {
     std::array<std::uint16_t, 2> signature_algorithms{
         MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256, MBEDTLS_TLS1_3_SIG_NONE};
     bool psa_initialized = false;
+    bool allocator_installed = false;
 };
 
 struct MbedConnection final : Connection {

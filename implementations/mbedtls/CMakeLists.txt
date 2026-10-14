@@ -27,6 +27,7 @@ get_filename_component(_turtle_root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 target_include_directories(turtle_adapter_mbedtls PRIVATE "${_turtle_root}/include")
 target_link_libraries(turtle_adapter_mbedtls PRIVATE
                       MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+target_compile_definitions(turtle_adapter_mbedtls PRIVATE MBEDTLS_PLATFORM_MEMORY)
 target_compile_options(turtle_adapter_mbedtls PRIVATE
                        -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
 set_target_properties(turtle_adapter_mbedtls PROPERTIES
