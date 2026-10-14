@@ -1,0 +1,3 @@
+add_executable(turtle_transport_test transport_test.cpp)
+target_link_libraries(turtle_transport_test PRIVATE turtle_transport turtle_control)
+add_test(NAME transport_normal_bytes COMMAND turtle_transport_test)

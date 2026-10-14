@@ -14,8 +14,10 @@ namespace turtle::tcp {
 
 namespace {
 
-[[noreturn]] void fail(const char* what) {
-    throw std::system_error(errno, std::generic_category(), what);
+[[noreturn]] void fail(const char* what, int fd = -1) {
+    const int error = errno;
+    if (fd >= 0) ::close(fd);
+    throw std::system_error(error, std::generic_category(), what);
 }
 
 sockaddr_in loopback(std::uint16_t port) {
@@ -32,10 +34,10 @@ Listener listen_loopback() {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) fail("socket");
     sockaddr_in addr = loopback(0);  // port 0: let the kernel pick a free port
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) < 0) fail("bind");
-    if (::listen(fd, 16) < 0) fail("listen");
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) < 0) fail("bind", fd);
+    if (::listen(fd, 16) < 0) fail("listen", fd);
     socklen_t len = sizeof addr;
-    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) < 0) fail("getsockname");
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) < 0) fail("getsockname", fd);
     return {fd, ntohs(addr.sin_port)};
 }
 
@@ -49,7 +51,7 @@ int connect_loopback(std::uint16_t port) {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) fail("socket");
     const sockaddr_in addr = loopback(port);
-    if (::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) < 0) fail("connect");
+    if (::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) < 0) fail("connect", fd);
     return fd;
 }
 

@@ -1,0 +1,3 @@
+add_executable(turtle_control_test control_test.cpp)
+target_link_libraries(turtle_control_test PRIVATE turtle_control)
+add_test(NAME control_ready_barrier COMMAND turtle_control_test)
