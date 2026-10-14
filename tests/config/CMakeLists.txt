@@ -1,0 +1,3 @@
+add_executable(turtle_config_test config_test.cpp)
+target_link_libraries(turtle_config_test PRIVATE turtle_config)
+add_test(NAME config_profiles_and_overrides COMMAND turtle_config_test)

@@ -1,52 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
-project(turtle_tests CXX)
-
-# Tests are a separate project with their own build tree; the framework
-# sources know nothing about them.
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/.. turtle)
-
+project(turtle_tests LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# The production build does not depend on the tests.
+add_subdirectory(.. framework)
 enable_testing()
-
-add_test(NAME lifecycle COMMAND turtle)
-set_tests_properties(lifecycle PROPERTIES
-  PASS_REGULAR_EXPRESSION "all roles finished"
-  TIMEOUT 10)
-
-add_test(NAME lifecycle_verification_failed
-  COMMAND ${CMAKE_COMMAND}
-    -DTURTLE_BINARY=$<TARGET_FILE:turtle>
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_failed_measurement.cmake)
-set_tests_properties(lifecycle_verification_failed PROPERTIES
-  ENVIRONMENT TURTLE_MOCK_VERIFY_FAIL=1
-  TIMEOUT 10)
-
-# A test-only implementation checks process and resource boundaries without
-# adding test behavior to the framework or the public mock implementation.
-add_executable(turtle_lifecycle_probe
-  ../src/main.cpp
-  ../src/transport/tcp.cpp
-  lifecycle_probe.cpp)
-target_compile_features(turtle_lifecycle_probe PRIVATE cxx_std_20)
-target_include_directories(turtle_lifecycle_probe PRIVATE ../include ../src)
-
-add_test(NAME lifecycle_fresh_processes
-  COMMAND ${CMAKE_COMMAND}
-    -DTURTLE_BINARY=$<TARGET_FILE:turtle_lifecycle_probe>
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_measurements.cmake)
-set_tests_properties(lifecycle_fresh_processes PROPERTIES TIMEOUT 10)
-
-add_test(NAME lifecycle_prepared_before_isolation
-  COMMAND ${CMAKE_COMMAND}
-    -DTURTLE_BINARY=$<TARGET_FILE:turtle_lifecycle_probe>
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_measurements.cmake)
-set_tests_properties(lifecycle_prepared_before_isolation PROPERTIES
-  ENVIRONMENT TURTLE_PROBE_CHECK_LIMITS=1
-  TIMEOUT 10)
-
-add_test(NAME lifecycle_failure_stops_measurements
-  COMMAND ${CMAKE_COMMAND}
-    -DTURTLE_BINARY=$<TARGET_FILE:turtle_lifecycle_probe>
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_failed_measurement.cmake)
-set_tests_properties(lifecycle_failure_stops_measurements PROPERTIES
-  ENVIRONMENT TURTLE_PROBE_VERIFY_FAIL=1
-  TIMEOUT 10)
+# Several small native tests use assert, including expressions that exercise
+# the API. Keep assertions active even when testing a Release production build.
+add_compile_options(-Wall -Wextra -Wpedantic -UNDEBUG)
+if(TURTLE_WARNINGS_AS_ERRORS)
+  add_compile_options(-Werror)
+endif()
+foreach(module config control transport measure capability record lifecycle report adapters)
+  add_subdirectory(${module})
+endforeach()
+if(TARGET turtle_interpret AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/interpret/CMakeLists.txt")
+  add_subdirectory(interpret)
+endif()
