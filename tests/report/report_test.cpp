@@ -38,6 +38,16 @@ int main(){
     auto p=partition(header,events)[0];
     assert(p["valid"]==true && p["elapsed_ns"]==30);
     assert(p["computation_ns"]==16 && p["io_ns"]==3 && p["wait_ns"]==9 && p["gap_ns"]==2);
+    for(auto& e:events) {
+        e["thread_cpu_ns"]=e["monotonic_ns"];
+        e["cycles"]=2*e["monotonic_ns"].get<unsigned>();
+        e["instructions"]=3*e["monotonic_ns"].get<unsigned>();
+    }
+    header["perf_complete"]=true;
+    auto measured=partition(header,events)[0];
+    assert(measured["thread_cpu_ns"]==30 && measured["cycles"]==60 && measured["instructions"]==90);
+    header["perf_complete"]=false;
+    assert(partition(header,events)[0]["cycles"].is_null());
     auto kernel=events.front();kernel["location"]="kernel";kernel["monotonic_ns"]=999999;
     events.insert(events.begin()+2,kernel);
     assert(partition(header,events)[0]["elapsed_ns"]==30);

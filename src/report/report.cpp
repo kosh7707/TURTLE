@@ -185,8 +185,15 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
             {"loaded_context",header.value("loaded_context_size",0)>0},
             {"library",header.at("declaration").value("library","")},
             {"library_version",header.at("declaration").value("version","")},
+            {"build_options",header.at("declaration").value("build_options","")},
+            {"run_controls",Json::object()},
             {"is_mock",header.at("declaration").value("is_mock",false)},{"correction","raw"},
             {"timing_interpretation",header.at("mode")=="timing"?"performance":"diagnostic_only"}};
+        for(const char* control:{"perf","kernel_timestamps","isolate","pin_cores","tcp_nodelay",
+            "socket_send_buffer","socket_receive_buffer","event_capacity","stream_capacity",
+            "keylog_capacity","calibration_samples"})
+            if(header.at("config").contains(control))
+                dimensions["run_controls"][control]=header.at("config").at(control);
         auto& group=collected[dimensions.dump()];group.dimensions=dimensions;
         for(const auto& p:parts) {
             for(const auto* metric:{"elapsed_ns","computation_ns","io_ns","wait_ns","gap_ns","thread_cpu_ns","cycles","instructions","heap_peak_bytes"})
@@ -215,7 +222,7 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
     for(std::size_t a=0;a<groups.size();++a)for(std::size_t b=a+1;b<groups.size();++b) {
         auto da=groups[a]["dimensions"],db=groups[b]["dimensions"];
         if(da["mode"]!="timing" || db["mode"]!="timing")continue;
-        for(const char* field:{"profile_hash","library","library_version"}){da.erase(field);db.erase(field);}
+        for(const char* field:{"profile_hash","library","library_version","build_options"}){da.erase(field);db.erase(field);}
         if(da!=db)continue;
         const auto av=groups[a]["metrics"]["elapsed_ns"]["values"].get<std::vector<double>>();
         const auto bv=groups[b]["metrics"]["elapsed_ns"]["values"].get<std::vector<double>>();
