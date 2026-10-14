@@ -8,9 +8,26 @@
 #include <stdexcept>
 
 namespace turtle::openssl_adapter {
-State::~State() { SSL_CTX_free(ssl); BIO_meth_free(method); }
+namespace { void release_allocator(); }
+State::~State() { SSL_CTX_free(ssl); BIO_meth_free(method); if (allocator_installed) release_allocator(); }
 Session::~Session() { SSL_free(ssl); }
 namespace {
+// OpenSSL's C allocator registration has no user argument. This non-owning,
+// thread-local bridge is restricted to one memory-mode role context per process.
+thread_local const Allocator* active_allocator = nullptr;
+void* allocate(std::size_t n, const char*, int) {
+    return active_allocator ? active_allocator->allocate(active_allocator->context, n) : nullptr;
+}
+void* reallocate(void* p, std::size_t n, const char*, int) {
+    return active_allocator ? active_allocator->reallocate(active_allocator->context, p, n) : nullptr;
+}
+void deallocate(void* p, const char*, int) {
+    if (active_allocator) active_allocator->deallocate(active_allocator->context, p);
+}
+void release_allocator() {
+    OPENSSL_cleanup(); // Services remain alive until all library frees complete.
+    active_allocator = nullptr;
+}
 void require(bool ok, const char* what) { if (!ok) throw std::runtime_error(what); }
 int bio_create(BIO* bio) { BIO_set_init(bio, 1); return 1; }
 int bio_destroy(BIO*) { return 1; }
@@ -67,6 +84,16 @@ Context* setup(Role role, const TlsConfig& config, const HostServices& services,
     require(config.record_size_limit == 0 && !config.certificate_compression,
             "OpenSSL adapter does not implement requested record limit or certificate compression");
     auto s = std::make_unique<State>(role, config, services);
+    if (services.memory_mode) {
+        require(!active_allocator, "OpenSSL memory mode needs one context per fresh role process");
+        require(services.allocator.allocate && services.allocator.reallocate && services.allocator.deallocate,
+                "memory mode requires all allocator callbacks");
+        require(CRYPTO_set_mem_functions(allocate, reallocate, deallocate) == 1,
+                "OpenSSL allocator hooks must be installed before library initialization");
+        active_allocator = &services.allocator;
+        s->allocator_installed = true;
+        require(OPENSSL_init_crypto(OPENSSL_INIT_NO_ATEXIT, nullptr) == 1, "OpenSSL initialization failed");
+    }
     s->ssl = SSL_CTX_new(TLS_method());
     require(s->ssl, "SSL_CTX_new failed");
     require(SSL_CTX_set_min_proto_version(s->ssl, TLS1_3_VERSION) == 1 &&
@@ -131,13 +158,16 @@ Declaration declaration(const Context* context) {
     d.build_options = OpenSSL_version(OPENSSL_CFLAGS);
     d.callback_io = s.config.framework_io; d.key_log = true; d.plaintext_hook = true;
     d.context_description = "No resumption state retained; save returns empty bytes";
-    d.memory_note = "TLS allocator hooks not installed; TLS heap is unobserved";
+    d.allocator_hooks = s.allocator_installed;
+    d.memory_note = s.allocator_installed
+        ? "OpenSSL C allocations through host callbacks; excludes adapter C++ objects and caller buffers"
+        : "TLS allocator hooks not installed in timing mode; TLS heap is unobserved";
     return d;
 }
 Negotiated negotiated(Connection* connection) {
     auto& s = *static_cast<Session*>(connection);
     Negotiated n;
-    n.version = SSL_get_version(s.ssl); n.cipher = SSL_get_cipher_name(s.ssl);
+    n.version = SSL_version(s.ssl) == TLS1_3_VERSION ? "TLS1.3" : SSL_get_version(s.ssl); n.cipher = SSL_get_cipher_name(s.ssl);
     int group = SSL_get_negotiated_group(s.ssl);
     if (group == NID_X9_62_prime256v1) n.group = "secp256r1";
     else if (group == NID_X25519) n.group = "x25519";

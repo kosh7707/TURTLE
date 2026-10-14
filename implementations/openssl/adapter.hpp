@@ -10,6 +10,7 @@ struct State final : Context {
     const HostServices& services;
     SSL_CTX* ssl = nullptr;
     BIO_METHOD* method = nullptr;
+    bool allocator_installed = false;
     State(Role r, const TlsConfig& c, const HostServices& s) : role(r), config(c), services(s) {}
     ~State() override;
 };
