@@ -1,12 +1,12 @@
 #include "lifecycle/lifecycle.hpp"
-#include <nlohmann/json.hpp>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <set>
-#include <unistd.h>
-#include <cstdlib>
 #include <iostream>
+#include <nlohmann/json.hpp>
+#include <set>
 #include <stdexcept>
+#include <unistd.h>
 using nlohmann::json;
 void require(bool value, const char* message) {
     if (!value)
@@ -32,6 +32,8 @@ int main(int argc, char** argv) {
         config.warmups = 1;
         config.perf = false;
         config.pin_cores = false;
+        config.client_cpu = 1;
+        config.server_cpu = 2;
         config.calibration_samples = 2;
         require(turtle::lifecycle::run(config) == 0, "normal lifecycle failed");
         std::set<long> pids;
@@ -39,6 +41,8 @@ int main(int argc, char** argv) {
             for (const char* role : {"client", "server"}) {
                 auto data = sample(root / "normal" / directory / (std::string(role) + ".jsonl"));
                 require(data.at("valid").get<bool>(), "invalid sample");
+                require(data.at("pinned_cpu") == -1,
+                        "disabled affinity reported requested CPU as actual");
                 pids.insert(data.at("pid").get<long>());
                 require(data.at("connections").size() == 2, "warmup connection missing");
                 require(data.at("declaration").at("is_mock").get<bool>(), "mock mislabeled");

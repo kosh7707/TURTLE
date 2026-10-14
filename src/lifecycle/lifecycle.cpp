@@ -1,23 +1,23 @@
 #include "lifecycle/lifecycle.hpp"
+#include "capability/capability.hpp"
 #include "control/control.hpp"
-#include "transport/tcp.hpp"
-#include "transport/channel.hpp"
 #include "measure/measure.hpp"
 #include "record/record.hpp"
-#include "capability/capability.hpp"
+#include "transport/channel.hpp"
+#include "transport/tcp.hpp"
+#include <algorithm>
 #include <dlfcn.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <sched.h>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
+#include <sched.h>
 #include <sstream>
 #include <stdexcept>
-#include <memory>
-#include <algorithm>
+#include <sys/socket.h>
 #include <type_traits>
+#include <unistd.h>
 namespace turtle::lifecycle {
 namespace {
 struct Module {
@@ -179,12 +179,13 @@ int endpoint(const model::RunConfig& config, Role role, std::uint64_t sample,
     try {
         info.environment = capability::inspect_environment();
         info.capabilities = meter.capabilities();
-        info.pinned_cpu = role == Role::Client ? config.client_cpu : config.server_cpu;
         if (config.pin_cores) {
+            const int requested_cpu = role == Role::Client ? config.client_cpu : config.server_cpu;
             std::string reason;
-            info.capabilities.affinity = capability::pin_to_cpu(info.pinned_cpu, reason);
-            if (!info.capabilities.affinity)
-                info.capabilities.warnings.push_back(reason);
+            if (!capability::pin_to_cpu(requested_cpu, reason))
+                throw std::runtime_error("endpoint CPU affinity failed: " + reason);
+            info.capabilities.affinity = true;
+            info.pinned_cpu = requested_cpu;
         }
         info.calibration = meter.calibrate(config.calibration_samples);
         Module module(
@@ -451,18 +452,20 @@ int run(const model::RunConfig& input) {
         ::close(listener.fd);
         ::close(pair[0]);
         ::close(pair[1]);
+        bool ok = server > 0 && client > 0;
+        std::string invalid_reason =
+            "endpoint failed or sample deadline exceeded; inspect role records";
         if (config.pin_cores) {
             std::string reason;
-            if (!capability::pin_to_cpu(config.director_cpu, reason))
-                std::cerr << reason << '\n';
+            if (!capability::pin_to_cpu(config.director_cpu, reason)) {
+                ok = false;
+                invalid_reason = "director CPU affinity failed: " + reason;
+            }
         }
-        bool ok = server > 0 && client > 0;
         if (!control::reap(server, client, ok ? deadline : std::chrono::steady_clock::now()))
             ok = false;
         std::ofstream status(std::filesystem::path(directory) / "director.txt");
-        status << (ok ? "valid\n"
-                      : "invalid: endpoint failed or sample deadline exceeded; inspect role "
-                        "records\n");
+        status << (ok ? "valid\n" : "invalid: " + invalid_reason + "\n");
         if (config.pin_cores && have_affinity)
             ::sched_setaffinity(0, sizeof original_affinity, &original_affinity);
         if (!ok)
