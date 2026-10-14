@@ -60,7 +60,7 @@ Step handshake(Connection* base) {
     return Step::Done;
 }
 Verification verify(Connection* base) {
-    auto& c = *static_cast<MockConnection*>(base);
+    const auto& c = *static_cast<MockConnection*>(base);
     if (std::getenv("TURTLE_MOCK_VERIFY_FAIL"))
         return Verification::Failed;
     return c.context->role == Role::Client || c.context->mutual ? Verification::Passed
