@@ -13,7 +13,7 @@ struct MockConnection : Connection {
     Io io;
     unsigned phase = 0;
     std::uint8_t marker = 42;
-    MockConnection(MockContext* c, Io i) : context(c), io(i) {}
+    MockConnection(MockContext* c, const Io& i) : context(c), io(i) {}
 };
 Step status(IoResult r) {
     switch (r.status) {
