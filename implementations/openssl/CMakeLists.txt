@@ -1,3 +1,8 @@
+if(TURTLE_DEPS_ROOT AND EXISTS "${TURTLE_DEPS_ROOT}/openssl")
+  set(OPENSSL_ROOT_DIR "${TURTLE_DEPS_ROOT}/openssl")
+elseif(DEFINED ENV{TURTLE_DEPS_ROOT} AND EXISTS "$ENV{TURTLE_DEPS_ROOT}/openssl")
+  set(OPENSSL_ROOT_DIR "$ENV{TURTLE_DEPS_ROOT}/openssl")
+endif()
 find_package(OpenSSL 3.0 REQUIRED)
 add_library(turtle_adapter_openssl MODULE adapter.cpp)
 target_include_directories(turtle_adapter_openssl PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../include)

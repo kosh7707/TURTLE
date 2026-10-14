@@ -8,13 +8,20 @@ if(NOT DEFINED TURTLE_SOURCE_ROOT)
       "TURTLE source tree containing include/turtle/adapter.hpp")
 endif()
 
-set(TURTLE_DEPS_ROOT "$ENV{TURTLE_DEPS_ROOT}" CACHE PATH
-    "Root of TURTLE's locally built TLS dependencies")
-if(NOT TURTLE_DEPS_ROOT)
-  message(FATAL_ERROR "Set TURTLE_DEPS_ROOT to the dependency cache root")
+if(NOT DEFINED TURTLE_DEPS_ROOT)
+  set(TURTLE_DEPS_ROOT "$ENV{TURTLE_DEPS_ROOT}" CACHE PATH
+      "Root of TURTLE's locally built TLS dependencies")
+  if(NOT TURTLE_DEPS_ROOT)
+    message(FATAL_ERROR "Set TURTLE_DEPS_ROOT to the dependency cache root")
+  endif()
 endif()
 
 set(_wolfssl_prefix "${TURTLE_DEPS_ROOT}/install/wolfssl-5.8.2-stable")
+file(STRINGS "${_wolfssl_prefix}/include/wolfssl/version.h" _wolfssl_version
+     REGEX "^#define LIBWOLFSSL_VERSION_STRING")
+if(NOT _wolfssl_version MATCHES "\"5\\.8\\.2\"")
+  message(FATAL_ERROR "Expected wolfSSL 5.8.2 under ${_wolfssl_prefix}")
+endif()
 find_package(wolfssl CONFIG REQUIRED
              PATHS "${_wolfssl_prefix}/lib/cmake/wolfssl" NO_DEFAULT_PATH)
 

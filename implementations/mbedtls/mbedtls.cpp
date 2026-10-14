@@ -1,15 +1,10 @@
-#include <turtle/adapter.hpp>
+#include "adapter.hpp"
 
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/entropy.h>
 #include <mbedtls/error.h>
 #include <mbedtls/net_sockets.h>
-#include <mbedtls/pk.h>
 #include <mbedtls/psa_util.h>
-#include <mbedtls/ssl.h>
 #include <mbedtls/ssl_ciphersuites.h>
 #include <mbedtls/version.h>
-#include <mbedtls/x509_crt.h>
 #include <psa/crypto.h>
 
 #include <algorithm>
@@ -23,7 +18,57 @@
 #include <string>
 #include <vector>
 
+namespace turtle::mbedtls_adapter {
+
+MbedContext::MbedContext(Role selected_role, const TlsConfig& selected_config,
+                         const HostServices& selected_services) noexcept
+    : role(selected_role), config(&selected_config), services(&selected_services) {
+    mbedtls_entropy_init(&entropy);
+    mbedtls_ctr_drbg_init(&drbg);
+    mbedtls_ssl_config_init(&ssl_config);
+    mbedtls_x509_crt_init(&ca);
+    mbedtls_x509_crt_init(&own_certificate);
+    mbedtls_pk_init(&own_key);
+}
+
+MbedContext::~MbedContext() {
+    mbedtls_pk_free(&own_key);
+    mbedtls_x509_crt_free(&own_certificate);
+    mbedtls_x509_crt_free(&ca);
+    mbedtls_ssl_config_free(&ssl_config);
+    mbedtls_ctr_drbg_free(&drbg);
+    mbedtls_entropy_free(&entropy);
+    if (psa_initialized) {
+        mbedtls_psa_crypto_free();
+    }
+}
+
+MbedConnection::MbedConnection(MbedContext& selected_context, const Io& selected_io) noexcept
+    : context(selected_context), io(selected_io) {
+    mbedtls_ssl_init(&ssl);
+    error_text[0] = '\0';
+}
+
+MbedConnection::~MbedConnection() { mbedtls_ssl_free(&ssl); }
+
+void MbedConnection::set_error(int code) noexcept {
+    last_error = code;
+    mbedtls_strerror(code, error_text.data(), error_text.size());
+}
+
+void MbedConnection::set_error(const char* text) noexcept {
+    last_error = -1;
+    const std::size_t length = std::min(std::strlen(text), error_text.size() - 1);
+    std::memcpy(error_text.data(), text, length);
+    error_text[length] = '\0';
+}
+
+}  // namespace turtle::mbedtls_adapter
+
 namespace {
+
+using turtle::mbedtls_adapter::MbedConnection;
+using turtle::mbedtls_adapter::MbedContext;
 
 constexpr char kLibraryName[] = "Mbed TLS";
 constexpr char kCipher[] = "TLS_AES_128_GCM_SHA256";
@@ -31,76 +76,6 @@ constexpr char kGroup[] = "secp256r1";
 constexpr char kSignature[] = "ecdsa_secp256r1_sha256";
 constexpr char kTls13[] = "TLS1.3";
 constexpr char kNoError[] = "";
-
-struct MbedContext final : turtle::Context {
-    explicit MbedContext(turtle::Role selected_role, const turtle::TlsConfig& selected_config,
-                         const turtle::HostServices& selected_services) noexcept
-        : role(selected_role), config(&selected_config), services(&selected_services) {
-        mbedtls_entropy_init(&entropy);
-        mbedtls_ctr_drbg_init(&drbg);
-        mbedtls_ssl_config_init(&ssl_config);
-        mbedtls_x509_crt_init(&ca);
-        mbedtls_x509_crt_init(&own_certificate);
-        mbedtls_pk_init(&own_key);
-    }
-
-    ~MbedContext() override {
-        mbedtls_pk_free(&own_key);
-        mbedtls_x509_crt_free(&own_certificate);
-        mbedtls_x509_crt_free(&ca);
-        mbedtls_ssl_config_free(&ssl_config);
-        mbedtls_ctr_drbg_free(&drbg);
-        mbedtls_entropy_free(&entropy);
-        if (psa_initialized) {
-            mbedtls_psa_crypto_free();
-        }
-    }
-
-    turtle::Role role;
-    const turtle::TlsConfig* config;
-    const turtle::HostServices* services;
-    mbedtls_entropy_context entropy;
-    mbedtls_ctr_drbg_context drbg;
-    mbedtls_ssl_config ssl_config;
-    mbedtls_x509_crt ca;
-    mbedtls_x509_crt own_certificate;
-    mbedtls_pk_context own_key;
-    std::array<int, 2> ciphersuites{MBEDTLS_TLS1_3_AES_128_GCM_SHA256, 0};
-    std::array<std::uint16_t, 2> groups{MBEDTLS_SSL_IANA_TLS_GROUP_SECP256R1, 0};
-    std::array<std::uint16_t, 2> signature_algorithms{
-        MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256, MBEDTLS_TLS1_3_SIG_NONE};
-    bool psa_initialized = false;
-};
-
-struct MbedConnection final : turtle::Connection {
-    MbedConnection(MbedContext& selected_context, const turtle::Io& selected_io) noexcept
-        : context(selected_context), io(selected_io) {
-        mbedtls_ssl_init(&ssl);
-        error_text[0] = '\0';
-    }
-
-    ~MbedConnection() override { mbedtls_ssl_free(&ssl); }
-
-    void set_error(int code) noexcept {
-        last_error = code;
-        mbedtls_strerror(code, error_text.data(), error_text.size());
-    }
-
-    void set_error(const char* text) noexcept {
-        last_error = -1;
-        const std::size_t length = std::min(std::strlen(text), error_text.size() - 1);
-        std::memcpy(error_text.data(), text, length);
-        error_text[length] = '\0';
-    }
-
-    MbedContext& context;
-    turtle::Io io;
-    mbedtls_ssl_context ssl;
-    std::array<char, 256> error_text{};
-    int last_error = 0;
-    bool key_log_failed = false;
-    bool handshake_done = false;
-};
 
 bool supported_config(const turtle::Role role, const turtle::TlsConfig& config,
                       const std::span<const std::uint8_t> saved) noexcept {
@@ -280,7 +255,9 @@ turtle::Declaration declaration(const turtle::Context* base) {
     turtle::Declaration result;
     result.library = kLibraryName;
     result.version = MBEDTLS_VERSION_STRING_FULL;
-    result.build_options = "TLS 1.3; callback I/O; ECDSA P-256; AES-128-GCM";
+    result.build_options =
+        "TLS 1.3; callback I/O; ECDSA P-256; AES-128-GCM; negotiated group and "
+        "signature inferred from single-item allow-lists; HelloRetryRequest not observed";
     result.context_description = "No resumable context; tickets are disabled";
     result.callback_io = true;
     result.allocator_hooks = false;
@@ -403,23 +380,25 @@ turtle::Step handshake_step(turtle::Connection* base) {
         return turtle::Step::Failed;
     }
     auto& connection = *static_cast<MbedConnection*>(base);
-    if (connection.handshake_done || mbedtls_ssl_is_handshake_over(&connection.ssl)) {
-        connection.handshake_done = true;
-        return turtle::Step::Done;
+    while (!mbedtls_ssl_is_handshake_over(&connection.ssl)) {
+        const int result = mbedtls_ssl_handshake_step(&connection.ssl);
+        if (connection.key_log_failed) {
+            connection.set_error("key log sink rejected exported TLS secrets");
+            return turtle::Step::Failed;
+        }
+        if (result == MBEDTLS_ERR_SSL_WANT_READ) {
+            return turtle::Step::WantRead;
+        }
+        if (result == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            return turtle::Step::WantWrite;
+        }
+        if (result < 0) {
+            connection.set_error(result);
+            return turtle::Step::Failed;
+        }
     }
-    const int result = mbedtls_ssl_handshake_step(&connection.ssl);
-    const turtle::Step translated = translate_result(connection, result);
-    if (translated == turtle::Step::Failed || translated == turtle::Step::WantRead ||
-        translated == turtle::Step::WantWrite) {
-        return translated;
-    }
-    if (mbedtls_ssl_is_handshake_over(&connection.ssl)) {
-        connection.handshake_done = true;
-        return turtle::Step::Done;
-    }
-    // The library completed one internal state transition without needing I/O.
-    // The runtime should call again immediately rather than poll the socket.
-    return turtle::Step::WantWrite;
+    connection.handshake_done = true;
+    return turtle::Step::Done;
 }
 
 turtle::Verification peer_verification(turtle::Connection* base) {
@@ -455,7 +434,8 @@ turtle::Negotiated negotiated(turtle::Connection* base) {
         MBEDTLS_TLS1_3_AES_128_GCM_SHA256) {
         result.cipher = kCipher;
     }
-    // These are truthful consequences of the one-element allow-lists above.
+    // Mbed TLS 3.6 does not expose these negotiated values. They are inferred
+    // from the only group and signature scheme this adapter permits.
     result.group = kGroup;
     result.signature = kSignature;
     result.resumed = false;

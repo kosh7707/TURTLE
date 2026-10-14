@@ -1,8 +1,6 @@
-#include <turtle/adapter.hpp>
+#include "adapter.hpp"
 
-#include <wolfssl/options.h>
 #include <wolfssl/error-ssl.h>
-#include <wolfssl/ssl.h>
 #include <wolfssl/wolfio.h>
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/openssl/evp.h>
@@ -32,36 +30,14 @@ using turtle::Role;
 using turtle::Step;
 using turtle::TlsConfig;
 using turtle::Verification;
+using turtle::wolfssl_adapter::WolfConnection;
+using turtle::wolfssl_adapter::WolfContext;
 
 constexpr const char* kWolfSslVersion = LIBWOLFSSL_VERSION_STRING;
 constexpr const char* kCipher = "TLS_AES_128_GCM_SHA256";
 constexpr const char* kWolfCipher = "TLS13-AES128-GCM-SHA256";
 constexpr const char* kGroup = "secp256r1";
 constexpr const char* kSignature = "ecdsa_secp256r1_sha256";
-
-struct WolfContext final : Context {
-    Role role;
-    TlsConfig config;
-    HostServices services;
-    WOLFSSL_CTX* ssl_context = nullptr;
-    std::string setup_error;
-    bool library_initialized = false;
-
-    WolfContext(Role value_role, const TlsConfig& value_config,
-                const HostServices& value_services)
-        : role(value_role), config(value_config), services(value_services) {}
-};
-
-struct WolfConnection final : Connection {
-    WolfContext* context;
-    Io io;
-    WOLFSSL* ssl = nullptr;
-    std::string last_error;
-    bool handshake_done = false;
-
-    WolfConnection(WolfContext* value_context, const Io& value_io)
-        : context(value_context), io(value_io) {}
-};
 
 void set_wolf_error(WolfConnection& connection, const char* operation, int error) {
     char detail[WOLFSSL_MAX_ERROR_SZ] = {};
@@ -220,8 +196,11 @@ Declaration declaration(const Context*) {
     value.version = kWolfSslVersion;
     value.build_options =
         "TLS1.3,ECC,secp256r1,AES128-GCM,OPENSSL_EXTRA,SECRET_CALLBACK,"
-        "SESSION_TICKET,TLS13_MIDDLEBOX_COMPAT; key log is sink-only (no file)";
-    value.context_description = "full handshake only; session tickets disabled";
+        "SESSION_TICKET,TLS13_MIDDLEBOX_COMPAT; key log is sink-only (no file); "
+        "version/cipher/group/signature/resumption are queried from wolfSSL; "
+        "hello_retry_request=false is inferred from the forced single P-256 key share";
+    value.context_description =
+        "full handshake only; session tickets disabled; HRR has no wolfSSL observation hook";
     value.callback_io = true;
     value.allocator_hooks = false;
     value.key_log = true;
@@ -230,7 +209,7 @@ Declaration declaration(const Context*) {
     value.context_serialization = false;
     value.is_mock = false;
     value.memory_note =
-        "Host allocator hooks are not used because wolfSSL allocators are process-global";
+        "Host allocator hooks are not implemented in this build; wolfSSL exposes process-global hooks";
     return value;
 }
 
