@@ -189,6 +189,9 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
             {"library_version",header.at("declaration").value("version","")},
             {"build_options",header.at("declaration").value("build_options","")},
             {"run_controls",Json::object()},
+            {"client_adapter",header.at("config").value("client_adapter","")},
+            {"server_adapter",header.at("config").value("server_adapter","")},
+            {"pinned_cpu",header.value("pinned_cpu",-1)},
             {"is_mock",header.at("declaration").value("is_mock",false)},{"correction","raw"},
             {"timing_interpretation",header.at("mode")=="timing"?"performance":"diagnostic_only"}};
         for(const char* control:{"perf","kernel_timestamps","isolate","pin_cores","tcp_nodelay",
@@ -233,7 +236,7 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
                                         groups[b]["batch_stq2_range_ns"].get<double>());
         comparisons.push_back({{"group_a",a},{"group_b",b},{"difference_b_minus_a_ns",c.difference},
             {"lower_95_ns",c.lower},{"upper_95_ns",c.upper},{"distinguishable",c.distinguishable},
-            {"method","independent_percentile_bootstrap"},{"seed",1},{"replicates",2000},
+            {"method","independent_percentile_bootstrap"},{"interpretation","exploratory_profile_varying_not_equivalence"},{"seed",1},{"replicates",2000},
             {"batch_variation_warning",batch_range>std::abs(c.difference)}});
     }
     Json result={{"schema",1},{"comparisons",comparisons},{"groups",groups},{"samples",samples},{"invalid_samples",invalid},

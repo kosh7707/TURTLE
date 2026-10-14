@@ -69,6 +69,20 @@ int main(){
     assert(first["groups"][0]["metrics"]["elapsed_ns"]["stq2"]==30);
     assert(first["groups"][0]["metrics"].contains("cycles")==false);
     assert(std::filesystem::file_size(dir/"out"/"distribution-0.svg")>100);
+    for(int i=0;i<4;++i) {
+        auto alternate=header;
+        if(i==0)alternate["config"]["server_adapter"]="different_peer";
+        if(i==1)alternate["pinned_cpu"]=3;
+        if(i==2)alternate["config"]["perf"]=true;
+        if(i==3)alternate["declaration"]["build_options"]="different_build";
+        auto folder=dir/std::to_string(i);
+        std::filesystem::create_directory(folder);
+        std::ofstream raw(folder/"client.jsonl");raw<<alternate.dump()<<'\n';
+        for(const auto& e:events)raw<<e.dump()<<'\n';
+    }
+    const auto separated=summarize(dir,dir/"grouped");
+    assert(separated["groups"].size()==5);
+    for(const auto& group:separated["groups"])assert(group["metrics"]["elapsed_ns"]["count"]==1);
     std::filesystem::remove_all(dir);
     std::cout<<"report tests passed\n";
 }
