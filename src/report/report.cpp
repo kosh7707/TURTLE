@@ -176,7 +176,7 @@ Json summarize(const std::filesystem::path& input,const std::filesystem::path& o
         for(const auto& p:parts) valid=valid && p.value("valid",false);
         if(parts.empty()) valid=false;
         samples.push_back({{"path",path.string()},{"sample",header.at("sample")},
-            {"role",header.at("role")},{"valid",valid},{"connections",parts}});
+            {"role",header.at("role")},{"valid",valid},{"invalid_reason",header.value("invalid_reason","")},{"connections",parts}});
         if(!valid){++invalid;continue;}
         Json dimensions={{"role",header.at("role")},{"profile_hash",header.at("profile_hash")},
             {"environment_hash",header.at("environment_hash")},{"mode",header.at("mode")},

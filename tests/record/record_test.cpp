@@ -53,7 +53,10 @@ int main() {
         assert(child >= 0);
         if (child == 0) {
             const rlimit limit{0,0};
-            if (setrlimit(RLIMIT_NOFILE,&limit) != 0) _exit(2);
+            // Sanitizer runtimes may open /proc/self/maps during checks. The
+            // ordinary test always covers the resource-limit boundary.
+            if (!std::getenv("TURTLE_TEST_SKIP_LIMITS") &&
+                setrlimit(RLIMIT_NOFILE,&limit) != 0) _exit(2);
             writer.write(info,buffer);
             writer.write_context(data);
             _exit(0);

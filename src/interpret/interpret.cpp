@@ -263,7 +263,7 @@ Json analyze(const std::filesystem::path& raw,const std::filesystem::path& outpu
             for(const auto& message:decoded[client_direction?"client_sent":"server_sent"]["messages"]) {
                 bool overlaps=false;
                 for(const auto& range:message["record_stream_ranges"])
-                    overlaps=overlaps||(range["begin"].get<std::uint64_t>()<end &&
+                    overlaps=overlaps||(end>begin && range["begin"].get<std::uint64_t>()<end &&
                                        range["end"].get<std::uint64_t>()>begin);
                 if(overlaps)names.push_back(message["name"]);
             }
