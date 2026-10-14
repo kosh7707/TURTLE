@@ -8,6 +8,7 @@
 #include <dlfcn.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <sched.h>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -59,9 +60,9 @@ struct Capture {
   call=operation;++call_id;event(model::EventKind::CallBegin);
   auto result=f();event(model::EventKind::CallEnd);return result;
  }
- void wait(Step step,int fd,control::Deadline deadline) {
+ void wait(Step step,control::Waiter& waiter,control::Deadline deadline) {
   if(step!=Step::WantRead&&step!=Step::WantWrite)throw std::runtime_error("adapter operation failed");
-  event(model::EventKind::WaitBegin);control::wait(fd,step==Step::WantWrite,deadline);event(model::EventKind::WaitEnd);
+  event(model::EventKind::WaitBegin);waiter.wait(step==Step::WantWrite,deadline);event(model::EventKind::WaitEnd);
  }
 };
 bool keylog(void* p,const char* line,std::size_t size) noexcept {return static_cast<Capture*>(p)->buffer.append_keylog({line,size});}
@@ -79,6 +80,8 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
  model::SampleInfo info;info.sample=sample;info.batch=config.batch;info.role=role;info.pid=::getpid();info.config=config;
  measure::Meter meter(config.mode,config.perf);Capture capture{meter,buffer};
  std::vector<int> sockets; sockets.reserve(count);
+ std::vector<std::unique_ptr<control::Waiter>> waiters;waiters.reserve(count);
+ control::Waiter control_waiter(control_fd);
  try {
   info.environment=capability::inspect_environment();info.capabilities=meter.capabilities();info.calibration=meter.calibrate(config.calibration_samples);
   info.pinned_cpu=role==Role::Client?config.client_cpu:config.server_cpu;
@@ -97,7 +100,7 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
   if(!config.tls.framework_io) {info.observation_level="library-only";info.incomplete.push_back("native socket I/O has no framework byte or kernel capture");}
   if(info.declaration.is_mock)info.incomplete.push_back("mock: no TLS encryption or certificate verification");
   for(std::size_t i=0;i<count;++i) {
-   int fd=role==Role::Server?tcp::accept_one(listener):tcp::connect_loopback(port);sockets.push_back(fd);
+   int fd=role==Role::Server?tcp::accept_one(listener):tcp::connect_loopback(port);sockets.push_back(fd);waiters.push_back(std::make_unique<control::Waiter>(fd));
    bool stamps=transport::configure(fd,config.tcp_nodelay,config.socket_send_buffer,config.socket_receive_buffer,config.kernel_timestamps);
    info.capabilities.kernel_timestamp_configured=stamps;
    if(auto reason=tcp::check_ready(fd);!reason.empty())throw std::runtime_error(reason);
@@ -106,7 +109,7 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
   std::vector<std::uint8_t> outgoing(config.tls.application_bytes),incoming(config.tls.application_bytes);
   for(std::size_t i=0;i<outgoing.size();++i)outgoing[i]=static_cast<std::uint8_t>((i+config.seed)%251);
   info.connections.reserve(count);
-  control::barrier(control_fd,deadline);
+  control::barrier(control_waiter,deadline);
   if(config.isolate)control::isolate();
   info.clock_start=measure::clock_pair();capture.event(model::EventKind::TcpReady);
   for(std::size_t i=0;i<count;++i) {
@@ -116,13 +119,13 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
    capture.call=model::Call::Open;capture.event(model::EventKind::OpenBegin);
    std::unique_ptr<Connection,decltype(api.close)> tls(api.open(context.get(),io),api.close);
    capture.event(model::EventKind::OpenEnd);if(!tls)throw std::runtime_error("adapter open failed");
-   control::barrier(control_fd,deadline);
+   control::barrier(control_waiter,deadline);
    connection.start_sequence=capture.sequence+1;
    for(;;) {
     if(std::chrono::steady_clock::now()>=deadline)throw std::runtime_error("handshake deadline exceeded");
     auto step=capture.invoke(model::Call::Handshake,[&]{return api.handshake_step(tls.get());});
     if(step==Step::Done)break;
-    capture.wait(step,sockets[i],deadline);
+    capture.wait(step,*waiters[i],deadline);
    }
    connection.verification=capture.invoke(model::Call::Verification,[&]{return api.peer_verification(tls.get());});
    if(connection.verification==Verification::Failed||((role==Role::Client||config.tls.mutual_auth)&&connection.verification!=Verification::Passed))throw std::runtime_error("peer verification did not pass");
@@ -135,7 +138,7 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
      const auto remaining=outgoing.size()-offset;
      auto r=capture.invoke(sending?model::Call::AppSend:model::Call::AppRecv,[&]{return sending?api.app_send(tls.get(),outgoing.data()+offset,remaining):api.app_recv(tls.get(),incoming.data()+offset,remaining);});
      if(r.bytes>remaining||r.step==Step::Failed)throw std::runtime_error("application operation failed");
-     if(r.step==Step::WantRead||r.step==Step::WantWrite) {if(r.bytes)throw std::runtime_error("retry returned bytes");capture.wait(r.step,sockets[i],deadline);continue;}
+     if(r.step==Step::WantRead||r.step==Step::WantWrite) {if(r.bytes)throw std::runtime_error("retry returned bytes");capture.wait(r.step,*waiters[i],deadline);continue;}
      if(!r.bytes)throw std::runtime_error("application made no progress");
      offset+=r.bytes;
     }
@@ -146,7 +149,7 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
    connection.end_sequence=capture.sequence;
    if(role==Role::Server&&capture.first_receive)connection.start_sequence=capture.first_receive;
    info.connections.push_back(connection);
-   control::barrier(control_fd,deadline);
+   control::barrier(control_waiter,deadline);
    capture.call=model::Call::Close;capture.event(model::EventKind::CloseBegin);tls.reset();capture.event(model::EventKind::CloseEnd);
    ::close(sockets[i]);sockets[i]=-1;
   }
@@ -164,7 +167,8 @@ int endpoint(const model::RunConfig& config,Role role,std::uint64_t sample,const
 }
 int run(const model::RunConfig& input) {
  auto config=input;auto environment=capability::inspect_environment();capability::choose_cpus(config,environment);
- if(config.pin_cores){std::string reason;if(!capability::pin_to_cpu(config.director_cpu,reason))std::cerr<<reason<<'\n';}
+ cpu_set_t original_affinity;
+ const bool have_affinity=::sched_getaffinity(0,sizeof original_affinity,&original_affinity)==0;
  std::filesystem::create_directories(config.output_directory);
  for(std::uint64_t sample=1;sample<=config.samples;++sample) {
   std::ostringstream name;name<<"sample-"<<std::setw(6)<<std::setfill('0')<<sample;
@@ -179,11 +183,14 @@ int run(const model::RunConfig& input) {
    try {result=endpoint(config,role,sample,directory,role==Role::Server?listener.fd:-1,listener.port,pair[index],deadline);}catch(const std::exception& e){std::cerr<<model::name(role)<<": "<<e.what()<<'\n';}
    ::close(pair[index]);::_exit(result);
   };
+  if(config.pin_cores&&have_affinity&&::sched_setaffinity(0,sizeof original_affinity,&original_affinity))throw std::runtime_error("cannot restore director affinity before fork");
   auto server=spawn(Role::Server);auto client=server<0?-1:spawn(Role::Client);
   ::close(listener.fd);::close(pair[0]);::close(pair[1]);
+  if(config.pin_cores){std::string reason;if(!capability::pin_to_cpu(config.director_cpu,reason))std::cerr<<reason<<'\n';}
   bool ok=server>0&&client>0;
   if(!control::reap(server,client,ok?deadline:std::chrono::steady_clock::now()))ok=false;
   std::ofstream status(std::filesystem::path(directory)/"director.txt");status<<(ok?"valid\n":"invalid: endpoint failed or sample deadline exceeded; inspect role records\n");
+  if(config.pin_cores&&have_affinity)::sched_setaffinity(0,sizeof original_affinity,&original_affinity);
   if(!ok)return 1;
  }
  return 0;
