@@ -104,10 +104,10 @@ python3 scripts/run-study.py --build build --pki pki/default \
 
 | 자료 | 직접 확인한 범위 |
 |---|---|
-| `results/mock-ca-goal/g002-build.log` | lookup/config/transport/capability 계약을 생산·시험 빌드에 연결했습니다. |
-| `results/mock-ca-goal/g002-verify.log` | `config_profiles_and_overrides`, `transport_normal_bytes`, `capability`, `lookup_contract`, `lookup_real_tcp` 5개 대상을 각각 20회 실행해 모두 통과했습니다. 실제 TCP cold/warm 조회는 입력 원본 PEM 바이트를 사용했습니다. 이 자체는 TLS 인증서 검증 증거가 아닙니다. |
-| `results/mock-ca-goal/service-record-verify.log` | `service_record`, `attempt_record`를 각각 20회 실행해 모두 통과했습니다. 자식 서비스 schema와 parent attempt 분모 기록의 단위 증거입니다. |
-| `results/mock-ca-goal/after-shared-contracts-and-heap.log` | 공유 계약과 heap tracker 변경 뒤 당시 전체 45개 시험이 단회 통과했고 11개 부품의 정적 include 경계·순환 검사도 통과했습니다. 이후 추가된 lifecycle/netem/보고 변경의 최종 전체 검증은 아닙니다. |
+| `results/mock-ca-goal/g002-build.log` | 조회/config/transport/capability 계약을 생산·시험 빌드에 연결했습니다. |
+| `results/mock-ca-goal/g002-verify.log` | `config_profiles_and_overrides`, `transport_normal_bytes`, `capability`, `lookup_contract`, `lookup_real_tcp` 5개 대상을 각각 20회 실행해 모두 통과했습니다. 실제 TCP의 차가운 캐시·준비된 캐시 조회는 입력 원본 PEM 바이트를 사용했습니다. 이 자체는 TLS 인증서 검증 증거가 아닙니다. |
+| `results/mock-ca-goal/service-record-verify.log` | `service_record`, `attempt_record`를 각각 20회 실행해 모두 통과했습니다. 자식 서비스 `schema`와 상위 프로세스의 시도 분모 기록의 단위 증거입니다. |
+| `results/mock-ca-goal/after-shared-contracts-and-heap.log` | 공유 계약과 힙 추적기 변경 뒤 당시 전체 45개 시험이 단회 통과했고 11개 부품의 정적 include 경계·순환 검사도 통과했습니다. 이후 추가된 수명주기·netem·보고 변경의 최종 전체 검증은 아닙니다. |
 
 첫 전체 재검사는 `results/mock-ca-goal/g003-full-check-first.log`에 보존했습니다. 55개 중 51개가 통과하고 4개가 실패했으므로 전체 성공 기록이 아닙니다.
 
@@ -127,40 +127,40 @@ python3 scripts/run-study.py --build build --pki pki/default \
 
 `scripts/make-pki.sh`는 이제 발급 시작 시각을 한 번만 읽고 root·intermediate·leaf 전체에 같은 유효 기간을 사용합니다. `notBefore`는 발급 시각보다 300초 앞, `notAfter`는 발급 시각보다 3,650일 뒤입니다. OpenSSL 3.0에서도 명시적 시작·종료 시각을 지정할 수 있도록 `openssl ca`를 사용하며 정상 `openssl verify`를 유지합니다.
 
-ECDSA P-256·RSA-2048·Ed25519 잎과 체인 길이 1~3의 9조합을 각각 두 번 system OpenSSL 3.0과 고정 OpenSSL 3.5에서 확인했고 모두 통과했습니다. 추가 시험은 `date`가 발급 과정에 돌려주는 시각만 실제 검증 시각보다 240초 앞당겼고 host 시계를 바꾸지 않았습니다. 그 상태에서 만든 인증서도 실제 시각의 정상 검증을 통과했습니다. 이 결과는 이전 `certificate is not yet valid` 원인을 수정했음을 보여 주지만, `results/validation-20261015-resume/check-45-repeat20.log`의 과거 실패 사실을 지우지는 않습니다.
+ECDSA P-256·RSA-2048·Ed25519 잎과 체인 길이 1~3의 9조합을 각각 두 번 system OpenSSL 3.0과 고정 OpenSSL 3.5에서 확인했고 모두 통과했습니다. 추가 시험은 `date`가 발급 과정에 돌려주는 시각만 실제 검증 시각보다 240초 앞당겼고 호스트 시계를 바꾸지 않았습니다. 그 상태에서 만든 인증서도 실제 시각의 정상 검증을 통과했습니다. 이 결과는 이전 `certificate is not yet valid` 원인을 수정했음을 보여 주지만, `results/validation-20261015-resume/check-45-repeat20.log`의 과거 실패 사실을 지우지는 않습니다.
 
 ## 고정 Mock CA·netem 실제 검증
 
-N05를 포함한 묶음은 조건을 결과에 맞춰 바꾸거나 loss 조건을 재실행하지 않고 정확히 한 번 수행했습니다. 최종 기준은 `results/mock-ca-goal/netem-verify-final/verification-manifest.json`이며 `status=complete`입니다.
+N05를 포함한 묶음은 조건을 결과에 맞춰 바꾸거나 손실 조건을 재실행하지 않고 정확히 한 번 수행했습니다. 최종 기준은 `results/mock-ca-goal/netem-verify-final/verification-manifest.json`이며 `status=complete`입니다.
 
-공개 객체는 ECDSA P-256 3인증서 `server-chain.pem`의 원본 1,890바이트, `fnv1a64:58fddee27893d105`였습니다. 조회 응답은 이 원본과 byte-for-byte 비교해 cache insert한 뒤 `USABLE_OBJECT` 이후 stock OpenSSL TLS를 시작했습니다. TLS는 계속 표준 Certificate 메시지와 인증서 검증을 사용합니다. 실제 인증서 압축·생략·캐싱 기법을 구현했다는 증거가 아닙니다.
+공개 객체는 ECDSA P-256 인증서 3개를 담은 `server-chain.pem`의 원본 1,890바이트, `fnv1a64:58fddee27893d105`였습니다. 조회 응답은 이 원본과 바이트 단위로 비교해 캐시에 삽입한 뒤 `USABLE_OBJECT` 이후 수정하지 않은 OpenSSL TLS를 시작했습니다. TLS는 계속 표준 Certificate 메시지와 인증서 검증을 사용합니다. 실제 인증서 압축·생략·캐싱 기법을 구현했다는 증거가 아닙니다.
 
 | 조건 | 결과 | 검증 의미 |
 |---|---|---|
-| baseline | 8/8 success | qdisc 없는 격리 topology 기준 |
-| zero | 8/8 success | 네 방향 netem delay/loss 0 |
-| CA→client 20ms | 8/8 success | CA 경로 지연 readback과 흐름 |
+| `baseline` | 8/8 success | qdisc 없는 격리 토폴로지 기준 |
+| `zero` | 8/8 success | 네 방향 netem 지연·손실 0 |
+| CA→client 20ms | 8/8 success | CA 경로 지연 적용값 재조회와 흐름 |
 | TLS server→client 20ms | 8/8 success | TLS 경로 선택성 |
-| CA→client 5ms·20% loss | **64/64 success** | 고정 N05 loss gate |
-| CA→client 1000ms, timeout 100ms | 3/3 timeout | timeout 분모와 결측 보존 |
+| CA→client 5ms·20% loss | **64/64 success** | 고정 N05 손실 통과 조건 |
+| CA→client 1000ms, timeout 100ms | 3/3 timeout | 시간 초과 분모와 결측 보존 |
 | fixed snapshot warm hit | 1/1 success, request 0 | 준비 TCP와 응용 조회 0건 구별 |
 
-N05의 scenario qdisc drop 차이 합계는 94, 같은 CA 흐름의 `TCP_INFO.total_retrans` 차이 합계는 58입니다. `packets.jsonl`에는 AF_PACKET packet 행 4,148개가 있습니다. 이는 router veth에서 본 skb이며 ingress/egress 중복을 포함할 수 있어 물리 패킷 수나 고유 패킷 수로 해석하지 않습니다.
+N05의 시나리오 qdisc 커널 패킷 버퍼 폐기 차이 합계는 94, 같은 CA 흐름의 `TCP_INFO.total_retrans` 차이 합계는 58입니다. `packets.jsonl`에는 AF_PACKET 패킷 행 4,148개가 있습니다. 이는 router veth에서 본 커널 패킷 버퍼이며 들어오는 방향과 나가는 방향에서 같은 통신이 중복 관측될 수 있어 물리 패킷 수나 고유 패킷 수로 해석하지 않습니다.
 
-timeout 원장은 requested=started=timeout=3을 보존하고 missing artifact 9개를 열거했습니다. 끝나지 않은 phase는 partial window와 `:missing` observation ID로 남았습니다. 세 attempt 모두 `secondary_reasons`에 `owned child required SIGKILL after cleanup grace`가 있어 실제 SIGKILL과 소유 자식 reap 경로를 실행했습니다. 250ms는 SIGKILL 뒤 운영체제 회수를 기다리는 **최대 budget**이며 실제 소요 시간을 측정한 값이 아닙니다. N05 loss 64 attempts에는 강제 kill이 없었습니다. wait/reap가 합성 EIO로 끝나 회수를 증명할 수 없는 분기는 통제된 wrapper 시험으로 확인했습니다.
+시간 초과 원장은 `requested=started=timeout=3`을 보존하고 누락 산출물 9개를 열거했습니다. 끝나지 않은 단계는 부분 구간과 `:missing` 관측 ID로 남았습니다. 세 시도 모두 `secondary_reasons`에 `owned child required SIGKILL after cleanup grace`가 있어 실제 SIGKILL과 소유 자식 회수 경로를 실행했습니다. 250ms는 SIGKILL 뒤 운영체제 회수를 기다리는 **최대 한도**이며 실제 소요 시간을 측정한 값이 아닙니다. N05 손실 조건 64개 시도에는 강제 종료가 없었습니다. 대기·회수가 합성 EIO로 끝나 회수를 증명할 수 없는 분기는 통제된 시스템 호출 대역 시험으로 확인했습니다.
 
-일곱 실행은 모두 network integrity gate를 통과했습니다. host network identity의 전후가 같았고, 소유 observer/helper가 회수됐으며 namespace FD와 pipe FD가 닫혔습니다. MTU 1500 및 여덟 interface의 TSO/GSO/GRO off readback도 요청과 일치했습니다. non-null loss seed는 지원되지 않는 조건으로 명시적으로 거절됐습니다.
+일곱 실행은 모두 네트워크 무결성 통과 조건을 충족했습니다. 호스트 네트워크 식별값의 전후가 같았고, 소유 관측자·보조 프로세스가 회수됐으며 이름공간 FD와 pipe FD가 닫혔습니다. MTU 1500 및 interface 여덟 개의 TSO/GSO/GRO 끔 적용값 재조회도 요청과 일치했습니다. `loss_seed`의 `null`이 아닌 값은 지원되지 않는 조건으로 명시적으로 거절됐습니다.
 
 ## 최종 G005 오프라인 보고
 
 N05를 다시 실행하지 않고 보존한 일곱 조건의 원자료를 최신 빌드로 다시 해석·요약했습니다.
 
 - `results/mock-ca-goal/netem-final-reports.log`: 조건별 보고서와 합산 보고서 생성을 확인합니다.
-- `results/mock-ca-goal/netem-verify-final/report-final/lookup-summary.json`: requested=started=100, success=97, timeout=3, attempt table 100행, connection table 100행, joined rows 100행입니다. 각 조건은 자기 분모를 유지합니다.
-- 성공한 network attempt는 setup/scenario/cleanup begin/end의 정확히 여섯 observation 참조, host unchanged와 owned cleanup이 모두 확인돼야 비교 적격입니다. timeout 3건은 자동 비교와 성공 분포에서 제외됩니다.
-- malformed ledger, 누락된 참조, host 변경이나 cleanup 실패는 fail closed입니다. loopback metric은 설명용으로 보존하지만 network comparison eligibility와 분리합니다.
-- `results/mock-ca-goal/netem-interpret-final.log`: 유효 TLS 역할 파일 194개를 모두 해독했습니다. timeout에서 missing/invalid인 역할 파일 6개는 결측으로 보존하고 성공으로 승격하지 않았습니다.
-- `results/mock-ca-goal/netem-verify-final/latency-diagnostics.json`: 조건별 remote lookup 중앙값은 모두 `diagnostic_only`입니다. latency 임계값으로 gate를 판정하지 않았고 성능 논문 주장으로 사용하지 않습니다.
+- `results/mock-ca-goal/netem-verify-final/report-final/lookup-summary.json`: `requested=started=100`, `success=97`, `timeout=3`이며 시도·연결·결합 행이 각각 100개입니다. 각 조건은 자기 분모를 유지합니다.
+- 성공한 네트워크 시도는 셋업·시나리오·정리 시작과 끝의 정확히 여섯 관측 참조, 호스트 불변과 소유 자원 정리가 모두 확인돼야 비교 적격입니다. 시간 초과 3건은 자동 비교와 성공 분포에서 제외됩니다.
+- 손상된 원장, 누락된 참조, 호스트 변경이나 정리 실패는 보수적으로 실패합니다. loopback 지표는 설명용으로 보존하지만 네트워크 비교 적격성과 분리합니다.
+- `results/mock-ca-goal/netem-interpret-final.log`: 유효 TLS 역할 파일 194개를 모두 해독했습니다. 시간 초과에서 누락되거나 유효하지 않은 역할 파일 6개는 결측으로 보존하고 성공으로 승격하지 않았습니다.
+- `results/mock-ca-goal/netem-verify-final/latency-diagnostics.json`: 조건별 원격 조회 중앙값은 모두 `diagnostic_only`입니다. 지연 임계값으로 통과 여부를 판정하지 않았고 성능 논문 주장으로 사용하지 않습니다.
 
 G005의 구현·고정 실행·보고를 완료했습니다.
 
@@ -171,28 +171,28 @@ G005의 구현·고정 실행·보고를 완료했습니다.
 | `results/mock-ca-goal/final-repeat20.log` | 경고를 오류로 처리한 빌드에서 57개 시험을 각각 20회, 총 **1,140회** 실행해 실패 0건으로 통과했습니다. 11개 부품 include 경계 검사도 통과했습니다. |
 | `results/mock-ca-goal/final-static.log` | 외부 소스를 제외한 생산 번역 단위 21개의 cppcheck·clang-tidy가 통과했습니다. |
 | `results/mock-ca-goal/report-recompute.log` | 보존 원자료에서 다시 만든 `summary.json`과 `lookup-summary.json`이 각각 최종 파일과 정확히 같은 JSON임을 확인했습니다. |
-| `results/mock-ca-goal/netem-verify-final/verification-manifest.json` | N05를 한 번만 실행한 기존 증거가 그대로 유지됐습니다. qdisc drop 94, CA 재전송 58, aggregate 100/97/3과 최신 network-integrity 규칙을 보존합니다. |
-| 독립 최종 검토 | native code review는 APPROVE, 지적 0건이었고 architecture review는 CLEAR로 모든 invariant를 확인해 추가 수리가 없었습니다. |
-| bounded cleanup 최종 감사 | 남아 있던 fallback escalation을 모두 확인했고 제품 코드 수정이 필요한 항목은 없었습니다. |
+| `results/mock-ca-goal/netem-verify-final/verification-manifest.json` | N05를 한 번만 실행한 기존 증거가 그대로 유지됐습니다. qdisc 폐기 94, CA 재전송 58, 합산 100/97/3과 최신 네트워크 무결성 규칙을 보존합니다. |
+| 독립 최종 검토 | 소스 검토는 APPROVE, 구조 검토는 CLEAR였으며 추가 수리 요구가 없었습니다. |
+| 제한된 정리 최종 감사 | 남아 있던 대체 판독 확장을 모두 확인했고 제품 코드 수정이 필요한 항목은 없었습니다. |
 
-G001~G006의 요구 증거를 모두 확인해 검증 완료로 표시합니다. 실제 인증서 생략·압축·캐싱 기법, ACME/OCSP, 스택·NIC 계측, 물리 Linux perf 정확도와 성능 결론은 이 완료 범위에 포함하지 않습니다. `latency-diagnostics.json`을 포함한 데이터 유래 가설은 진단용이며 출판 성능 주장으로 승격하지 않습니다.
+G001~G006의 요구 증거를 모두 확인해 검증 완료로 표시합니다. 실제 인증서 생략·압축·캐싱 기법, ACME/OCSP, 스택·NIC 계측, 물리 Linux 성능 카운터 정확도와 성능 결론은 이 완료 범위에 포함하지 않습니다. `latency-diagnostics.json`을 포함한 데이터 유래 가설은 진단용이며 출판 성능 주장으로 승격하지 않습니다.
 
 ## G007 순수 TLS netem 후속 검증
 
-`tests/integration/pure_tls_netem.py`는 `lookup.enabled=false`인 stock OpenSSL TLS에 대해 다음 계약을 검사하도록 추가했습니다.
+`tests/integration/pure_tls_netem.py`는 `lookup.enabled=false`인 수정하지 않은 OpenSSL TLS에 대해 다음 계약을 검사하도록 추가했습니다.
 
-- client/server/router 세 namespace, 두 veth 링크, `tls_c2s`·`tls_s2c` 두 qdisc만 만듭니다.
-- CA namespace·FD·주소·interface·participant와 `ca.jsonl`, `lookup.jsonl`, `lookup-summary.json`, snapshot/object 결과를 만들지 않습니다.
-- 양방향 0ms와 20ms, loss 0을 각각 2 attempts 실행하고 네 attempt 모두 TLS 1.3 전체 핸드셰이크, Certificate, Finished, 암호화된 핑퐁과 양방향 stream 대응을 요구합니다.
-- setup/scenario/cleanup의 여섯 observation, host unchanged, helper 회수, namespace/pipe FD 닫힘을 attempt마다 확인합니다.
-- 합산 `summary.json`은 네 그룹 `(0ms, client)`, `(0ms, server)`, `(20ms, client)`, `(20ms, server)`을 유지하고 각 그룹에 measured `elapsed_ns`와 `thread_cpu_ns` 두 값이 있어야 합니다.
-- 요청·실제 network policy는 안정 그룹 identity에 들어가고 runtime integrity 결과는 identity 밖의 표본 metadata와 그룹 적격성에 남아야 합니다.
+- 클라이언트·서버·router 이름공간 세 개, veth 링크 두 개와 `tls_c2s`·`tls_s2c` qdisc 두 개만 만듭니다.
+- CA 이름공간·FD·주소·interface·참여자와 `ca.jsonl`, `lookup.jsonl`, `lookup-summary.json`, 저장본·객체 결과를 만들지 않습니다.
+- 양방향 0ms와 20ms, 손실 0을 각각 2회 실행하고 네 시도 모두 TLS 1.3 전체 핸드셰이크, Certificate, Finished, 암호화된 핑퐁과 양방향 스트림 대응을 요구합니다.
+- 셋업·시나리오·정리의 여섯 관측, 호스트 불변, 보조 프로세스 회수, 이름공간·pipe FD 닫힘을 시도마다 확인합니다.
+- 합산 `summary.json`은 네 그룹 `(0ms, client)`, `(0ms, server)`, `(20ms, client)`, `(20ms, server)`을 유지하고 각 그룹에 측정한 `elapsed_ns`와 `thread_cpu_ns` 두 값이 있어야 합니다.
+- 요청·실제 네트워크 정책은 안정 그룹 식별 조건에 들어가고 실행 무결성 결과는 식별 조건 밖의 표본 부가정보와 그룹 적격성에 남아야 합니다.
 
-실제 순수 TLS 경로 자체의 증거는 `results/followup-tls-netem/pure-tls-preserved/`에 보존했습니다. 0ms·20ms 원자료는 각각 requested=started=success=2여서 모두 4 attempts·8개 역할 파일이었고 CA·lookup 결과가 없었습니다. 동결한 shared strict parser를 쓰는 최신 reporter로 같은 원자료에서 보고서를 두 번 다시 만들었으며 두 `summary.json`은 byte-for-byte와 JSON 구조가 모두 같고 이전 두 출력과도 같았습니다. 공통 SHA-256은 `1ee2de21b2557d07c88b4d0d61333aa8e18bd675f989862ffcf6879ca4a86bed`입니다. 각 보고서는 invalid sample 0, 표본 행 8개, 위 네 조건·역할 그룹을 보존했고 각 그룹의 `elapsed_ns`·`thread_cpu_ns` count는 2였습니다. `lookup-summary.json`은 생성되지 않았습니다. `validation-summary.json`과 `validation.log`, 원자료 hash manifest가 이 확인을 남깁니다.
+실제 순수 TLS 경로의 증거는 `results/followup-tls-netem/pure-tls-preserved/`에 보존했습니다. 0ms·20ms 원자료는 각각 `requested=started=success=2`여서 모두 4개 시도·8개 역할 파일이었고 CA·조회 결과가 없었습니다. 동결한 공통 엄격 판독기를 쓰는 최신 보고기로 같은 원자료에서 보고서를 두 번 다시 만들었으며 두 `summary.json`은 바이트 단위와 JSON 구조가 모두 같고 이전 두 출력과도 같았습니다. 공통 SHA-256은 `1ee2de21b2557d07c88b4d0d61333aa8e18bd675f989862ffcf6879ca4a86bed`입니다. 각 보고서는 무효 표본 0개, 표본 행 8개, 위 네 조건·역할 그룹을 보존했고 각 그룹의 `elapsed_ns`·`thread_cpu_ns` 표본 수는 2였습니다. `lookup-summary.json`은 생성되지 않았습니다. `validation-summary.json`, `validation.log`와 원자료 해시 목록가 이 확인을 남깁니다.
 
-그러나 `results/followup-tls-netem/check-second.log`의 전체 실행은 **57/58 통과**였습니다. 새 `pure_tls_netem_actual`, 일반 report·lookup report와 TLS pipeline은 통과했지만 `netem_runner_contracts`가 시작 중 `[Errno 19] No such device`로 실패했습니다. 이 실패 기록은 삭제하거나 전체 성공으로 바꾸지 않습니다.
+그러나 `results/followup-tls-netem/check-second.log`의 전체 실행은 **57/58 통과**였습니다. 새 `pure_tls_netem_actual`, 일반·조회 보고와 TLS pipeline은 통과했지만 `netem_runner_contracts`가 시작 중 `[Errno 19] No such device`로 실패했습니다. 이 실패 기록은 삭제하거나 전체 성공으로 바꾸지 않습니다.
 
-원인은 namespace helper를 만든 뒤 고정 30ms만 기다리고 `/proc/<pid>/ns/net`을 열던 시작 race였습니다. 동시 재현에서 같은 ENODEV를 확인한 뒤, helper가 `unshare`와 진입을 끝냈음을 bounded readiness pipe로 알리도록 바꿨습니다. 수리 뒤 첫 bounded contract 반복은 16/16 통과했습니다. 이어서 `results/followup-tls-netem/netem-startup-repeat20.log`에서 `local_test_certificates`, `netem_runner_contracts`, `pure_tls_netem_actual`을 각각 20회 실행해 모두 통과했습니다.
+원인은 이름공간 보조 프로세스를 만든 뒤 고정 30ms만 기다리고 `/proc/<pid>/ns/net`을 열던 시작 경쟁이었습니다. 동시 재현에서 같은 ENODEV를 확인한 뒤, 보조 프로세스가 `unshare`와 진입을 끝냈음을 유한 시간의 준비 완료 pipe로 알리도록 바꿨습니다. 수리 뒤 첫 제한 반복은 16/16 통과했습니다. 이어서 `results/followup-tls-netem/netem-startup-repeat20.log`에서 `local_test_certificates`, `netem_runner_contracts`, `pure_tls_netem_actual`을 각각 20회 실행해 모두 통과했습니다.
 
 동결한 최종 소스의 증거는 다음과 같습니다.
 
@@ -200,12 +200,12 @@ G001~G006의 요구 증거를 모두 확인해 검증 완료로 표시합니다.
 |---|---|
 | `results/followup-tls-netem/check-final-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 58개 시험을 각각 20회, 총 **1,160회** 실행해 실패 0건으로 통과했습니다. 11개 부품 include 경계·순환 검사도 통과했습니다. |
 | `results/followup-tls-netem/static-final.log` | 외부 소스를 제외한 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했습니다. |
-| `results/followup-tls-netem/pure-tls-preserved/validation-summary.json` | 4 attempts·8개 역할 파일·네 조건/역할 그룹, CA/lookup 결과 부재, 최신 두 보고서와 이전 보고서의 동일성을 확인합니다. 보존 작업은 네트워크 실행이나 N05를 수행하지 않았습니다. |
-| 독립 검토 | 수명주기 책임 분리와 shared strict ledger reader가 모두 지적 없이 승인됐습니다. grouping·integrity·준비/측정 소켓 identity 검토에도 추가 문제가 없었습니다. |
+| `results/followup-tls-netem/pure-tls-preserved/validation-summary.json` | 4 시도·8개 역할 파일·네 조건/역할 그룹, CA/조회 결과 부재, 최신 두 보고서와 이전 보고서의 동일성을 확인합니다. 보존 작업은 네트워크 실행이나 N05를 수행하지 않았습니다. |
+| 독립 검토 | 수명주기 책임 분리와 공통 엄격 원장 판독기가 모두 지적 없이 승인됐습니다. 그룹화·무결성·준비/측정 소켓 식별 조건 검토에도 추가 문제가 없었습니다. |
 
 이 증거로 G007의 현재 범위를 검증 완료로 표시합니다. G006의 57×20=1,140회 성공과 G007의 58×20=1,160회 성공은 서로 다른 시점의 증거이며 합치거나 대체하지 않습니다.
 
-M13·M14의 N05는 이 후속 검증 때문에 다시 실행하지 않습니다. 기존 64/64 성공, qdisc drop 94, CA 재전송 58은 정확히 한 번 실행한 고정 증거이며 loss 조건 확대도 하지 않습니다. G007 종료 시점에는 M5의 수정하지 않은 OpenSSL 명령행 양방향 연결, M6, M7 관측자 비교가 다음 단계였습니다.
+M13·M14의 N05는 이 후속 검증 때문에 다시 실행하지 않습니다. 기존 64/64 성공, qdisc 폐기 94, CA 재전송 58은 정확히 한 번 실행한 고정 증거이며 손실 조건 확대도 하지 않습니다. G007 종료 시점에는 M5의 수정하지 않은 OpenSSL 명령행 양방향 연결, M6, M7 관측자 비교가 다음 단계였습니다.
 
 ## G008 두 커밋 cutover
 
@@ -214,21 +214,21 @@ G007 동결 뒤 작업 트리의 139개 경로를 책임과 검증 경계에 따
 | 커밋 | 범위와 독립 증거 |
 |---|---|
 | `cd2a5fa` | M0~M4 기반 계약을 고정했습니다. 격리한 후보에서 45개 시험을 각각 20회, 총 900회 통과했고 10개 부품 경계 검사를 통과했습니다. 이 커밋에는 정적 검사를 다시 실행하지 않았다는 `Not-tested` trailer를 그대로 남겼습니다. |
-| `3723056` | lookup·Mock CA·attempt 원장·netem·G007을 추가했습니다. 새로 동결한 최종 트리에서 58개 시험을 각각 20회, 총 1,160회 통과했고 11개 부품 경계 검사와 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했습니다. N05는 다시 실행하지 않았습니다. |
+| `3723056` | 조회·Mock CA·시도 원장·netem·G007을 추가했습니다. 새로 동결한 최종 트리에서 58개 시험을 각각 20회, 총 1,160회 통과했고 11개 부품 경계 검사와 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했습니다. N05는 다시 실행하지 않았습니다. |
 
 두 커밋은 이유를 첫 줄에 쓰고 `Constraint`, `Rejected`, `Confidence`, `Scope-risk`, `Reversibility`, `Directive`, `Tested`, `Not-tested`를 필요한 범위에서 기록한 Lore 형식을 따릅니다. `/build*`, `/results/`, `/.deps/`, `/pki/`, `/.omx/` 같은 기존 실행 산출물에 더해 `/.omc/`, `/.omx-state-locks/`, `/.omx-state-locks.identity.json`을 무시해 런타임 상태를 제품 이력과 분리했습니다. 이 규칙은 증거를 삭제한다는 뜻이 아니라 결과 폴더와 커밋의 `Tested` trailer에서 검증 근거를 보존한다는 뜻입니다.
 
-G008을 완료로 표시합니다. 이 cutover 자체는 M5 외부 CLI 상호운용성, M6 native/callback 비교, M7 관측자 영향 검증의 성공 증거가 아닙니다. G008 cutover 시점에는 M5의 12조건을 아직 구현 중이었으며, 그 뒤의 완료 증거는 다음 절에 따로 기록합니다. M6·M7 계획은 승인됐지만 실행은 미뤘습니다.
+G008을 완료로 표시합니다. 이 전환 자체는 M5 외부 CLI 상호운용성, M6 라이브러리 직접 소켓/콜백 비교, M7 관측자 영향 검증의 성공 증거가 아닙니다. G008 전환 시점에는 M5의 12조건을 아직 구현 중이었으며, 그 뒤의 완료 증거는 다음 절에 따로 기록합니다. M6·M7 계획은 승인됐지만 실행은 미뤘습니다.
 
 ## G009/M5 수정하지 않은 OpenSSL CLI 최종 검증
 
-첫 구현은 활성 세 어댑터×client/server×서버 인증/상호 인증의 12개 CTest를 등록했고 실제 TLS 연결과 양방향 응용 바이트 교환까지 실행했습니다. 그러나 전체 70개 시험의 첫 반복 뒤 증거 감사를 하면서 Mbed TLS의 `api.name()` 값 `Mbed TLS`를 내부 분류 문자열 `mbedtls`와 대응하지 못한 문제를 찾았습니다. 그 결과 Mbed TLS의 group·signature·resumed·HelloRetryRequest 근거가 `unobserved`로 잘못 기록되고, 추론값의 선언 일관성 assertion도 실행되지 않았습니다.
+첫 구현은 활성 세 어댑터×클라이언트·서버×서버 인증/상호 인증의 12개 CTest를 등록했고 실제 TLS 연결과 양방향 응용 바이트 교환까지 실행했습니다. 그러나 전체 70개 시험의 첫 반복 뒤 증거 감사를 하면서 Mbed TLS의 `api.name()` 값 `Mbed TLS`를 내부 분류 문자열 `mbedtls`와 대응하지 못한 문제를 찾았습니다. 그 결과 Mbed TLS의 group·signature·resumed·HelloRetryRequest 근거가 `unobserved`로 잘못 기록되고, 추론값의 선언 일관성 assertion도 실행되지 않았습니다.
 
-이 중간 원자료는 `results/m5-cli/preserved/`에 보존했습니다. `complete-runs/`의 12조건 모두 실제 TLS 1.3·AES-128-GCM, 기대한 서버/상호 인증, 양방향 응용 바이트, 실제 `/usr/bin/openssl`의 version/help/argv, 양쪽 프로세스 exit 0과 reap, timeout 없음과 빈 cleanup을 확인합니다. `selection.json`과 세 hash manifest는 선택한 36개 파일의 복사 전후 동일성을, `validation-summary.json`과 `validation.log`는 감사 결과를 남깁니다. 다만 Mbed TLS 네 조건의 잘못된 근거 분류 때문에 `all_negotiation_metadata_criteria_pass=false`입니다.
+이 중간 원자료는 `results/m5-cli/preserved/`에 보존했습니다. `complete-runs/`의 12조건 모두 실제 TLS 1.3·AES-128-GCM, 기대한 서버/상호 인증, 양방향 응용 바이트, 실제 `/usr/bin/openssl`의 version·help·argv, 양쪽 프로세스의 종료 코드 0과 회수, 시간 초과 없음과 빈 정리 오류를 확인합니다. `selection.json`과 세 해시 목록는 선택한 36개 파일의 복사 전후 동일성을, `validation-summary.json`과 `validation.log`는 감사 결과를 남깁니다. 다만 Mbed TLS 네 조건의 잘못된 근거 분류 때문에 `all_negotiation_metadata_criteria_pass=false`입니다.
 
-이 첫 반복과 당시 정적 검사 결과는 최종 M5 증거가 아닙니다. 어댑터 표시 이름을 명시적인 근거 category에 대응시키고 각 category의 expected source를 회귀 시험하도록 수리했습니다. 수정하지 않은 CLI와 실제 TLS 교환이 성공했다는 사실만으로 metadata 계약의 누락을 덮지 않았으며, 아래의 새 12조건 원자료·전체 반복·정적 검사·독립 검토를 모두 완료 기준으로 사용했습니다. N05·netem·lookup은 이 작업에서 실행하지 않았습니다.
+이 첫 반복과 당시 정적 검사 결과는 최종 M5 증거가 아닙니다. 어댑터 표시 이름을 명시적인 근거 범주에 대응시키고 각 범주의 기대 출처를 회귀 시험하도록 수리했습니다. 수정하지 않은 CLI와 실제 TLS 교환이 성공했다는 사실만으로 부가정보 계약의 누락을 덮지 않았으며, 아래의 새 12조건 원자료·전체 반복·정적 검사·독립 검토를 모두 완료 기준으로 사용했습니다. N05·netem·조회는 이 작업에서 실행하지 않았습니다.
 
-수리한 구동기의 새 12조건 원자료 감사는 통과했습니다. `results/m5-cli/preserved/final-complete-runs/`에 조건별 세 파일, 모두 36개를 보존했고 `final-selection.json`, `final-selected-source-paths.txt`, 세 `final-*.sha256` manifest가 복사 전후 동일성을 확인합니다. `final-validation-summary.json`과 `final-validation.log`는 앞서 확인한 실행·인증·응용 바이트·프로세스·CLI provenance와 함께 협상 근거 표도 검사합니다. Mbed TLS 네 조건의 group·signature·resumed·HelloRetryRequest는 이제 모두 `inferred`이며 근거는 고정 configuration에 따른 추론이고 runtime query가 없다는 설명입니다. 이전 partial 원자료를 새 증거로 바꾸지 않고 별도 보존합니다.
+수리한 구동기의 새 12조건 원자료 감사는 통과했습니다. `results/m5-cli/preserved/final-complete-runs/`에 조건별 세 파일, 모두 36개를 보존했고 `final-selection.json`, `final-selected-source-paths.txt`, 세 `final-*.sha256` manifest가 복사 전후 동일성을 확인합니다. `final-validation-summary.json`과 `final-validation.log`는 앞서 확인한 실행·인증·응용 바이트·프로세스·CLI 출처 기록과 함께 협상 근거 표도 검사합니다. Mbed TLS 네 조건의 group·signature·resumed·HelloRetryRequest는 이제 모두 `inferred`이며 근거는 고정 설정에 따른 추론이고 실행 중 조회가 없다는 설명입니다. 이전 부분 원자료를 새 증거로 바꾸지 않고 별도 보존합니다.
 
 이 12조건 감사 자체의 `overall_g009_completion_claimed`는 의도대로 false입니다. 원자료 감사 한 가지가 전체 회귀·정적 검사와 독립 검토를 대신하지 않기 때문입니다.
 
@@ -237,30 +237,30 @@ G008을 완료로 표시합니다. 이 cutover 자체는 M5 외부 CLI 상호운
 | 증거 | 결과 |
 |---|---|
 | `results/m5-cli/check-final-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 70개 시험을 각각 20회, 총 **1,400회** 실행해 실패 0건으로 통과했습니다. 12개 CLI 조건도 각각 20회여서 모두 240회이며, 11개 부품 include 경계·순환 검사도 통과했습니다. |
-| `results/m5-cli/static-final.log` | 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했고 새 `tests/adapters/cli_endpoint.cpp`의 별도 clang-tidy도 exit 0이었습니다. |
-| `results/m5-cli/preserved/final-validation-summary.json` | 세 어댑터×두 역할×두 인증 방식의 12조건에서 실행·인증·응용 바이트·프로세스·CLI provenance와 협상 근거 표를 모두 통과했습니다. 36개 보존 파일의 hash도 일치했습니다. |
-| 독립 검토 | metadata/assertion 수리 뒤 코드를 승인했고, 최종 12조건 원자료를 다시 읽은 검토도 지적 없이 승인했습니다. |
+| `results/m5-cli/static-final.log` | 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했고 새 `tests/adapters/cli_endpoint.cpp`의 별도 clang-tidy도 종료 코드 0이었습니다. |
+| `results/m5-cli/preserved/final-validation-summary.json` | 세 어댑터×두 역할×두 인증 방식의 12조건에서 실행·인증·응용 바이트·프로세스·CLI 출처 기록과 협상 근거 표를 모두 통과했습니다. 36개 보존 파일의 hash도 일치했습니다. |
+| 독립 검토 | 부가정보/assertion 수리 뒤 코드를 승인했고, 최종 12조건 원자료를 다시 읽은 검토도 지적 없이 승인했습니다. |
 
-시험에 사용한 수정하지 않은 CLI는 `/usr/bin/openssl`의 OpenSSL 3.0.13입니다. 상대 어댑터는 OpenSSL 3.5.4, wolfSSL 5.8.2, Mbed TLS 3.6.4이며 모두 callback I/O를 사용했습니다. 각 조건은 TLS 1.3·`TLS_AES_128_GCM_SHA256`, 기대한 peer 인증서와 서버/상호 인증 결과, 두 방향의 고정 응용 문자열, 양쪽 exit 0과 reap, timeout 없음과 cleanup 신호 부재를 확인했습니다.
+시험에 사용한 수정하지 않은 CLI는 `/usr/bin/openssl`의 OpenSSL 3.0.13입니다. 상대 어댑터는 OpenSSL 3.5.4, wolfSSL 5.8.2, Mbed TLS 3.6.4이며 모두 콜백 I/O를 사용했습니다. 각 조건은 TLS 1.3·`TLS_AES_128_GCM_SHA256`, 기대한 상대 인증서와 서버/상호 인증 결과, 두 방향의 고정 응용 문자열, 양쪽 종료 코드 0과 프로세스 회수, 시간 초과 없음과 정리 신호 부재를 확인했습니다.
 
-협상 결과의 출처는 분리해서 기록합니다. 모든 어댑터의 version·cipher·peer certificate는 runtime 관측입니다. OpenSSL의 group·resumed·HelloRetryRequest는 관측하고 signature는 관측하지 못합니다. wolfSSL의 group·signature·resumed는 관측하고 HelloRetryRequest는 단일 허용 group에서 추론합니다. Mbed TLS의 group·signature·resumed·HelloRetryRequest는 고정 configuration에서 추론하며 runtime query라고 부르지 않습니다.
+협상 결과의 출처는 분리해서 기록합니다. 모든 어댑터의 version·cipher·상대 인증서는 runtime 관측입니다. OpenSSL의 group·resumed·HelloRetryRequest는 관측하고 signature는 관측하지 못합니다. wolfSSL의 group·signature·resumed는 관측하고 HelloRetryRequest는 단일 허용 group에서 추론합니다. Mbed TLS의 group·signature·resumed·HelloRetryRequest는 고정 설정에서 추론하며 실행 중 조회라고 부르지 않습니다.
 
-공개 adapter v1에는 TLS `close_notify`를 구동하는 함수가 없습니다. 따라서 시험은 응용 교환 성공 뒤 connection을 닫고 CLI에 `-ignore_unexpected_eof`를 명시합니다. 이는 EOF 계약을 맞춘 것이며 정상 TLS shutdown alert를 검증했다는 뜻이 아닙니다. 이 시험은 WSL의 기능 상호운용성 근거이지 native/callback 동등성, 관측자 비용이나 성능 결론도 아닙니다.
+공개 adapter v1에는 TLS `close_notify`를 구동하는 함수가 없습니다. 따라서 시험은 응용 교환 성공 뒤 연결을 닫고 CLI에 `-ignore_unexpected_eof`를 명시합니다. 이는 EOF 계약을 맞춘 것이며 정상 TLS 종료 알림를 검증했다는 뜻이 아닙니다. 이 시험은 WSL의 기능 상호운용성 근거이지 라이브러리 직접 소켓/콜백 동등성, 관측자 비용이나 성능 결론도 아닙니다.
 
-이 결합 증거로 G009/M5의 현재 범위를 완료로 표시합니다. N05·netem·lookup은 실행하지 않았습니다. G009 완료 시점에는 M6·M7이 승인된 별도 계획뿐이었으며, 이후 M6 결과는 다음 절에 기록합니다.
+이 결합 증거로 G009/M5의 현재 범위를 완료로 표시합니다. N05·netem·조회는 실행하지 않았습니다. G009 완료 시점에는 M6·M7이 승인된 별도 계획뿐이었으며, 이후 M6 결과는 다음 절에 기록합니다.
 
-## G010/M6 OpenSSL callback/native I/O 경로 최종 검증
+## G010/M6 OpenSSL 콜백/라이브러리 직접 소켓 I/O 경로 최종 검증
 
-동결한 구현은 OpenSSL↔OpenSSL callback/native×서버 인증/상호 인증 네 정상 조건을 실제 `turtle run`으로 실행합니다. 모든 조건은 새 context·연결, TLS 1.3, `TLS_AES_128_GCM_SHA256`, P-256 요청, tickets 0, 32바이트 암호화 핑퐁, 역할별 인증 결과와 attempt 성공을 요구합니다. wolfSSL·Mbed TLS의 native 경로는 지원하지 않으며 시험 범위를 줄여 성공으로 세지 않습니다.
+동결한 구현은 OpenSSL↔OpenSSL 콜백/라이브러리 직접 소켓×서버 인증/상호 인증 네 정상 조건을 실제 `turtle run`으로 실행합니다. 모든 조건은 새 컨텍스트·연결, TLS 1.3, `TLS_AES_128_GCM_SHA256`, P-256 요청, 티켓 0장, 32바이트 암호화 핑퐁, 역할별 인증 결과와 시도 성공을 요구합니다. wolfSSL·Mbed TLS의 라이브러리 직접 소켓 경로는 지원하지 않으며 시험 범위를 줄여 성공으로 세지 않습니다.
 
 원자료·해석·보고 회귀는 다음 경계를 고정합니다.
 
-- callback의 TLS stream/I/O와 설정 가능한 kernel receive 수집 경로는 available입니다. kernel receive availability만으로 실제 timestamp 사건 발생을 주장하지 않습니다.
-- native의 stream·I/O·kernel receive는 `native_socket_io_not_observed`입니다. 빈 stream 해석은 `decryption_complete=false`이며 과거 library-only 자료도 legacy unavailable로 읽습니다.
-- native client는 호출 경과·스레드 CPU를 보존하되 I/O 분해와 stream byte metric은 `null`입니다. native server의 주 구간은 `server_first_receive_not_observed`이고 elapsed·CPU도 없습니다.
-- 기능 성공과 metric availability를 분리하고 native 그룹을 자동 비교에서 제외합니다.
+- 콜백의 TLS 스트림/I/O와 설정 가능한 커널 수신 수집 경로는 사용할 수 있습니다. 커널 수신 가용성만으로 실제 시각 사건 발생을 주장하지 않습니다.
+- 라이브러리 직접 소켓 경로의 스트림·I/O·커널 수신은 `native_socket_io_not_observed`입니다. 빈 스트림 해석은 `decryption_complete=false`이며 과거 `library-only` 자료도 구 자료의 사용 불가 상태로 읽습니다.
+- 라이브러리 직접 소켓 경로의 클라이언트는 호출 경과·스레드 CPU를 보존하되 I/O 분해와 스트림 바이트 지표은 `null`입니다. 라이브러리 직접 소켓 경로 서버의 주 구간은 `server_first_receive_not_observed`이고 경과 시간·CPU도 없습니다.
+- 기능 성공과 지표 가용성을 분리하고 라이브러리 직접 소켓 그룹을 자동 비교에서 제외합니다.
 
-별도 실제 외부 조건은 기존 pure TLS zero-loss runner에 callback/native를 각각 2 attempts로 실행합니다. 수신자 쪽 router egress AF_PACKET 행의 양방향 payload를 확인하고 skb count·payload 합을 근사 observer-read-time 창별로 보존하되, 두 모드 수치의 동일성은 요구하지 않습니다. 이는 full pcap·syscall·물리 wire나 고유 TLS byte 증거가 아닙니다. `verify`와 N05는 실행하지 않았고 M13·M14 범위를 확장하지 않았습니다.
+별도 실제 외부 조건은 조회가 꺼진 기존 순수 TLS 무손실 실행기에서 콜백과 라이브러리 직접 소켓 경로를 각각 2회 실행합니다. 수신자 쪽 router 송신 구간의 AF_PACKET 행의 양방향 페이로드를 확인하고 커널 패킷 버퍼 개수·페이로드 합을 관측자가 읽은 시각에 근거한 근사 구간별로 보존하되, 두 모드 수치의 동일성은 요구하지 않습니다. 이는 전체 pcap·시스템 호출 추적·물리 전송 경로나 중복 제거된 TLS 바이트 증거가 아닙니다. `verify`와 N05는 실행하지 않았고 M13·M14 범위를 확장하지 않았습니다.
 
 동결 트리의 실행 증거는 다음과 같습니다.
 
@@ -268,73 +268,73 @@ G008을 완료로 표시합니다. 이 cutover 자체는 M5 외부 CLI 상호운
 |---|---|
 | `results/io-path/check-final-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 72개 시험을 각각 20회, 총 **1,440회** 실행해 실패 0건으로 통과했습니다. `io_path_normal`과 지원 환경의 `io_path_external_metadata`도 각각 20회 모두 실제 통과해 skip이 없었고, 11개 부품 include 경계·순환 검사도 통과했습니다. 로그 SHA-256은 `ec865445da3ede7380623c53667ef1f3922984acecd0c83f8b47347246488233`입니다. |
 | `results/io-path/static-final.log` | 외부 소스를 제외한 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했습니다. |
-| 독립 검토 | 제품 코드 review는 APPROVE, 구조 검토는 CLEAR였고 추가 수정 요구가 없었습니다. |
+| 독립 검토 | 제품 코드 검토는 APPROVE, 구조 검토는 CLEAR였고 추가 수정 요구가 없었습니다. |
 
 보존한 실제 원자료의 독립 감사도 통과했습니다.
 
 | 증거 | 결과 |
 |---|---|
-| `results/io-path/preserved/validation-summary.json` | normal 4조건은 4 attempts·8개 역할 파일 모두 성공했습니다. callback은 stream 해독까지 완료했고 native는 명시적으로 unavailable이었습니다. native client의 elapsed·CPU와 native server의 unavailable 주 구간도 원자료와 보고서가 일치했습니다. |
-| 같은 파일의 external 감사 | callback/native 두 모드가 각각 2/2 attempts 성공해 모두 4 attempts·8개 역할 파일입니다. 각 모드의 12개 phase observation, host unchanged, helper/FD cleanup과 양방향 receiver-facing egress payload를 확인했습니다. |
-| `results/io-path/preserved/validation.log` 및 hash manifest | 선택한 171개 파일의 원본·보존본 hash가 세 manifest에서 일치했고, `derived/`의 최신 offline report도 정규화한 기존 보고서와 같았습니다. |
+| `results/io-path/preserved/validation-summary.json` | 정상 4조건은 4 시도·8개 역할 파일 모두 성공했습니다. 콜백은 스트림 해독까지 완료했고 라이브러리 직접 소켓 경로는 명시적인 사용 불가 상태였습니다. 라이브러리 직접 소켓 경로 클라이언트의 경과 시간·CPU와 라이브러리 직접 소켓 경로 서버의 사용할 수 없는 주 구간도 원자료와 보고서가 일치했습니다. |
+| 같은 파일의 외부 감사 | 콜백과 라이브러리 직접 소켓 두 모드가 각각 2/2 시도 성공해 모두 4 시도·8개 역할 파일입니다. 각 모드의 12개 단계 관측, 호스트 불변, 보조 프로세스·FD 정리와 양방향 수신자 쪽 송신 구간의 페이로드를 확인했습니다. |
+| `results/io-path/preserved/validation.log` 및 해시 목록 | 선택한 171개 파일의 원본·보존본 해시가 세 목록에서 일치했고, `derived/`의 최신 오프라인 보고서도 정규화한 기존 보고서와 같았습니다. |
 
-normal callback 원자료에서 `raw_timestamp_ns`가 실제로 있는 사건은 서버 인증 client/server가 각각 14/8개, 상호 인증 client/server가 16/12개였습니다. 이 행들이 해당 실행의 kernel receive 사건 증거입니다. `kernel_receive_events.available=true`만으로 이 발생 횟수를 대신 주장하지 않습니다. native 원자료는 해당 수집 경로 자체를 unavailable로 기록합니다.
+정상 콜백 원자료에서 `raw_timestamp_ns`가 실제로 있는 사건은 서버 인증 클라이언트·서버가 각각 14/8개, 상호 인증 클라이언트·서버가 16/12개였습니다. 이 행들이 해당 실행의 커널 수신 사건 증거입니다. `kernel_receive_events.available=true`만으로 이 발생 횟수를 대신 주장하지 않습니다. 라이브러리 직접 소켓 경로 원자료는 해당 수집 경로 자체를 사용 불가로 기록합니다.
 
-외부 표에서 callback은 c2s 6 skb/688 payload bytes, s2c 4/2,601이었고 native는 c2s 6/688, s2c 4/2,599였습니다. 양쪽 capture footer는 두 interface 모두 packets 31, drops 0이었습니다. 이 숫자는 receiver-facing router egress에서 사용자 공간 observer가 읽은 skb metadata의 기술값입니다. timestamp와 scenario 창은 observer/decode read time 기반 근사값이며, skb 수는 물리 packet·고유 TLS record 수가 아니고 payload 합은 재전송·분할을 제거한 unique TLS bytes가 아닙니다. 두 모드 수치의 일치도 합격 조건이 아닙니다.
+외부 표에서 콜백은 c2s 커널 패킷 버퍼 6개·페이로드 688바이트, s2c 4개·2,601바이트였고 라이브러리 직접 소켓 경로는 c2s 6개·688바이트, s2c 4개·2,599바이트였습니다. 양쪽 캡처 끝행은 두 interface 모두 패킷 31개, 폐기 0개였습니다. 이 숫자는 수신자 쪽 router 송신 구간에서 사용자 공간 관측자가 읽은 커널 패킷 버퍼 부가정보의 기술값입니다. 시각과 시나리오 구간은 관측·해독기가 읽은 시각 기반 근사값이며, 커널 패킷 버퍼 수는 물리 패킷·고유 TLS 레코드 수가 아니고 페이로드 합은 재전송·분할을 제거한 중복 제거된 TLS 바이트가 아닙니다. 두 모드 수치의 일치도 합격 조건이 아닙니다.
 
-72×20 실행·정적 검사·독립 검토와 이 원자료 감사를 결합해 G010/M6의 제한된 범위를 완료로 표시합니다. 이는 기능·관측 경계 검증이며 WSL 성능 결론, callback/native 동등성, full pcap·syscall·물리 wire 증거가 아닙니다. M6 완료 시점에는 M7의 `channel_observer` flag와 공통 `handshake_call_begin_to_application_complete` 구간이 다음 단계였습니다.
+72×20 실행·정적 검사·독립 검토와 이 원자료 감사를 결합해 G010/M6의 제한된 범위를 완료로 표시합니다. 이는 기능·관측 경계 검증이며 WSL 성능 결론, 콜백/라이브러리 직접 소켓 동등성, 전체 pcap·시스템 호출 추적·물리 전송 경로 증거가 아닙니다. M6 완료 시점에는 M7의 `channel_observer` flag와 공통 `handshake_call_begin_to_application_complete` 구간이 다음 단계였습니다.
 
-## G011/M7 채널 관측자 on/off 최종 검증
+## G011/M7 채널 관측자 켬/끔 최종 검증
 
-동결 구현은 `measurement.channel_observer`를 JSON-only 내부 설정으로 추가했고 기본값과 과거 필드 부재를 true로 유지합니다. false는 Channel 관측 함수 포인터만 비우며 callback transport, actual socket buffer와 timestamp 설정, CALL/WAIT, keylog/plaintext, perf·calibration을 유지합니다. off의 stream·I/O·kernel receive availability는 `channel_observer_disabled`이고 빈 stream을 0바이트 해독 성공으로 처리하지 않습니다.
+동결 구현은 `measurement.channel_observer`를 JSON 전용 내부 설정으로 추가했고 기본값과 과거 필드 부재를 `true`로 유지합니다. `false`는 Channel 관측 함수 포인터만 비우며 콜백 전송 경로, 실제 소켓 버퍼와 timestamp 설정, CALL/WAIT, 키 로그·평문, 성능 카운터·교정을 유지합니다. 끔 상태의 스트림·I/O·kernel receive availability는 `channel_observer_disabled`이고 빈 스트림을 0바이트 해독 성공으로 처리하지 않습니다.
 
-보고서는 client/server, observer on/off 모두에 `handshake_call_begin_to_application_complete`를 직접 원자료에서 재계산합니다. 첫 handshake CALL_BEGIN에서 client app_recv 또는 server app_send의 전체 32바이트를 완료한 마지막 성공 CALL_END까지이며 event sequence와 elapsed를 보존합니다. CPU snapshot은 elapsed와 독립이므로 누락·역행이면 CPU만 이유 있는 `null`입니다. observer-off server의 기존 first-receive primary가 unavailable인 사실은 그대로이고, 새 공통 metric이 이를 대체하지 않습니다. native server도 같은 CALL 사건이 있으면 이 공통 metric을 가질 수 있습니다.
+보고서는 클라이언트·서버, 관측자 켬/끔 모두에 `handshake_call_begin_to_application_complete`를 직접 원자료에서 재계산합니다. 첫 핸드셰이크 `CALL_BEGIN`에서 클라이언트 `app_recv` 또는 서버 `app_send`의 전체 32바이트를 완료한 마지막 성공 CALL_END까지이며 사건 순번과 경과 시간을 보존합니다. CPU 스냅샷은 경과 시간과 독립이므로 누락·역행이면 CPU만 이유 있는 `null`입니다. 관측자 끔 경로의 서버의 기존 첫 수신 기반 주 구간을 사용할 수 없다는 사실은 그대로이고, 새 공통 지표가 이를 대체하지 않습니다. 라이브러리 직접 소켓 경로의 서버도 같은 CALL 사건이 있으면 이 공통 지표를 가질 수 있습니다.
 
-첫 실제 통합 실행은 attempt 원장에 존재하지 않는 batch 필드를 요구해 실패했고 `results/observer-impact/check-first.log`와 `normal-1792048076611007990-1085316`에 보존했습니다. 다음 실행은 raw `config.tls`에 직렬화되지 않는 version을 요구해 실패했으며 `results/observer-impact/batch-recheck.log`와 `normal-1792048376493542567-1092327`에 남겼습니다. 제품 schema를 시험 기대에 맞춰 늘리지 않고 batch는 역할 raw config에서, TLS 조건은 실제 직렬화 필드에서 확인하도록 고쳤습니다.
+첫 실제 통합 실행은 시도 원장에 존재하지 않는 묶음 필드를 요구해 실패했고 `results/observer-impact/check-first.log`와 `normal-1792048076611007990-1085316`에 보존했습니다. 다음 실행은 원자료 `config.tls`에 직렬화되지 않는 version을 요구해 실패했으며 `results/observer-impact/batch-recheck.log`와 `normal-1792048376493542567-1092327`에 남겼습니다. 제품 `schema`를 시험 기대에 맞춰 늘리지 않고 묶음은 역할 원자료 설정에서, TLS 조건은 실제 직렬화 필드에서 확인하도록 고쳤습니다.
 
-수정 뒤 `results/observer-impact/batch-final.log`의 실제 OpenSSL callback 실행은 on/off, off/on, on/off, off/on 순서의 4 batches를 통과했습니다. 각 위치는 samples 2여서 모두 16 attempts·32개 역할 파일이고, 각 모드는 역할별 8개 공통 elapsed·CPU 값을 남깁니다. `diagnostic-summary.json`은 역할별 raw 값과 on-minus-off 산술 차이를 보존하지만 부호·크기·0·통계적 유의성은 합격 기준이 아닙니다. 이 WSL 기능 표본으로 순위나 성능 결론을 내리지 않습니다.
+수정 뒤 `results/observer-impact/batch-final.log`의 실제 OpenSSL 콜백 실행은 켬/끔, 끔/켬, 켬/끔, 끔/켬 순서의 4개 묶음을 통과했습니다. 각 위치는 표본 2개여서 모두 16 시도·32개 역할 파일이고, 각 모드는 역할별 8개 공통 경과 시간·CPU 값을 남깁니다. `diagnostic-summary.json`은 역할별 원자료 값과 켬에서 끔을 뺀 산술 차이를 보존하지만 부호·크기·0·통계적 유의성은 합격 기준이 아닙니다. 이 WSL 기능 표본으로 순위나 성능 결론을 내리지 않습니다.
 
-두 profile을 정규화하면 다른 입력 변수는 `measurement.channel_observer` 하나뿐입니다. 실행 argv의 차이도 대응하는 profile·batch·output 식별자에 한정됩니다. 32개 역할 파일은 같은 framework/OpenSSL 판, callback I/O, 실제 socket buffer·kernel timestamp readback, perf 설정, keylog/plaintext와 buffer 크기를 보존했습니다. 모든 TLS 인증·응용 교환은 성공했고 on은 stream 해독 완료, off는 stream·I/O·KERNEL_RX unavailable과 빈 stream 비해독을 확인했습니다.
+두 프로필을 정규화하면 다른 입력 변수는 `measurement.channel_observer` 하나뿐입니다. 실행 인자의 차이도 대응하는 프로필·묶음·출력 식별자에 한정됩니다. 32개 역할 파일은 같은 프레임워크/OpenSSL 판, 콜백 I/O, 실제 소켓 버퍼·커널 시각 적용값 재조회, 성능 카운터 설정, 키 로그·평문과 버퍼 크기를 보존했습니다. 모든 TLS 인증·응용 교환은 성공했고 켬은 스트림 해독 완료, 끔은 스트림·I/O·KERNEL_RX 사용 불가와 빈 스트림 비해독을 확인했습니다.
 
 동결 트리의 최종 결합 증거는 다음과 같습니다.
 
 | 증거 | 결과 |
 |---|---|
-| `results/observer-impact/check-final-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 73개 시험을 각각 20회, 총 **1,460회** 실행해 실패·skip 없이 통과했습니다. `observer_impact_normal`도 20회 통과했고 11개 부품 include 경계·순환 검사도 통과했습니다. 로그 SHA-256은 `6b147a819d17b1368ab1f22a62534ea6495891878ad7c86fd6de0a5eb4168021`입니다. |
+| `results/observer-impact/check-final-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 73개 시험을 각각 20회, 총 **1,460회** 실행해 실패·건너뜀 없이 통과했습니다. `observer_impact_normal`도 20회 통과했고 11개 부품 include 경계·순환 검사도 통과했습니다. 로그 SHA-256은 `6b147a819d17b1368ab1f22a62534ea6495891878ad7c86fd6de0a5eb4168021`입니다. |
 | `results/observer-impact/static-final.log` | 외부 소스를 제외한 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했습니다. |
-| `results/observer-impact/preserved/validation-summary.json` | 선택한 성공 실행의 294개 파일·1,697,930바이트가 세 hash manifest에서 같았습니다. 16/16 attempts, 32개 역할 파일과 네 역할×observer 보고 그룹, 모든 공통 경계의 raw 재계산과 offline report 동일성을 확인했습니다. |
-| 독립 검토 | 제품 code review는 APPROVE, 구조 검토는 CLEAR였고 추가 제품 수정 요구가 없었습니다. |
+| `results/observer-impact/preserved/validation-summary.json` | 선택한 성공 실행의 294개 파일·1,697,930바이트가 세 해시 목록에서 같았습니다. 16/16 시도, 32개 역할 파일과 네 역할×관측자 보고 그룹, 모든 공통 경계의 원자료 재계산과 오프라인 보고서 동일성을 확인했습니다. |
+| 독립 검토 | 제품 코드 검토는 APPROVE, 구조 검토는 CLEAR였고 추가 제품 수정 요구가 없었습니다. |
 
-보존 감사에서 실패한 두 sibling 실행은 명시적으로 제외하고 위의 `normal-1792048590965177294-1097154`만 선택했습니다. 실제 성공 실행에는 CPU snapshot 누락이 0건이었습니다. elapsed가 유효하지만 CPU가 누락·역행할 때 CPU만 `null`로 두는 경계는 unit test 증거이며 실제 실행에서 관측한 결측이라고 주장하지 않습니다.
+보존 감사에서 같은 단계에서 실패한 두 실행은 명시적으로 제외하고 위의 `normal-1792048590965177294-1097154`만 선택했습니다. 실제 성공 실행에는 CPU 스냅샷 누락이 0건이었습니다. 경과 시간이 유효하지만 CPU가 누락·역행할 때 CPU만 `null`로 두는 경계는 부품 시험 증거이며 실제 실행에서 관측한 결측이라고 주장하지 않습니다.
 
-raw에서 다시 계산한 on-minus-off 단순 산술 평균은 client elapsed 42,009.375ns·CPU 49,291.625ns, server elapsed 43,627.0ns·CPU 6,911.125ns였습니다. 이 값은 구현된 진단 계산이 원자료와 맞는지 확인하는 자료일 뿐입니다. 효과의 방향·부호·0 여부·크기·유의성, WSL 순위, uninstrumented 기준이나 완전한 관측 비용 보정으로 해석하지 않습니다.
+원자료에서 다시 계산한 켬에서 끔을 뺀 단순 산술 평균은 클라이언트 경과 시간 42,009.375ns·CPU 49,291.625ns, 서버 경과 시간 43,627.0ns·CPU 6,911.125ns였습니다. 이 값은 구현된 진단 계산이 원자료와 맞는지 확인하는 자료일 뿐입니다. 효과의 방향·부호·0 여부·크기·유의성, WSL 순위, 무계측 기준이나 완전한 관측 비용 보정으로 해석하지 않습니다.
 
-73×20 실행·정적 검사·독립 검토와 원자료 감사를 결합해 G011/M7의 제한된 범위를 완료로 표시합니다. M13·M14와 N05는 실행하거나 확장하지 않았습니다. G011 완료 시점에는 G012 최종 cleaner·독립 검토와 milestone commit이 다음 단계였습니다.
+73×20 실행·정적 검사·독립 검토와 원자료 감사를 결합해 G011/M7의 제한된 범위를 완료로 표시합니다. M13·M14와 N05는 실행하거나 확장하지 않았습니다. G011 완료 시점에는 G012 최종 정리·독립 검토와 마일스톤 커밋이 다음 단계였습니다.
 
-## G012 최종 QA와 G013 shared network integrity 수리
+## G012 최종 QA와 G013 공통 네트워크 무결성 수리
 
-첫 최종 구조 검토에서 일반 pure TLS 보고가 성공 attempt의 여섯 phase ID 존재만 확인하고, 참조된 observation의 qdisc·trace 본문 완전성을 lookup 보고만큼 엄격하게 요구하지 않는 문제를 찾았습니다. 이 시점의 73×20·정적 검사 결과는 G013 수리 전 과거 증거로 이름을 바꿔 보존했으며 최종 트리 증거로 승격하지 않습니다.
+첫 최종 구조 검토에서 일반 순수 TLS 보고가 성공 시도의 여섯 단계 ID 존재만 확인하고, 참조된 관측의 qdisc·추적 본문 완전성을 조회 보고만큼 엄격하게 요구하지 않는 문제를 찾았습니다. 이 시점의 73×20·정적 검사 결과는 G013 수리 전 과거 증거로 이름을 바꿔 보존했으며 최종 트리 증거로 승격하지 않습니다.
 
-shared network 판독기는 이제 성공 attempt의 여섯 참조 각각에 비어 있지 않은 `qdiscs`를 요구하고, trace 요청이 true이면 non-null `packet_trace`도 요구합니다. 누락·빈 qdisc와 누락·null trace fixture는 condition identity가 같아도 integrity 실패, 빈 metric, 자동 비교 부적격과 comparison 없음으로 끝나야 합니다. 제품 code review는 APPROVE, 구조 재검토는 CLEAR였고 runner나 N05는 실행·수정하지 않았습니다.
+공통 네트워크 판독기는 이제 성공 시도의 여섯 참조 각각에 비어 있지 않은 `qdiscs`를 요구하고, 추적 요청이 `true`이면 `null`이 아닌 `packet_trace`도 요구합니다. 누락·빈 qdisc와 누락·`null` 추적 시험 자료는 조건 식별값이 같아도 무결성 실패, 빈 지표, 자동 비교 부적격과 비교 없음으로 끝나야 합니다. 제품 코드 검토는 APPROVE, 구조 재검토는 CLEAR였고 실행기나 N05는 실행·수정하지 않았습니다.
 
-보존 원자료 다섯 묶음을 offline으로 다시 보고한 첫 감사는 `results/final-followup/offline/pre-null-compat-validation.json`에 실패로 남겼습니다. pure TLS, M6 normal/external, M7과 실제 630개 성공 phase 참조 본문은 통과했지만, N05 baseline의 qdisc-none/noqueue path가 `limit_packets:null`을 명시한 것을 numeric 누락으로 오판해 성공 8 attempts의 16개 역할 표본을 비교 부적격으로 만들었습니다. 이 실패를 삭제하거나 전체 성공으로 바꾸지 않습니다.
+보존 원자료 다섯 묶음을 오프라인으로 다시 보고한 첫 감사는 `results/final-followup/offline/pre-null-compat-validation.json`에 실패로 남겼습니다. 순수 TLS, M6 정상/외부, M7과 실제 630개 성공 단계 참조 본문은 통과했지만, N05 기준 조건의 qdisc `none`/`noqueue` 경로가 `limit_packets:null`을 명시한 것을 수치 누락으로 오판해 성공 8 시도의 16개 역할 표본을 비교 부적격으로 만들었습니다. 이 실패를 삭제하거나 전체 성공으로 바꾸지 않습니다.
 
-호환 수리는 요청·실제 qdisc가 모두 `none`, actual kind가 `noqueue`, field가 존재하고 null인 경우만 not-applicable로 허용합니다. field 누락이나 netem의 null limit는 계속 실패합니다. 이 좁은 수정과 observer marker-only identity 수정은 correctness 작업이며 NOOP cleanup과 분리합니다.
+호환 수리는 요청·실제 qdisc가 모두 `none`, 실제 경로 종류가 `noqueue`이고 필드가 존재하며 값이 `null`인 경우만 해당 없음으로 허용합니다. 필드 누락이나 netem의 `null` 한도는 계속 실패합니다. 이 좁은 수정과 관측자 marker-only 식별 조건 수정은 정확성 작업이며 변경 없는 정리와 분리합니다.
 
 모든 수리 뒤 동결한 최종 트리의 증거는 다음과 같습니다.
 
 | 증거 | 결과 |
 |---|---|
-| `results/final-followup/check-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 73개 시험을 각각 20회, 총 **1,460회** 실행해 실패·skip 없이 통과했습니다. 세 실제 어댑터, observer batch와 11개 부품 include 경계·순환 검사도 포함합니다. SHA-256은 `a00cab17c52400ed36e56b7568219fadc2274e3214415529ecceeaf274947ea6`입니다. |
-| `results/final-followup/static.log` | 생산 번역 단위 24개의 cppcheck·clang-tidy와 CLI endpoint 전용 clang-tidy가 exit 0이었습니다. SHA-256은 `7891cabf2a42e7d18e191f3594b34853ea8546fe73fd70db5be8ce4c3e0e8189`입니다. |
-| `results/final-followup/offline/validation-summary.json` | 다섯 보존 원자료 묶음의 pass 3/4 보고가 각각 결정적으로 같고 입력 hash가 전후 일치했습니다. SHA-256은 `d496965ad67366508d0a9e617dc31baf3442b336a3ad45fb4bb32df45bb7acf6`입니다. |
-| 독립 최종 검토 | source code review는 APPROVE, 구조 검토는 CLEAR, bounded cleaner는 NOOP PASS였고 추가 제품 수정 요구가 없었습니다. |
+| `results/final-followup/check-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 73개 시험을 각각 20회, 총 **1,460회** 실행해 실패·건너뜀 없이 통과했습니다. 세 실제 어댑터, 관측자 묶음과 11개 부품 include 경계·순환 검사도 포함합니다. SHA-256은 `a00cab17c52400ed36e56b7568219fadc2274e3214415529ecceeaf274947ea6`입니다. |
+| `results/final-followup/static.log` | 생산 번역 단위 24개의 cppcheck·clang-tidy와 CLI 엔드포인트 전용 clang-tidy가 종료 코드 0이었습니다. SHA-256은 `7891cabf2a42e7d18e191f3594b34853ea8546fe73fd70db5be8ce4c3e0e8189`입니다. |
+| `results/final-followup/offline/validation-summary.json` | 다섯 보존 원자료 묶음의 3차·4차 보고가 각각 결정적으로 같고 입력 해시가 전후 일치했습니다. SHA-256은 `d496965ad67366508d0a9e617dc31baf3442b336a3ad45fb4bb32df45bb7acf6`입니다. |
+| 독립 최종 검토 | 소스 코드 검토는 APPROVE, 구조 검토는 CLEAR, 제한된 정리는 `NOOP PASS`였고 추가 제품 수정 요구가 없었습니다. |
 
-offline 최종 감사는 pure TLS 8개 역할·4그룹, M6 native availability, M7 32개 역할·4그룹과 공통 경계 값을 보존했습니다. 성공한 network attempt의 phase 참조 630/630개가 qdisc·필요 trace 본문을 갖췄습니다. N05는 다시 실행하지 않고 기존 일곱 조건, loss 64 성공, qdisc drop 94, CA 재전송 58, packet 행 4,148개와 requested/started/success/timeout=100/100/97/3을 그대로 확인했습니다. baseline 16개 역할을 포함한 성공 역할 194/194개가 비교 적격이고 timeout 세 표본은 여전히 invalid이며 connection·group으로 승격되지 않았습니다. none/noqueue `limit_packets:null`은 0으로 바꾸지 않고 명시적 not-applicable로 남았습니다.
+오프라인 최종 감사는 순수 TLS 8개 역할·4그룹, M6 라이브러리 직접 소켓 가용성, M7 32개 역할·4그룹과 공통 경계 값을 보존했습니다. 성공한 네트워크 시도의 단계 참조 630/630개가 qdisc·필요한 추적 본문을 갖췄습니다. N05는 다시 실행하지 않고 기존 일곱 조건, 손실 조건 64회 성공, qdisc 폐기 94, CA 재전송 58, 패킷 행 4,148개와 `requested/started/success/timeout=100/100/97/3`을 그대로 확인했습니다. 기준 조건 16개 역할을 포함한 성공 역할 194/194개가 비교 적격이고 시간 초과 세 표본은 여전히 무효이며 연결·그룹으로 승격되지 않았습니다. `none`/`noqueue` `limit_packets:null`은 0으로 바꾸지 않고 명시적 해당 없음으로 남았습니다.
 
-수리 전 전체 반복·정적 검사 로그는 `check-before-phase-completeness-repeat20.log`, `static-before-phase-completeness.log`, `check-before-noqueue-compat-repeat20.log`, `static-before-noqueue-compat.log`로 이름을 바꿔 최종 증거와 구별했습니다. G008의 두 독립 커밋 증거도 `results/final-followup/commit-proof/`에 복사해 45×20 기반과 58×20 후속 경계를 보존했습니다. 사용자 제공 PDF와 `Zone.Identifier`는 읽거나 수정하지 않았고 계속 untracked 상태입니다.
+수리 전 전체 반복·정적 검사 로그는 `check-before-phase-completeness-repeat20.log`, `static-before-phase-completeness.log`, `check-before-noqueue-compat-repeat20.log`, `static-before-noqueue-compat.log`로 이름을 바꿔 최종 증거와 구별했습니다. G008의 두 독립 커밋 증거도 `results/final-followup/commit-proof/`에 복사해 45×20 기반과 58×20 후속 경계를 보존했습니다. 사용자 제공 PDF와 `Zone.Identifier`는 읽거나 수정하지 않았고 계속 추적하지 않는 상태입니다.
 
-이 결합 증거로 bounded G012/G013 최종 검증과 현재 사용자 후속 요구, M5·M6·M7 범위를 완료로 표시합니다. 문서 동결 뒤 milestone commit과 goal metadata 정리는 리더가 수행합니다. M10의 eBPF/완전한 계측 정확도 대조와 M12의 실제 인증서 압축·생략·캐싱 기법·원 논문 재현은 구현하지 않은 미래 범위이며 이번 완료 주장에 포함하지 않습니다.
+이 결합 증거로 제한된 G012/G013 최종 검증과 현재 사용자 후속 요구, M5·M6·M7 범위를 완료로 표시합니다. 문서 동결 뒤 마일스톤 커밋과 목표 부가정보 정리는 리더가 수행합니다. M10의 eBPF/완전한 계측 정확도 대조와 M12의 실제 인증서 압축·생략·캐싱 기법·원 논문 재현은 구현하지 않은 미래 범위이며 이번 완료 주장에 포함하지 않습니다.
 
 ## D1 키 공유 경계의 수정 전후 검증
 
@@ -404,7 +404,7 @@ N05의 조회 보고서는 바이트 단위로 같았고 네트워크·손실·`
 
 OpenSSL·wolfSSL·Mbed TLS·mock 모듈은 모두 `turtle_adapter_v2`만 내보내고 v1 호환 계층은 없습니다. 세 실제 어댑터의 수신 정책은 `false`이고, TLS 레코드를 해석하지 않는 mock은 해당 없음 `null`입니다.
 
-첫 후보의 79×20 시험·정적 검사·오프라인 재생·타임라인은 통과했지만 후속 검토가 소유 수명과 실제 로더 거절 시험의 공백을 찾았으므로 최종 근거로 쓰지 않습니다. 초기 수신 정책 시험의 `Io`를 엔드포인트가 소유하도록 고쳐 연결보다 오래 살게 했고, 뒤의 독립 검토에서 찾은 smoke 시험의 설정·`HostServices`·임시 `Io` 수명도 엔드포인트 정리까지 연장했습니다. 수리 뒤 AddressSanitizer로 세 어댑터 자기 연결과 OpenSSL 수신 정책 시험을 통과했습니다. v1 전용 모듈은 실제 `lifecycle::run`에서 정확한 v2 진입점 누락 이유를 남겼고, 자식 프로세스의 sentinel이 생기지 않아 v1 진입점·`declaration`·`setup`을 호출하지 않았음을 확인했습니다. 이 경로는 50회 반복해 통과했습니다.
+첫 후보의 79×20 시험·정적 검사·오프라인 재생·타임라인은 통과했지만 후속 검토가 소유 수명과 실제 로더 거절 시험의 공백을 찾았으므로 최종 근거로 쓰지 않습니다. 초기 수신 정책 시험의 `Io`를 엔드포인트가 소유하도록 고쳐 연결보다 오래 살게 했고, 뒤의 독립 검토에서 찾은 간단 실행 시험의 설정·`HostServices`·임시 `Io` 수명도 엔드포인트 정리까지 연장했습니다. 수리 뒤 AddressSanitizer로 세 어댑터 자기 연결과 OpenSSL 수신 정책 시험을 통과했습니다. v1 전용 모듈은 실제 `lifecycle::run`에서 정확한 v2 진입점 누락 이유를 남겼고, 자식 프로세스의 표식 파일이 생기지 않아 v1 진입점·`declaration`·`setup`을 호출하지 않았음을 확인했습니다. 이 경로는 50회 반복해 통과했습니다.
 
 결과 후처리의 첫 실행은 Python 변수 이름 겹침으로 구조 검증 JSON을 쓰기 전에 실패했습니다. 고친 초기 산출물에도 부정확한 순서 설명이 남아 최종 근거에서 제외했습니다. 수리 뒤 타임라인 실행은 세 TLS 실행·여섯 해독·보고를 이미 끝낸 뒤 마지막 stderr 검사 셸 루프의 문법 오류로 감싸기 명령만 실패했습니다. TLS 원자료를 다시 실행하지 않고 이미 생성된 자료와 빈 stderr를 다시 검증했습니다. 개발 중 선택 힙 구조체를 직접 동등 비교하려다 컴파일되지 않은 시도는 영구 로그가 없으므로 증거로 주장하지 않습니다. 최종 시험은 스칼라·성능 카운터·힙 필드를 각각 비교합니다.
 
@@ -427,7 +427,7 @@ OpenSSL·wolfSSL·Mbed TLS·mock 모듈은 모두 `turtle_adapter_v2`만 내보�
 
 CPU 고정 OpenSSL 실행은 지휘 0, 클라이언트 2, 서버 4를 서로 다른 core ID에 배치했습니다. 각 CPU의 온라인 SMT 형제 1, 3, 5를 affinity 범위와 함께 남겼고 형제 유휴·코어 전용 미보장, WSL 게스트 위상, 전체 실행 독점 미보장을 경고했습니다. 이 자료는 호스트 물리 코어 전용을 증명하지 않습니다.
 
-명시적 `user+kernel` 실행은 두 역할 모두 `cycles_open`, errno 13, `unsupported`, 실제 범위 `null`로 끝났습니다. 클라이언트·서버 부분 원자료와 attempt `error` 원장이 정확한 거절 이유를 보존했고, 프로세스는 종료 코드 1이었습니다. 현재 호스트의 `perf_event_paranoid` 값은 2였으며 `user`로 낮추어 시도하거나 전역 정책을 바꾸지 않았습니다. 기본 `user`의 errno 2와 명시적 `user+kernel`의 errno 13은 서로 다른 실제 관측입니다.
+명시적 `user+kernel` 실행은 두 역할 모두 `cycles_open`, errno 13, `unsupported`, 실제 범위 `null`로 끝났습니다. 클라이언트·서버 부분 원자료와 시도 `error` 원장이 정확한 거절 이유를 보존했고, 프로세스는 종료 코드 1이었습니다. 현재 호스트의 `perf_event_paranoid` 값은 2였으며 `user`로 낮추어 시도하거나 전역 정책을 바꾸지 않았습니다. 기본 `user`의 errno 2와 명시적 `user+kernel`의 errno 13은 서로 다른 실제 관측입니다.
 
 결정적 시스템 호출 대역 시험은 `user`·`user+kernel`의 속성, 모든 설정 실패 단계, 파일 설명자 정리, TLS 두 역할과 모의 CA의 부분 원자료·원장 보존을 확인했습니다. 이 합성 근거는 정책과 실패 처리 증거이지, 현 WSL에서 실제 `user+kernel` 하드웨어 카운터가 성공했다는 증거가 아닙니다.
 
@@ -447,3 +447,35 @@ CPU 고정 OpenSSL 실행은 지휘 0, 클라이언트 2, 서버 4를 서로 다
 실제 산출물을 만드는 후처리는 해석·보고를 끝낸 뒤 마지막 stderr 검사 셸 루프의 문법 오류로 감싸기 명령만 실패했습니다. 소스·TLS 원자료·보고서를 다시 생성하지 않고 이미 생성된 출력과 빈 stderr를 수정한 결과 검증기로 다시 확인했습니다.
 
 이 WSL 자료는 기능·원자료·정책 분기의 구조 근거입니다. 실제 하드웨어 카운터는 미지원이었으므로 `user+kernel` 계수 성공, 성능 순위·개선율·통계적 차이, 호스트 CPU 전용을 주장하지 않습니다.
+
+## G007 수명주기·model·record 구조 분리 검증
+
+`caf251e84fec88b50450ffd01bd4156960e4cf07`의 구조 분리는 기존 동작을 유지하면서 수명주기, model 값과 record 서비스를 실제 책임별 파일로 나눴습니다. 최종 총괄 파일은 `results/review-20261015/G007/validation/validation-summary.json`이고 SHA-256은 `379ddd9051dc41c26a3b44648955d7eb20d49d43208aa597a52ca5656d7949e5`입니다.
+
+| 근거 | 직접 확인한 내용 |
+|---|---|
+| 소스 대응 | 제품 경로 34개의 최종 대응표에서 35개 대상의 의미가 같았습니다. `src/lifecycle/lifecycle.cpp`는 삭제되고 director·역할 실행·엔드포인트 프로토콜·조회 실행 파일로 책임이 이동했습니다. 대응 결과 `source-equivalence.json`의 SHA-256은 `5cfa44006584db355af67d1676cecd1b1fee8a7d7416360e72ade7abf9e8d518`입니다. |
+| 전체 시험 | 세 실제 어댑터와 통합 시험 35개를 포함한 80개 시험을 각각 20회, 총 1,600회 실행해 실패·건너뜀 없이 통과했습니다. 11개 부품 경계 검사도 포함하며 로그 SHA-256은 `a711be5bd28cbf81bb3baa8342e5eabed940495d313cbf4d50848c63e4cb0d9a`입니다. |
+| 정적 검사 | 생산 번역 단위 26개와 CLI 엔드포인트 검사가 통과했습니다. 정적 검사 로그 SHA-256은 `903e649cfcbfcadf24849c5b9c424fbdb8bce68d4752165e8bfe9ce38e2e2a1a`입니다. |
+| 실제 TLS | OpenSSL·wolfSSL·Mbed TLS 자기 연결의 클라이언트·서버 여섯 역할이 유효했고, 구간 분할과 레코드 귀속 결과가 분리 전과 같았습니다. `actual/validation.json`의 SHA-256은 `2e8e0f67e2c01039076db6fc90452caff3247277a1fd842f709455cf59adbe70`입니다. 성능 수치를 비교하지 않았습니다. |
+| 오프라인 재생 | 보존 원자료 여덟 묶음을 각각 두 번 엄격히 다시 처리해 원자료와 전체 출력이 바이트 단위로 같았고 허용한 차이는 없었습니다. `offline/audit.json`의 SHA-256은 `5ab492defd0d8494c101ad1a4b7c7e98a090d97c6d89f02d42e8612a450c5ba6`입니다. 이 오프라인 절차에서는 네트워크·netem 실험을 다시 실행하지 않았다는 뜻이지 전체 검증에 실제 TCP가 없었다는 뜻은 아닙니다. |
+
+첫 소스 보존 명령은 이름이 같은 두 `service.hpp`를 평평한 폴더에 복사하려다 덮어쓰기를 거절해 중단했습니다. 제품·빌드·시험 결과는 바뀌지 않았고, 저장소 상대 경로를 보존하는 방식으로 다시 만들었습니다. 실패 로그 SHA-256은 `6d371fc2e08036ba148ad05d391430fc1c409b025ecc22330efeb5b434246ce9`입니다. 실제 TLS 실행·해석·보고 뒤에는 마지막 표준 오류 확인 셸 반복문이 `};done` 문법 오류로 끝났습니다. 이미 생성된 TLS 산출물을 다시 실행하거나 바꾸지 않고 그 파일과 로그를 검증했으며, 실패 로그 SHA-256은 `aaf39813dac60e89a212d609ca903906697c4ee292175eebf2767256de95bea9`입니다. 두 실패는 결과를 감싼 절차의 오류였으며 숨기지 않고 최종 근거와 구별해 보존합니다.
+
+## G008 중단과 G009 최종 문서 결합 검증
+
+G008 후보의 빌드와 수리 전 오프라인 재생은 통과했지만, 독립 검토에서 성능 카운터 실제 범위의 **필드 부재와 명시적 `null`을 합치던 HIGH 결함**과 한국어 문서 정리 미완료를 찾았습니다. 이 시점의 반복 시험은 지시에 따라 종료 코드 130으로 중단했습니다. 정적 검사·실제 TLS·최종 문서 검사는 아직 실행하지 않았으므로 G008 산출물을 최종 증거로 사용하지 않습니다.
+
+G009는 부분 선언에서 `perf_effective_scope`가 없으면 보고서에서도 키를 생략하고, 명시적 `null`과 완전한 구 자료의 기존 표현은 보존하도록 최소 범위로 수리했습니다. 이 동작은 실패 재현 뒤 성공하는 `RED→GREEN` 일반·조회 보고 회귀 시험으로 고정했고, 수리 뒤 정리 검토도 마쳤습니다. 커밋 전 첫 수리 후보의 전체 검증은 `results/review-20261015/G009/validation/validation-summary.json`에 있으며 SHA-256은 `e7c241745c53c2afbbcc418f28ca2c50225c8ee93a44408b694696046c23fac5`입니다. 그 뒤 제품 소스와 시험 네 파일만 `6bdd805ec387440e949affb4d1e27f7b9d758a54`로 별도 커밋하고, 문서 12개는 분리한 채 두 번째 검증을 새로 실행했습니다.
+
+최종 총괄 파일은 `results/review-20261015/G009/docs-final/validation-summary.json`이고 SHA-256은 `863fb43eb664a64f8eafdd89223f0b97e242c1298cff46dd8d4eff75e9d46e5a`입니다. 빌드 표시는 `6bdd805-dirty`였지만, 변경 상태는 이 문서와 ignore 경로 12개뿐이었습니다. 제품 144개 경로 해시 목록의 SHA-256 `66282ef880230b43461fd585e27f11c603d6c271df40782c5b50223201e9a687`은 수리 후보와 커밋 뒤가 같았습니다.
+
+| 근거 | 직접 확인한 내용 |
+|---|---|
+| 최종 산출물 목록 | `docs-final/artifact-manifest.sha256`의 SHA-256은 `f8c23b6c2d76dcc46a69b794953b4696295f9eb8cb03a62dc7a58e7179253543`입니다. |
+| 전체 시험과 정적 검사 | 80개 시험을 각각 20회, 총 1,600회 실행해 실패·건너뜀 없이 통과했습니다. 생산 번역 단위 26개와 CLI 엔드포인트 정적 검사, Python 파일 14개, 11개 부품과 그 자체 시험, 공개 헤더 경계 검사도 통과했습니다. 마지막 검증 실행 자체의 실패는 없었습니다. |
+| 실제 TLS | OpenSSL·wolfSSL·Mbed TLS 자기 연결 세 쌍, 모의 구현이 아닌 클라이언트·서버 여섯 역할이 모두 유효했습니다. 응용 교환, 구간 분할과 레코드 귀속 재계산도 일치했습니다. `actual/validation.json`의 SHA-256은 `d48cf8d23fc673d72a255ea1aaf5eeefb462e45d3a08b86e9995c4f9cef8f6ef`입니다. |
+| 문서와 보호 파일 | 문서 링크 21개와 셸 블록 14개, 명령행 옵션, ignore 규칙과 보호 파일 해시 검사가 모두 통과했습니다. 사용자 PDF·`Zone.Identifier`·검토 문서의 내용은 바뀌지 않았습니다. |
+| 엄격한 오프라인 재생 | 보존 원자료 여덟 묶음을 각각 두 번 처리해 원자료와 전체 출력이 바이트 단위로 같았고 허용한 차이는 없었습니다. `docs-offline/audit.json`의 SHA-256은 `c58e1feb44ce62321d52385dd8f2775193a11fea2b587e01bc10f8b7f234f893`입니다. 네트워크·netem 실험은 다시 실행하지 않았습니다. |
+
+보존한 여덟 원자료 묶음에는 `perf_effective_scope`만 빠진 부분 선언 사례가 없습니다. 따라서 이 사례는 오프라인 재생만으로 증명하지 않고, 일반·조회 보고의 반복 회귀 시험으로 키 부재, 비교 제외 이유와 기존 경과 시간·CPU 분포 보존을 확인했습니다. WSL의 기능·구조 근거라는 한계, 실제 PMU 계수 성공을 확인하지 못한 점과 N05를 다시 실행하지 않은 경계는 그대로입니다. 이 절은 성능 순위나 논문 수치를 주장하지 않습니다.

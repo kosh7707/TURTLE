@@ -57,15 +57,15 @@ TLS나 성능 시험이 아니라 공개 계약의 저장·복원 동작을 확�
 
 ## 준비와 계측
 
-첫 TLS 메시지부터 모두 구현체가 만듭니다. 송수신 콜백을 지원하면 `Io.send/recv`를 연결합니다. 소켓은 실제 TCP이며 프레임워크가 비차단으로 설정합니다. 네이티브 소켓 방식은 라이브러리 경계만 보이므로 같은 송수신 수준의 결과라고 주장하면 안 됩니다.
+첫 TLS 메시지부터 모두 구현체가 만듭니다. 송수신 콜백을 지원하면 `Io.send/recv`를 연결합니다. 소켓은 실제 TCP이며 프레임워크가 비차단으로 설정합니다. 라이브러리 직접 소켓 방식은 라이브러리 경계만 보이므로 같은 송수신 수준의 결과라고 주장하면 안 됩니다.
 
-`measurement.channel_observer`는 framework Channel의 관측 함수 선택이며 어댑터 capability나 ABI가 아닙니다. false에서도 어댑터는 같은 callback `Io`로 같은 send/recv 결과와 retry 규칙을 사용해야 합니다. framework가 stream·I/O 관측만 생략하며 keylog/plaintext host service와 TLS 호출 계약은 유지합니다. 새 어댑터는 observer 유무에 따라 프로토콜 결과나 전달 바이트를 바꾸면 안 됩니다.
+`measurement.channel_observer`는 프레임워크 `Channel`의 관측 함수 선택이며 어댑터 기능 선언이나 ABI가 아닙니다. `false`에서도 어댑터는 같은 콜백 `Io`로 같은 송수신 결과와 재시도 규칙을 사용해야 합니다. 프레임워크가 스트림·I/O 관측만 생략하며 키 로그·평문 호스트 서비스와 TLS 호출 계약은 유지합니다. 새 어댑터는 관측자 유무에 따라 프로토콜 결과나 전달 바이트를 바꾸면 안 됩니다.
 
 자원 제한 뒤에는 새 파일이나 epoll·소켓 등을 만들 수 없습니다. 특히 난수원·인증서·공급자 모듈을 늦게 여는 라이브러리는 준비 단계나 해당 라이브러리의 공식 빌드 옵션에서 해결해야 합니다. 제한을 조용히 해제하지 않습니다.
 
 메모리 모드의 호스트 할당 함수는 요청 바이트를 셉니다. 모든 해당 메모리는 계측기가 살아 있는 동안 해제합니다. 라이브러리 할당만 셌는지, 어댑터 자체 객체도 셌는지, 빠진 메모리가 있는지를 `memory_note`에 밝힙니다. 현재 계측기와 기록기는 단일 TLS 스레드를 전제로 합니다.
 
-키 로그와 평문 알림은 전달받은 메모리 저장 함수에 넣습니다. 측정 중 파일에 쓰지 않습니다. 새로운 키 스케줄로 해독이 불가능해도 원자료의 함수 경계와 바이트는 남길 수 있습니다. 해독 실패를 TLS 실행 실패나 0바이트로 바꾸지 않습니다.
+키 로그와 평문 알림은 전달받은 메모리 저장 함수에 넣습니다. 측정 중 파일에 쓰지 않습니다. 평문 알림은 추적 모드에서만 쓰는 선택적 메시지 대조 기준이며 어댑터 기능 선언이나 계측 시계가 아닙니다. 저장 색인에는 시각이 없으므로 이를 메시지 시간이나 독립 비용으로 설명하면 안 됩니다. 새로운 키 스케줄로 해독이 불가능해도 원자료의 함수 경계와 바이트는 남길 수 있습니다. 해독 실패를 TLS 실행 실패나 0바이트로 바꾸지 않습니다.
 
 ## 프로필과 지원 범위
 
@@ -83,8 +83,8 @@ ctest --test-dir build-tests --output-on-failure \
   -R '^openssl_cli_' --repeat until-fail:20 -j 4
 ```
 
-활성 OpenSSL·wolfSSL·Mbed TLS 각각에 대해 TURTLE client/server와 서버 인증/상호 인증을 조합하므로 현재 전체는 12조건입니다. 모든 조건은 callback I/O, TLS 1.3, `TLS_AES_128_GCM_SHA256`, P-256 요청, 실제 인증서 검증과 양방향 응용 바이트를 확인합니다. 양 프로세스가 exit 0으로 끝나고 wait/reap됐는지도 별도로 검사합니다. CLI argv·version·help, stdout/stderr, 어댑터 결과와 cleanup 상태는 조건별 JSON에 남깁니다.
+활성 OpenSSL·wolfSSL·Mbed TLS 각각에 대해 TURTLE 클라이언트·서버와 서버 인증/상호 인증을 조합하므로 현재 전체는 12조건입니다. 모든 조건은 콜백 I/O, TLS 1.3, `TLS_AES_128_GCM_SHA256`, P-256 요청, 실제 인증서 검증과 양방향 응용 바이트를 확인합니다. 양 프로세스가 종료 코드 0으로 끝나고 회수됐는지도 별도로 검사합니다. CLI 인자·version·help, 표준 출력·표준 오류, 어댑터 결과와 정리 상태는 조건별 JSON에 남깁니다.
 
-협상 필드에는 값과 함께 `observed`, `inferred`, `unobserved` 출처를 기록합니다. OpenSSL 어댑터는 group·resumption·HelloRetryRequest를 동적으로 관측하지만 signature는 관측하지 못합니다. wolfSSL은 group·signature·resumption을 관측하고 HelloRetryRequest를 단일 허용 group에서 추론합니다. Mbed TLS의 group·signature·resumption·HelloRetryRequest는 고정 configuration에 따른 추론입니다. 추론값을 runtime 관측이라고 바꾸지 않습니다.
+협상 필드에는 값과 함께 `observed`, `inferred`, `unobserved` 출처를 기록합니다. OpenSSL 어댑터는 그룹·세션 재개·HelloRetryRequest를 동적으로 관측하지만 서명 방식은 관측하지 못합니다. wolfSSL은 그룹·서명 방식·세션 재개를 관측하고 HelloRetryRequest를 단일 허용 그룹에서 추론합니다. Mbed TLS의 그룹·서명 방식·세션 재개·HelloRetryRequest는 고정 설정에 따른 추론입니다. 추론값을 실행 중 관측이라고 바꾸지 않습니다.
 
-현재 adapter v2에는 TLS `close_notify` 함수가 없습니다. 응용 교환 뒤 객체와 소켓을 닫고 CLI에는 `-ignore_unexpected_eof`를 사용합니다. 따라서 이 시험은 정상 shutdown alert의 완전성을 검증하지 않습니다. 단독 상호운용 시험은 callback 정상 경로의 기능 증거이며 native 경로와의 동등성, director 계측, 패킷 관측이나 성능 결과를 대신하지 않습니다.
+현재 어댑터 ABI 2에는 TLS `close_notify` 함수가 없습니다. 응용 교환 뒤 객체와 소켓을 닫고 CLI에는 `-ignore_unexpected_eof`를 사용합니다. 따라서 이 시험은 정상 종료 알림의 완전성을 검증하지 않습니다. 단독 상호운용 시험은 콜백 정상 경로의 기능 증거이며 라이브러리 직접 소켓 경로와의 동등성, 지휘 프로세스 계측, 패킷 관측이나 성능 결과를 대신하지 않습니다.

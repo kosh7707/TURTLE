@@ -31,17 +31,17 @@ CPU 고정을 켜면 기존처럼 지휘·클라이언트·서버·필요한 CA�
 - `perf=false`, `user`: 요청 범위는 남기고 `disabled`, 실제 범위 `null`로 정상 실행합니다.
 - `perf=false`, `user+kernel`: 서로 모순되는 설정이므로 실행 자료를 만들기 전에 거절합니다.
 - `perf=true`, `user`: 카운터를 열지 못하면 `unsupported`, 실제 범위 `null`로 남기고 시간 측정과 정상 TLS를 계속합니다.
-- `perf=true`, `user+kernel`: 요청을 적용하지 못하면 측정 정보를 원자료에 복사한 뒤 엔드포인트를 이유 있는 실패로 끝내고 attempt 원장에도 남깁니다. `user`로 낮추어 다시 시도하지 않습니다.
+- `perf=true`, `user+kernel`: 요청을 적용하지 못하면 측정 정보를 원자료에 복사한 뒤 엔드포인트를 이유 있는 실패로 끝내고 시도 원장에도 남깁니다. `user`로 낮추어 다시 시도하지 않습니다.
 
 두 카운터·그룹 초기화·초기 읽기까지 성공해야 `available`입니다. 실행 중 읽기는 여전히 사건별 `null`이 될 수 있고, `enabled=running=0`은 실제 계수 성공의 근거가 아닙니다. `perf_complete`는 필요 카운터가 모두 있고 `running>0`이며 `running<enabled`가 아닌 사건에서만 유지됩니다. 프로그램은 호스트의 `perf_event_paranoid`나 capability를 바꾸지 않고 실제 그룹 설정 결과를 사용합니다.
 
 현재 WSL 환경에서 `user+kernel` 하드웨어 카운터 성공을 확인했다고 주장하지 않습니다. 설정 속성과 각 실패 단계, 파일 설명자 정리, 엄격한 요청 거절은 결정적 시스템 호출 대역 시험으로 확인합니다. 호스트의 실제 계수가 가능할 때만 실제 카운터 값을 근거로 삼습니다.
 
-조회 시나리오에서는 표본마다 TLS 서버, TLS 클라이언트, 모의 CA 세 자식을 소유합니다. 클라이언트의 조회 TCP와 TLS TCP는 서로 다른 준비 연결이며, 모의 CA는 TLS `Role`에 포함되지 않습니다. 기준 PEM 객체는 지휘 프로세스가 실행 시작 때 한 번 읽어 불변 snapshot으로 보유합니다. 클라이언트는 연결마다 캐시를 같은 empty/fixed snapshot으로 직접 복원한 뒤 조회하고, `USABLE_OBJECT`가 된 뒤에만 TLS를 시작합니다. 이 객체는 stock TLS 인증서 입력을 대체하지 않습니다.
+조회 시나리오에서는 표본마다 TLS 서버, TLS 클라이언트, 모의 CA 세 자식을 소유합니다. 클라이언트의 조회 TCP와 TLS TCP는 서로 다른 준비 연결이며, 모의 CA는 TLS `Role`에 포함되지 않습니다. 기준 PEM 객체는 지휘 프로세스가 실행 시작 때 한 번 읽어 불변 저장본으로 보유합니다. 클라이언트는 연결마다 캐시를 같은 `empty` 또는 `fixed-snapshot` 저장본으로 직접 복원한 뒤 조회하고, `USABLE_OBJECT`가 된 뒤에만 TLS를 시작합니다. 이 객체는 수정하지 않은 TLS 인증서 입력을 대체하지 않습니다.
 
-`lookup.enabled=false`이면 조회 객체나 CA 입력을 요구하지 않고 TLS 서버와 클라이언트 두 자식만 만듭니다. attempt 원장 참여자와 필수 결과 파일도 이 두 역할뿐이며 CA·lookup 결과를 빈 파일이나 가짜 성공으로 만들지 않습니다. `lookup.enabled=true`의 기존 세 자식 계약은 그대로 유지합니다.
+`lookup.enabled=false`이면 조회 객체나 CA 입력을 요구하지 않고 TLS 서버와 클라이언트 두 자식만 만듭니다. 시도 원장 참여자와 필수 결과 파일도 이 두 역할뿐이며 CA·조회 결과를 빈 파일이나 가짜 성공으로 만들지 않습니다. `lookup.enabled=true`의 기존 세 자식 계약은 그대로 유지합니다.
 
-클라이언트의 TLS `Meter`, 조회 heap tracker, 모의 CA의 `Meter`와 heap tracker는 소유권을 나눕니다. 조회 사건의 시계·perf는 클라이언트 TLS `Meter`를 한 번 읽고 heap 필드만 조회 도메인 값으로 바꿉니다. 조회용 perf 그룹을 따로 열지 않습니다. 모의 CA process·입출력·대기·heap은 CA 프로세스의 원자료에 독립적으로 남깁니다.
+클라이언트의 TLS `Meter`, 조회 힙 추적기, 모의 CA의 `Meter`와 힙 추적기는 소유권을 나눕니다. 조회 사건의 시계·성능 카운터는 클라이언트 TLS `Meter`를 한 번 읽고 힙 필드만 조회 도메인 값으로 바꿉니다. 조회용 성능 카운터 그룹을 따로 열지 않습니다. 모의 CA 프로세스·입출력·대기·힙은 CA 프로세스의 원자료에 독립적으로 남깁니다.
 
 TCP 준비에서는 `ESTABLISHED`와 읽지 않은 바이트 0뿐 아니라 설정 후 조회한 비차단 플래그·`TCP_NODELAY`·송수신 버퍼·수신 시각 옵션도 확인합니다. 실제 버퍼 크기를 요청값과 혼동하지 않고 각 연결의 원자료에 남깁니다. 격리 시험은 제한값 조회에 더해 실제 새 `socket()` 호출이 `EMFILE`로 실패하는지도 확인합니다.
 
@@ -67,7 +67,7 @@ I/O 진입 사건은 기존 경계를 유지합니다. 연결·호출·순번 �
 
 `WantRead`나 `WantWrite`를 반환한 호출은 같은 작업과 같은 버퍼로 다시 실행합니다. 성공한 부분 바이트만 응용 버퍼의 위치를 이동합니다. 서버는 정해진 핑을 확인한 뒤 퐁을 보내고, 클라이언트는 퐁을 확인합니다. 실제 TLS 어댑터에서는 TLS 1.3, 전체 핸드셰이크, 인증서 검증 성공을 확인합니다. `mock`은 암호화도 인증서 검증도 하지 않으며 선언과 미완료 설명에 그 차이를 남깁니다.
 
-클라이언트 구간은 첫 핸드셰이크 호출부터 마지막 퐁 수신 호출 완료까지입니다. 서버 구간은 첫 성공한 수신 반환부터 마지막 퐁 송신 호출 완료까지입니다. 호출 완료 사건의 `result`는 `Step` 값이며, 응용 호출에는 `AppResult.step`을 기록합니다. `Done`은 2입니다. 네이티브 소켓 비교에서는 프레임워크 송수신이 보이지 않으므로 `library-only`로 표시하고 바이트와 커널 관측이 없음을 남깁니다.
+클라이언트 구간은 첫 핸드셰이크 호출부터 마지막 퐁 수신 호출 완료까지입니다. 서버 구간은 첫 성공한 수신 반환부터 마지막 퐁 송신 호출 완료까지입니다. 호출 완료 사건의 `result`는 `Step` 값이며, 응용 호출에는 `AppResult.step`을 기록합니다. `Done`은 2입니다. 라이브러리 직접 소켓 비교에서는 프레임워크 송수신이 보이지 않으므로 `library-only`로 표시하고 바이트와 커널 관측이 없음을 남깁니다.
 
 ### 보고서의 TLS 측정 구간
 
@@ -83,25 +83,25 @@ I/O 진입 사건은 기존 경계를 유지합니다. 연결·호출·순번 �
 
 여기서 “포함”은 경계 사이의 경과 시간에 든다는 뜻입니다. 각 작업의 순수 CPU 비용을 분리했다는 뜻이 아닙니다. `record_computation_attribution`은 기본 주 구간의 연산 구간에 레코드 근거를 붙이는 연결별 보기이며 추가 그룹 지표나 자동 비교를 만들지 않습니다.
 
-### callback과 native 경로의 관측 가능성
+### 콜백과 라이브러리 직접 소켓 경로의 관측 가능성
 
-OpenSSL 어댑터는 `framework_io=true`인 callback 경로와 `false`인 native socket 경로를 지원합니다. wolfSSL과 Mbed TLS는 native 경로를 지원하지 않으며 설정을 거절합니다. native 지원을 추정하거나 이 두 어댑터에 가짜 결과를 만들지 않습니다.
+OpenSSL 어댑터는 `framework_io=true`인 콜백 경로와 `false`인 라이브러리 직접 소켓 경로를 지원합니다. wolfSSL과 Mbed TLS는 라이브러리 직접 소켓 경로를 지원하지 않으며 해당 설정을 거절합니다. 지원 여부를 추정하거나 가짜 결과를 만들지 않습니다.
 
-callback 경로에서는 `transport::Channel`을 지난 TLS stream 바이트와 I/O 사건을 기록합니다. 수신 시각 설정이 실제로 준비됐으면 kernel receive 사건을 수집할 통로도 available입니다. 그러나 `availability.kernel_receive_events.available=true`는 **수집 경로가 설정·지원됐다는 뜻**이지 특정 실행에서 kernel timestamp 사건이 실제로 하나 이상 생겼다는 증거가 아닙니다. 실제 `raw_timestamp_ns`가 있는 원자료 사건을 확인해야 발생을 주장할 수 있습니다.
+콜백 경로에서는 `transport::Channel`을 지난 TLS 스트림 바이트와 I/O 사건을 기록합니다. 수신 시각 설정이 실제로 준비됐으면 커널 수신 사건을 수집할 통로도 사용할 수 있습니다. 그러나 `availability.kernel_receive_events.available=true`는 **수집 경로가 설정·지원됐다는 뜻**이지 특정 실행에서 커널 시각 사건이 하나 이상 생겼다는 증거가 아닙니다. `raw_timestamp_ns`가 있는 원자료 사건을 확인해야 발생을 주장할 수 있습니다.
 
-native 경로의 TLS 라이브러리는 소켓을 직접 사용하므로 framework TLS stream, I/O 사건과 kernel receive 사건을 볼 수 없습니다. 세 항목을 0으로 쓰지 않고 `available=false`, `reason=native_socket_io_not_observed`로 기록합니다. 네이티브 클라이언트는 첫 handshake 호출부터 마지막 app receive 호출까지의 호출 경계가 남으므로 경과 시간과 스레드 CPU 차이는 보고할 수 있습니다. 다만 computation/I/O/wait/gap 분해와 stream byte metric은 `null`입니다. 네이티브 서버는 주 구간 시작인 첫 성공 framework receive를 볼 수 없으므로 `start_sequence=null`, `primary_window.available=false`, 이유 `server_first_receive_not_observed`로 남기며 경과·CPU를 만들지 않습니다.
+라이브러리 직접 소켓 경로에서는 TLS 라이브러리가 소켓을 직접 사용하므로 프레임워크의 TLS 스트림, I/O 사건과 커널 수신 사건을 볼 수 없습니다. 세 항목을 0으로 쓰지 않고 `available=false`, `reason=native_socket_io_not_observed`로 기록합니다. 클라이언트는 첫 핸드셰이크 호출부터 마지막 응용 수신 호출까지의 경계가 남으므로 경과 시간과 스레드 CPU 차이는 보고할 수 있습니다. 다만 `computation`·I/O·대기·틈 분해와 스트림 바이트 지표는 `null`입니다. 서버는 주 구간 시작인 첫 성공 프레임워크 수신을 볼 수 없으므로 `start_sequence=null`, `primary_window.available=false`, 이유 `server_first_receive_not_observed`로 남기며 경과·CPU를 만들지 않습니다.
 
-TLS 인증과 32바이트 핑퐁이 성공한 기능 유효성과 특정 metric의 관측 가능성은 별도 상태입니다. native 서버의 주 구간이 없어도 기능 결과는 유효할 수 있고, 반대로 metric이 존재해도 application 검증이나 attempt/network integrity 실패를 성공으로 바꾸지 않습니다.
+TLS 인증과 32바이트 핑퐁이 성공한 기능 유효성과 특정 지표의 관측 가능성은 별도 상태입니다. 라이브러리 직접 소켓을 쓰는 서버의 주 구간이 없어도 기능 결과는 유효할 수 있고, 반대로 지표가 존재해도 응용 검증이나 시도·네트워크 무결성 실패를 성공으로 바꾸지 않습니다.
 
-### 채널 관측자 on/off
+### 채널 관측자 켬/끔
 
-프로필 JSON의 `measurement.channel_observer`는 기본 `true`입니다. CLI 옵션이나 공개 adapter ABI를 추가하지 않고 내부 실행 설정에만 둡니다. 필드가 없는 이전 프로필·원자료는 on으로 읽습니다.
+프로필 JSON의 `measurement.channel_observer`는 기본 `true`입니다. CLI 옵션이나 공개 adapter ABI를 추가하지 않고 내부 실행 설정에만 둡니다. 필드가 없는 이전 프로필·원자료는 켬으로 읽습니다.
 
-`false`는 `transport::Channel`에 전달하는 관측 함수 포인터만 `nullptr`로 바꿉니다. 같은 callback `Io.send/recv`와 `send/recvmsg`, 비차단 retry, 버퍼 크기, 소켓 설정과 kernel timestamp readback을 유지합니다. `Capture::invoke`의 TLS 호출 시작·끝, wait 사건, keylog·plaintext sink, perf와 calibration도 계속 동작합니다. 따라서 observer off를 **무계측** 또는 uninstrumented 실행이라고 부르지 않습니다.
+`false`는 `transport::Channel`에 전달하는 관측 함수 포인터만 `nullptr`로 바꿉니다. 같은 콜백 `Io.send/recv`와 `send/recvmsg`, 비차단 재시도, 버퍼 크기, 소켓 설정과 커널 시각 설정 재조회를 유지합니다. `Capture::invoke`의 TLS 호출 시작·끝, 대기 사건, 키 로그·평문 알림, 성능 카운터와 교정도 계속 동작합니다. 따라서 관측자 끔 상태를 **무계측** 실행이라고 부르지 않습니다. 관측자 켬/끔 차이는 전체 계측 비용의 수학적 상한이나 하한이 아니며 서버의 계측 없는 외부 기준선을 대신하지 않습니다.
 
-off에서는 framework stream 복사와 I/O·KERNEL_RX 사건만 수집하지 않습니다. 표본은 `observation_level=observer-disabled`이고 `tls_stream`, `io_events`, `kernel_receive_events`가 모두 `available=false`, `reason=channel_observer_disabled`입니다. 빈 stream 파일을 관측된 0바이트로 해석하지 않습니다. 서버의 기존 first-receive 주 구간도 계속 unavailable입니다.
+끔 상태에서는 프레임워크 스트림 복사와 I/O·KERNEL_RX 사건만 수집하지 않습니다. 표본은 `observation_level=observer-disabled`이고 `tls_stream`, `io_events`, `kernel_receive_events`가 모두 `available=false`, `reason=channel_observer_disabled`입니다. 빈 스트림 파일을 관측된 0바이트로 해석하지 않습니다. 서버의 기존 첫 수신 기반 주 구간도 계속 사용할 수 없습니다.
 
-호출 사건은 양쪽 모드에 남으므로 보고서는 양 역할에 `handshake_call_begin_to_application_complete` 공통 경계를 계산합니다. 시작은 측정 연결의 첫 handshake `CALL_BEGIN`, 끝은 클라이언트의 전체 app_recv 또는 서버의 전체 app_send를 완성한 마지막 성공 `CALL_END`입니다. 부분 전송과 retry는 요청한 application bytes가 모두 끝날 때까지 합산합니다. 이 공통 경계는 native나 observer-off 서버의 unavailable 주 구간을 대체하거나 만들어 내지 않는 별도 진단 경계입니다.
+호출 사건은 양쪽 모드에 남으므로 보고서는 양 역할에 `handshake_call_begin_to_application_complete` 공통 경계를 계산합니다. 시작은 측정 연결의 첫 핸드셰이크 `CALL_BEGIN`, 끝은 클라이언트의 전체 응용 수신 또는 서버의 전체 응용 송신을 완성한 마지막 성공 `CALL_END`입니다. 부분 전송과 재시도는 요청한 응용 바이트가 모두 끝날 때까지 합산합니다. 이 공통 경계는 라이브러리 직접 소켓이나 관측자 끔 경로에서 사용할 수 없는 서버 주 구간을 대체하거나 만들어 내지 않는 별도 진단 경계입니다.
 
 셋업 시작과 끝의 스냅샷은 실제 호출 경계에서 얻고, 어댑터의 할당 함수 지원 선언을 확인한 후 기록합니다. 지원되지 않는 힙 관측은 0이 아니라 빈 값입니다. 누락되거나 다중화된 성능 카운터는 `perf_complete=false`입니다.
 
@@ -111,28 +111,30 @@ off에서는 framework stream 복사와 I/O·KERNEL_RX 사건만 수집하지 �
 
 역할 프로세스는 처리할 수 있는 실행 오류를 `valid=false`와 이유로 기록합니다. 지휘 프로세스는 전체 표본에 제한 시간을 두고 자식을 회수합니다. 자식이 종료되거나 시간 초과로 기록을 끝내지 못하면 역할 파일이 비어 있을 수 있습니다. 이 경우에도 `director.txt`에 무효 상태를 남깁니다. 무효 표본은 다시 채우지 않고 실행을 끝냅니다. 기존 표본 폴더를 덮어쓰지 않습니다.
 
-### attempt deadline과 bounded cleanup
+### 시도 기한과 제한된 정리
 
-조회 실행의 `timeout_ms`는 setup, listener, TCP 준비, phase acknowledgement, 조회, TLS와 정상 flush 전에 공유하는 하나의 absolute steady-clock deadline입니다. 단계가 바뀔 때 시간을 새로 주지 않습니다. 최초 terminal 원인을 다음 규칙으로 고정합니다.
+조회 실행의 `timeout_ms`는 셋업, 수신 대기 소켓, TCP 준비, 단계 확인 응답, 조회, TLS와 정상 기록 완료 전에 공유하는 하나의 단조 시계 절대 기한입니다. 단계가 바뀔 때 시간을 새로 주지 않습니다. 최초 종료 원인을 다음 규칙으로 고정합니다.
 
-- deadline을 먼저 넘기면 `timeout`입니다.
-- deadline 전에 실행 오류를 먼저 확인하면 `error`이며, 뒤의 flush 중 deadline이 지나도 timeout으로 덮지 않습니다.
+- 기한을 먼저 넘기면 `timeout`입니다.
+- 기한 전에 실행 오류를 먼저 확인하면 `error`이며, 뒤의 기록 완료 중 기한이 지나도 시간 초과로 덮지 않습니다.
 - 실행은 끝났지만 필수 기록만 완전하지 않으면 `incomplete`입니다.
-- 뒤따른 flush 오류, kill과 누락은 `secondary_reasons`와 artifact 상태로 남깁니다.
+- 뒤따른 기록 완료 오류, 강제 종료와 누락은 `secondary_reasons`와 artifact 상태로 남깁니다.
 
-abort를 처음 감지한 시각에 `abort_time + flush_grace_ms`를 한 번 계산합니다. 기본값은 500ms이고 허용 범위는 1~5,000ms입니다. 이 유예 동안 새 연결·조회·TLS 측정을 시작하지 않고 가능한 partial 기록과 최종 소켓 관측만 flush합니다. 유예를 재시작하거나 정리 오류 때문에 연장하지 않습니다. 유예가 끝나면 소유 자식에 SIGKILL을 보내며, 운영체제 wait/reap에는 별도의 고정 250ms 복구 상한을 둡니다. 모든 소유 자식 회수를 증명하지 못하면 다음 attempt를 시작하지 않고 fatal로 남깁니다.
+중단을 처음 감지한 시각에 `abort_time + flush_grace_ms`를 한 번 계산합니다. 기본값은 500ms이고 허용 범위는 1~5,000ms입니다. 이 유예 동안 새 연결·조회·TLS 측정을 시작하지 않고 가능한 부분 기록과 최종 소켓 관측만 완료합니다. 유예를 재시작하거나 정리 오류 때문에 연장하지 않습니다. 유예가 끝나면 소유 자식에 SIGKILL을 보내며, 운영체제 대기·회수에는 별도의 고정 250ms 복구 상한을 둡니다. 모든 소유 자식 회수를 증명하지 못하면 다음 시도를 시작하지 않고 치명적 오류로 남깁니다.
 
-`samples`는 attempt 분모입니다. `fail-fast`는 첫 실패 뒤 남은 attempt를 `not_attempted`로 기록합니다. `fixed-attempts`도 회수를 확인한 attempt 오류 뒤에만 계속하며, 치명적인 환경·셋업 실패는 남은 수를 `not_attempted`로 끝냅니다. 원장은 `requested = started + not_attempted`와 `started = success + timeout + error + incomplete`를 지켜야 합니다.
+`samples`는 시도 분모입니다. `fail-fast`는 첫 실패 뒤 남은 시도를 `not_attempted`로 기록합니다. `fixed-attempts`도 회수를 확인한 시도 오류 뒤에만 계속하며, 치명적인 환경·셋업 실패는 남은 수를 `not_attempted`로 끝냅니다. 원장은 `requested = started + not_attempted`와 `started = success + timeout + error + incomplete`를 지켜야 합니다.
 
-### 전달받은 네트워크 namespace
+### 전달받은 네트워크 이름공간
 
-`scripts/netem-study.py`는 host 밖이 아니라 새 user/network namespace 안에서 data namespace와 링크를 소유합니다. `lookup.enabled=true`이면 client/server/ca/router 네 namespace·네 veth 링크를 만들고 C++는 client/server/ca FD를 빌립니다. `lookup.enabled=false`이면 client/server/router 세 namespace·두 veth 링크만 만들고 C++는 client/server FD만 빌립니다. 각 자식은 `setns`한 뒤 listener와 socket을 만듭니다. router FD와 생성·삭제 권한은 C++에 전달하지 않습니다. host route·interface·qdisc와 `/run/netns`도 바꾸지 않습니다.
+현재 모든 TLS 역할, 모의 CA와 격리 네트워크는 한 호스트에서 실행합니다. 원격 두 호스트 실행기와 호스트 사이 시계 동기화는 지원하지 않습니다. 아래 이름공간 격리는 로컬 실행 안의 네트워크 조건을 분리할 뿐 두 물리 호스트 실험을 대신하지 않습니다.
 
-namespace helper를 만든 parent는 고정 시간만 기다리지 않습니다. helper가 `unshare`와 자기 namespace 진입을 마친 뒤 전용 readiness pipe에 신호를 쓴 다음에만 parent가 `/proc/<pid>/ns/net` FD를 엽니다. 신호에는 유한 timeout을 두며, EOF·timeout·자식 조기 종료는 setup 실패입니다. 이는 빠른 동시 실행에서 아직 이전 namespace인 PID의 FD를 여는 시작 race를 막기 위한 제어 통로입니다.
+`scripts/netem-study.py`는 호스트 밖이 아니라 새 사용자·네트워크 이름공간 안에서 데이터 이름공간과 링크를 소유합니다. `lookup.enabled=true`이면 클라이언트·서버·CA·router 네 이름공간과 네 veth 링크를 만들고 C++는 클라이언트·서버·CA 이름공간 FD를 빌립니다. `lookup.enabled=false`이면 클라이언트·서버·router 세 이름공간과 두 veth 링크만 만들고 C++는 클라이언트·서버 이름공간 FD만 빌립니다. 각 자식은 `setns`한 뒤 수신 대기 소켓과 연결 소켓을 만듭니다. router FD와 생성·삭제 권한은 C++에 전달하지 않습니다. 호스트 route·interface·qdisc와 `/run/netns`도 바꾸지 않습니다.
 
-Python과 지휘 프로세스는 setup/scenario/cleanup begin/end를 JSON 한 줄로 교환합니다. 각 ack의 `<attempt>:<phase>:<edge>` observation ID가 원장과 network observation을 연결합니다. attempt마다 qdisc를 삭제·재생성하므로 이전 큐와 카운터를 다음 attempt의 결과로 넘기지 않습니다. runner의 observer/helper 정리 500ms와 C++ 자식 flush grace 및 250ms OS reap 상한은 서로 다른 소유 자원에 적용합니다.
+이름공간 보조 프로세스를 만든 상위 프로세스는 고정 시간만 기다리지 않습니다. 보조 프로세스가 `unshare`와 자기 이름공간 진입을 마친 뒤 전용 준비 완료 pipe에 신호를 쓴 다음에만 상위 프로세스가 `/proc/<pid>/ns/net` FD를 엽니다. 신호에는 유한 대기 시간을 두며, EOF·시간 초과·자식 조기 종료는 셋업 실패입니다. 이는 빠른 동시 실행에서 아직 이전 이름공간인 PID의 FD를 여는 시작 race를 막기 위한 제어 통로입니다.
 
-고정 timeout 검증에서는 세 attempt가 모두 timeout으로 남았고, 각 attempt의 missing artifact와 partial phase window도 보존됐습니다. 세 attempt 모두 cleanup grace 뒤 살아 있던 소유 자식에 실제 SIGKILL을 보내고 reap했습니다. 250ms는 SIGKILL 뒤 운영체제 회수를 기다리는 최대 상한이지 측정된 정리 시간이 아닙니다. N05 loss 64 attempts에서는 이 강제 종료 경로가 필요하지 않았습니다. 합성 EIO 때문에 회수 완료를 증명할 수 없는 분기와 소유 PID 제한은 테스트 전용 시스템 호출 wrapper로 확인합니다. 프로덕션 오류 주입 옵션은 추가하지 않았습니다.
+Python과 지휘 프로세스는 셋업·시나리오·정리의 시작과 끝을 JSON 한 줄로 교환합니다. 각 확인 응답의 `<attempt>:<phase>:<edge>` 관측 ID가 원장과 네트워크 관측을 연결합니다. 시도마다 qdisc를 삭제·재생성하므로 이전 큐와 카운터를 다음 시도의 결과로 넘기지 않습니다. 실행기의 관측자·보조 프로세스 정리 500ms, C++ 자식의 기록 완료 유예와 250ms 운영체제 회수 상한은 서로 다른 소유 자원에 적용합니다.
+
+고정 시간 초과 검증에서는 세 시도가 모두 시간 초과로 남았고, 각 시도의 누락 산출물과 끝나지 않은 단계 구간도 보존됐습니다. 세 시도 모두 정리 유예 뒤 살아 있던 소유 자식에 실제 SIGKILL을 보내고 회수했습니다. 250ms는 SIGKILL 뒤 운영체제 회수를 기다리는 최대 한도이지 측정된 정리 시간이 아닙니다. N05 손실 조건 64개 시도에서는 이 강제 종료 경로가 필요하지 않았습니다. 합성 EIO 때문에 회수 완료를 증명할 수 없는 분기와 소유 PID 제한은 시험 전용 시스템 호출 대역으로 확인합니다. 제품 오류 주입 옵션은 추가하지 않았습니다.
 
 ## 검증과 빌드 연결
 
@@ -142,18 +144,14 @@ Python과 지휘 프로세스는 setup/scenario/cleanup begin/end를 JSON 한 �
 - `turtle_transport_test`: 실제 loopback TCP, 준비 상태, 비차단 읽기, 실제 성공 바이트와 관측 횟수를 확인합니다.
 - `turtle_lifecycle_test <모듈 폴더>`: 새 프로세스 4개, 표본마다 준비 연결과 측정 연결, 셋업의 제한 이전 실행, 연결 열기의 제한 이후 실행, TLS 이전의 빈 TCP, 검증 실패 후 다음 표본 중단을 확인합니다. 모의 실행이며 실제 TLS 성공 증거로 쓰지 않습니다.
 - `turtle_runtime_tls_test <모듈 폴더> <인증서 폴더> [클라이언트 모듈] [서버 모듈]`: 서버 인증과 상호 인증을 시간·메모리 모드에서 각각 두 표본과 준비 연결로 실행합니다. 실제 TLS 1.3 결과와 응용 데이터 확인을 검사합니다. 인증서는 `scripts/make-pki.sh`로 별도 준비합니다.
-- `pure_tls_netem.py`: 조회가 꺼진 OpenSSL TLS를 0ms·20ms 양방향 netem 조건에서 각 2 attempts 실행하도록 구성되어 있습니다. 세 namespace·두 링크·두 qdisc, CA/lookup 결과 부재, TLS 해독, 소유 자원 정리, 역할별 경과·스레드 CPU가 든 네 보고 그룹을 검사합니다.
-- `io_path.py normal`: OpenSSL callback/native와 서버 인증/상호 인증 네 조건에서 실제 TLS·응용 교환, 역할별 availability와 offline 해석·보고를 검사합니다.
-- `io_path.py external`: 기존 lookup=false zero-loss runner를 callback/native 각각 2 attempts에 재사용합니다. router receiver-facing egress AF_PACKET metadata와 network integrity를 검사하며 N05나 `verify`를 실행하지 않습니다.
+- `pure_tls_netem.py`: 조회가 꺼진 OpenSSL TLS를 0ms·20ms 양방향 netem 조건에서 각각 2개 시도 실행하도록 구성되어 있습니다. 세 이름공간·두 링크·두 qdisc, CA·조회 결과 부재, TLS 해독, 소유 자원 정리, 역할별 경과·스레드 CPU가 든 네 보고 그룹을 검사합니다.
+- `io_path.py normal`: OpenSSL 콜백·라이브러리 직접 소켓 경로와 서버 인증/상호 인증 네 조건에서 실제 TLS·응용 교환, 역할별 가용성와 오프라인 해석·보고를 검사합니다.
+- `io_path.py external`: 조회가 꺼진 기존 무손실 실행기를 콜백과 라이브러리 직접 소켓 경로에서 각각 2개 시도에 재사용합니다. 수신자 쪽 router 송신 구간의 AF_PACKET 부가정보와 네트워크 무결성을 검사하며 N05나 `verify`를 실행하지 않습니다.
 
-G006 당시 통합 작업 트리에서는 57×20=1,140회가 통과했습니다. G007 동결 트리는 58×20=1,160회, M5 CLI 상호운용 트리는 70×20=1,400회, M6 I/O 경로 트리는 72×20=1,440회 통과했습니다. 채널 관측자 on/off를 더한 현재 동결 트리는 73×20=1,460회와 11개 부품 include 경계 검사, 생산 번역 단위 24개의 cppcheck·clang-tidy를 통과했습니다. M7 제품 code review는 APPROVE, 구조 검토는 CLEAR였고 16 attempts·32개 역할 파일의 원자료 감사도 통과했습니다. 각 시점의 실패와 증거는 `docs/validation.md`에 따로 보존합니다.
+시험 반복 횟수, 정적 검사와 원자료 감사의 시점별 결과는 [검증 기록](validation.md)에만 보존합니다.
 
-## 통합 검토 후 추가 확인
+## 측정 뒤 조회와 고정 실패
 
 문자열을 돌려주는 협상 결과 조회는 핑퐁의 마지막 호출 완료 뒤에 실행합니다. 따라서 버전·암호 방식·그룹·서명 이름을 만드는 할당이 주 측정 구간에 들어가지 않습니다. 실제로 관측된 암호 방식·그룹·서명은 요청 프로필과 비교하며, 빈 값은 요청값으로 채우지 않고 관측하지 못했다는 설명을 남깁니다. 호출 완료 사건에는 응용 바이트의 요청량과 실제 처리량도 기록합니다. 어댑터가 실패하면 제공된 오류 설명을 무효 이유에 보존합니다.
 
-추가 시험에서 Mbed TLS 자체 연결과 OpenSSL/Mbed TLS 양방향 교차 연결은 서버 인증·상호 인증 및 시간·메모리 모드를 통과했습니다. 협상 결과 조회가 측정 종료 뒤에 있고, 응용 바이트 합계가 요청량과 같은지도 검사했습니다. 기존 wolfSSL build3 모듈은 기본 자원 제한 상태에서 `wolfSSL_new failed`를 반환했고 제한을 끈 비교 실행에서는 통과했습니다. 이 문제는 어댑터 담당자에게 전달했으며, 제한을 몰래 끄거나 기본 정상 경로 성공으로 보고하지 않습니다.
-
-최종 통합에서 wolfSSL을 공식 `WOLFSSL_GETRANDOM` 빌드 조건으로 다시 빌드하여 파일 생성 제한 안에서도 난수 준비가 가능해졌습니다. 현재 세 라이브러리의 모든 교차 연결이 기본 자원 제한에서 통과합니다. 위 실패 기록은 원인 확인 과정으로 보존합니다.
-
-CPU 고정을 요청했으면 실패를 경고만 남기고 진행하지 않습니다. 역할 또는 지휘 프로세스의 고정 실패는 표본을 무효로 만듭니다. `pinned_cpu`는 실제 성공한 CPU 번호이며, 고정하지 않았거나 실패했으면 -1입니다. 지휘 프로세스의 실패는 `director.txt`에 남고 역할 기록의 성공 여부보다 우선합니다. 테스트 전용 링크 래퍼로 고정 실패를 재현해 이 규칙을 검사하며 프로덕션 코드에는 오류 주입 경로를 넣지 않았습니다.
+CPU 고정을 요청했으면 실패를 경고만 남기고 진행하지 않습니다. 역할 또는 지휘 프로세스의 고정 실패는 표본을 무효로 만듭니다. `pinned_cpu`는 실제 성공한 CPU 번호이며, 고정하지 않았거나 실패했으면 -1입니다. 지휘 프로세스의 실패는 `director.txt`에 남고 역할 기록의 성공 여부보다 우선합니다. 시험 전용 링크 래퍼로 고정 실패를 재현해 이 규칙을 검사하며 제품 코드에는 오류 주입 경로를 넣지 않았습니다. 과거 라이브러리별 실패와 수정 근거는 [검증 기록](validation.md)에 있습니다.

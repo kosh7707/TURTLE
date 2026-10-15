@@ -42,7 +42,7 @@ JSON 형식의 원자료와 프로필을 정확하게 읽고 쓰기 위해 nlohm
 
 ## 원래 명세와 달라진 관측 범위
 
-기본 통신은 콜백을 통한 실제 TCP입니다. 커널 수신 시각은 `SO_TIMESTAMPNS`로 얻고 원래 시계를 보존합니다. 송신 오류 대기열·NIC 시각·eBPF·패킷 캡처는 구현했다고 표시하지 않습니다. 네이티브 소켓 경로는 `library-only`이며 시스템 호출 경계라고 부르지 않습니다. 키 로그와 원자료 스트림의 해독은 실제 AES-128-GCM/SHA-256으로 확인하고, 미지원 암호 방식은 경계 관측과 분리하여 설명합니다.
+기본 통신은 콜백을 통한 실제 TCP입니다. 커널 수신 시각은 `SO_TIMESTAMPNS`로 얻고 원래 시계를 보존합니다. 송신 오류 대기열·NIC 시각·eBPF·패킷 캡처는 구현했다고 표시하지 않습니다. 라이브러리 직접 소켓 경로는 `library-only`이며 시스템 호출 경계라고 부르지 않습니다. 키 로그와 원자료 스트림의 해독은 실제 AES-128-GCM/SHA-256으로 확인하고, 미지원 암호 방식은 경계 관측과 분리하여 설명합니다.
 
 ## 식별과 빌드 재현
 
@@ -60,7 +60,7 @@ JSON 형식의 원자료와 프로필을 정확하게 읽고 쓰기 위해 nlohm
 
 2026년 10월 15일, 최초 작업 순서의 M1을 보완하면서 설정 성공 반환만으로 TCP 준비가 끝났다고 보던 경로를 바꿨습니다. TLS를 시작하기 전에 비차단 플래그와 `TCP_NODELAY`, 송수신 버퍼, 수신 시각 옵션을 다시 읽습니다. 필수 설정을 확인하지 못하면 실행을 중단합니다. 요청한 수신 시각 기능을 사용할 수 없는 경우에는 기존처럼 미지원 사실을 남깁니다.
 
-Linux는 송수신 버퍼에 내부 관리 공간과 하한·상한을 적용하므로 요청 바이트와 조회 바이트를 같다고 검사하지 않습니다. 이 동작은 [Linux socket(7) 매뉴얼](https://man7.org/linux/man-pages/man7/socket.7.html)의 `SO_SNDBUF`와 `SO_RCVBUF` 설명을 따릅니다. 요청값은 프로필에, 조회값은 각 연결의 `socket`에 보존합니다. 조회값이 다른 양쪽 엔드포인트의 표본은 같은 보고 그룹에 섞지 않습니다.
+Linux는 송수신 버퍼에 내부 관리 공간과 하한·상한을 적용하므로 요청 바이트와 조회 바이트를 같다고 검사하지 않습니다. 이 동작은 [Linux 소켓(7) 매뉴얼](https://man7.org/linux/man-pages/man7/socket.7.html)의 `SO_SNDBUF`와 `SO_RCVBUF` 설명을 따릅니다. 요청값은 프로필에, 조회값은 각 연결의 `socket`에 보존합니다. 조회값이 다른 양쪽 엔드포인트의 표본은 같은 보고 그룹에 섞지 않습니다.
 
 ## 반복 실행의 컨텍스트 입력 고정
 
@@ -78,101 +78,101 @@ M1의 연결 수 입력은 준비 연결 수와 구별합니다. `--connections`
 
 암호군 고정이 키 교환 그룹이나 인증서 서명 방식까지 고정한다는 뜻은 아닙니다. TLS 1.3의 이 선택들은 별개입니다([RFC 8446, 4.1.1절](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.1.1)). 따라서 인증서 체인·서명 방식 실험은 이 결정과 양립하며, 세 라이브러리의 공통 지원 범위는 별도로 지킵니다.
 
-## 합성 조회와 stock TLS를 분리
+## 합성 조회와 수정하지 않은 TLS를 분리
 
-2026년 10월 15일, 첫 모의 CA 범위는 클라이언트의 선행 인증서 객체 조회 뒤 표준 TLS를 실행하는 `synthetic-lookup-plus-standard-tls`로 고정했습니다. 조회 응답은 기준 원본과 byte-for-byte 비교하고 캐시에 삽입하여 실제로 소비하지만, 어댑터의 인증서 입력은 바꾸지 않습니다. 이 선택은 기존 adapter v1과 정상 TLS 의미를 보존하고 CA·조회 비용을 독립적으로 관측하기 위한 것입니다.
+2026년 10월 15일, 첫 모의 CA 범위는 클라이언트가 인증서 객체를 먼저 조회한 뒤 표준 TLS를 실행하는 `synthetic-lookup-plus-standard-tls`로 고정했습니다. 조회 응답은 기준 원본과 바이트 단위로 비교하고 캐시에 삽입하여 실제로 소비하지만, 어댑터의 인증서 입력은 바꾸지 않습니다. 이 선택은 기존 adapter v1과 정상 TLS의 의미를 보존하면서 CA·조회 비용을 독립적으로 관측하기 위한 것입니다.
 
-범용 adapter v2 다중 소켓 API, 핸드셰이크 도중 조회, 서버 조회자, 누적 캐시, 인증서 압축은 구체 기법이 필요해질 때까지 도입하지 않습니다. 지금 결과를 인증서 축소나 stock TLS 최적화로 부르지 않습니다.
+범용 adapter v2 다중 소켓 API, 핸드셰이크 도중 조회, 서버 조회자, 누적 캐시와 인증서 압축은 구체 기법이 필요해질 때까지 도입하지 않습니다. 지금 결과를 인증서 축소나 수정하지 않은 TLS의 최적화로 부르지 않습니다.
 
 ## 캐시 초기 상태와 객체 수명
 
-공개 PEM 원본은 parent가 실행 시작 때 한 번 읽어 불변 기준 snapshot으로 보유합니다. 조회 캐시는 연결마다 같은 empty/fixed snapshot으로 직접 복원하며 이전 연결의 변경을 누적하지 않습니다. 객체 ID는 FNV-1a 식별값이고 실제 동일성은 크기와 바이트로 판단합니다. cache logical bytes, 선확보 capacity, reference bytes, framework reserved bytes와 allocator heap은 중복 합산하지 않습니다.
+상위 프로세스는 공개 PEM 원본을 실행 시작 때 한 번 읽어 불변 기준 저장본으로 보유합니다. 조회 캐시는 연결마다 같은 empty/fixed 저장본으로 직접 복원하며 이전 연결의 변경을 누적하지 않습니다. 객체 ID는 FNV-1a 식별값이고 실제 동일성은 크기와 바이트로 판단합니다. 캐시의 논리 바이트, 선확보 용량, 기준 객체 바이트, 프레임워크 예약 바이트와 할당기 힙은 중복 합산하지 않습니다.
 
 ## 모의 CA의 독립 계측
 
-모의 CA를 TLS `Role`에 추가하거나 TLS Declaration/Verification을 가짜로 채우지 않습니다. 별도 참여자·프로세스·서비스 schema와 heap tracker를 사용하며, CA process 경과·CPU·입출력·대기를 독립적으로 보고합니다. lookup의 시계·perf 관측은 클라이언트 TLS Meter를 재사용해 엔드포인트당 perf 그룹을 하나로 유지합니다.
+모의 CA를 TLS `Role`에 추가하거나 TLS 선언·검증 값을 가짜로 채우지 않습니다. 별도 참여자·프로세스·서비스 `schema`와 힙 추적기를 사용하며, CA 프로세스의 경과 시간·CPU·입출력·대기를 독립적으로 보고합니다. 조회의 시계·성능 카운터 관측은 클라이언트 TLS `Meter`를 재사용해 엔드포인트당 성능 카운터 그룹을 하나로 유지합니다.
 
-## 조회용 rootless 소유 topology와 netem 해석
+## 조회용 rootless 소유 토폴로지와 netem 해석
 
-합성 조회에서는 host 네트워크를 바꾸는 단순 실행 대신 새 user/network namespace 안에서 client/server/ca/router 네 data namespace와 네 veth 링크를 소유합니다. `/run/netns`, host route, host interface와 host qdisc는 건드리지 않습니다. 수신자 직전 router egress의 네 방향 qdisc를 attempt마다 삭제·재생성하며, MTU와 TSO/GSO/GRO 실제 readback이 요청과 맞아야 합니다. 조회가 꺼진 topology의 후속 결정은 아래에 별도로 기록합니다.
+합성 조회에서는 호스트 네트워크를 바꾸는 단순 실행 대신 새 사용자·네트워크 이름공간 안에 클라이언트·서버·CA·router 데이터 이름공간 네 개와 veth 링크 네 개를 소유합니다. `/run/netns`, 호스트 route·interface·qdisc는 건드리지 않습니다. 수신자 직전 router 송신 구간의 네 방향 qdisc를 시도마다 삭제·재생성하며, MTU와 TSO/GSO/GRO 적용값 재조회가 요청과 맞아야 합니다. 조회가 꺼진 토폴로지의 후속 결정은 아래에 별도로 기록합니다.
 
-netem loss는 skb 단위 정책·집계입니다. qdisc drop, socket TCP retransmission, 조회 경과를 같은 단위나 순수 RTT로 취급하지 않습니다. 조건 그룹에는 topology·정책·MTU·offload 같은 안정 입력과 실제 적용 조건만 넣고 PID/FD/port/handle/timestamp 및 drop/retrans/outcome은 넣지 않습니다.
+netem 손실은 커널 패킷 버퍼 단위 정책·집계입니다. qdisc 폐기, 소켓 TCP 재전송, 조회 경과를 같은 단위나 순수 RTT로 취급하지 않습니다. 조건 그룹에는 토폴로지·정책·MTU·offload 같은 안정 입력과 실제 적용 조건만 넣고 PID·FD·포트·handle·timestamp 및 폐기·재전송·결과는 넣지 않습니다.
 
-## attempt 원장과 최초 원인 고정
+## 시도 원장과 최초 원인 고정
 
-`samples`를 attempt 분모로 유지하고 별도 attempts 옵션을 만들지 않습니다. 기본 `fail-fast`와 명시적 `fixed-attempts`를 구별하며 실패를 자동 재시도로 채우지 않습니다. parent 원장이 child 파일보다 먼저 started 상태를 기록합니다.
+`samples`를 시도 분모로 유지하고 별도 시도 옵션을 만들지 않습니다. 기본 `fail-fast`와 명시적 `fixed-attempts`를 구별하며 실패를 자동 재시도로 채우지 않습니다. 상위 프로세스 원장이 자식 파일보다 먼저 시작 상태를 기록합니다.
 
-deadline은 attempt 전체의 하나의 absolute 시각입니다. 최초 terminal 원인이 deadline 초과면 timeout, 그 전에 확인한 오류면 error입니다. 뒤의 flush·kill은 최초 원인을 바꾸지 않습니다. abort 시 한 번 정한 기본 500ms flush grace를 연장하지 않으며, 그 뒤 SIGKILL과 별도 250ms OS reap 상한을 적용합니다. 회수 완료를 증명하지 못하면 다음 attempt를 시작하지 않습니다.
+기한은 시도 전체에서 공유하는 하나의 절대 단조 시각입니다. 최초 종료 원인이 기한 초과면 `timeout`, 그 전에 확인한 오류면 `error`입니다. 뒤의 기록 완료·강제 종료는 최초 원인을 바꾸지 않습니다. 중단을 감지할 때 한 번 정한 기본 500ms 기록 완료 유예를 연장하지 않으며, 그 뒤 SIGKILL과 별도 250ms 운영체제 회수 상한을 적용합니다. 회수 완료를 증명하지 못하면 다음 시도를 시작하지 않습니다.
 
 ## 인증서 유효 기간을 한 번 계산
 
 이전 PKI 반복 시험의 `certificate is not yet valid`는 발급 도중 시계가 뒤로 움직이면 인증서마다 서로 다른 시작 시각을 얻던 방식에서 발생했습니다. 정상 인증서 검증을 끄지 않고, `make-pki.sh`가 발급 시작 때 UTC 시각을 한 번 읽어 root·intermediate·leaf 모두에 같은 유효 기간을 적용하도록 바꿨습니다. 시작은 그 시각보다 300초 앞, 끝은 발급 시각보다 3,650일 뒤입니다.
 
-임의 검증 시각 주입이나 검증 비활성화는 선택하지 않았습니다. OpenSSL 3.0에서도 명시적 시작·종료 시각을 지원하도록 `openssl ca`를 사용하고, 정상 `openssl verify`는 유지합니다. ECDSA·RSA2048·Ed25519 잎과 체인 길이 1~3의 9조합을 각 두 번 system OpenSSL 3.0과 고정 OpenSSL 3.5에서 확인했습니다. 별도 shim은 host 시계를 역행시키지 않고 발급 과정의 `date` 출력만 실제 검증 시각보다 240초 앞당겼으며, 그렇게 발급한 인증서도 실제 시각의 정상 검증을 통과했습니다.
+임의 검증 시각 주입이나 검증 비활성화는 선택하지 않았습니다. OpenSSL 3.0에서도 명시적 시작·종료 시각을 지원하도록 `openssl ca`를 사용하고, 정상 `openssl verify`는 유지합니다. ECDSA·RSA2048·Ed25519 잎과 체인 길이 1~3의 9조합을 각 두 번 system OpenSSL 3.0과 고정 OpenSSL 3.5에서 확인했습니다. 별도 shim은 호스트 시계를 역행시키지 않고 발급 과정의 `date` 출력만 실제 검증 시각보다 240초 앞당겼으며, 그렇게 발급한 인증서도 실제 시각의 정상 검증을 통과했습니다.
 
 ## 정적 검사 실패를 보존하고 수정
 
-Mock CA 통합 뒤 첫 `static-first.log`는 cppcheck의 `passedByValue` 2건과 clang analyzer의 dead store 2건 때문에 실패했습니다. 이를 성공 기록으로 바꾸지 않습니다. 불필요한 값 복사와 사용되지 않는 상태 저장을 제거한 뒤 `pre-loss-static.log`에서 21개 생산 번역 단위의 cppcheck·clang-tidy가 통과했습니다.
+Mock CA 통합 뒤 첫 `static-first.log`는 cppcheck의 `passedByValue` 2건과 clang analyzer의 dead store 2건 때문에 실패했습니다. 이를 성공 기록으로 바꾸지 않습니다. 불필요한 값 복사와 사용되지 않는 상태 저장을 제거한 뒤 `pre-loss-static.log`에서 생산 번역 단위 21개의 cppcheck·clang-tidy가 통과했습니다.
 
-bounded cleanup의 운영 경로에 범용 오류 주입 옵션을 넣지 않았습니다. 소유 PID만 kill/reap하는 내부 계약과 테스트 전용 wrapper로 경계를 시험합니다. 실제 timeout 세 attempt는 cleanup grace 뒤 SIGKILL과 owned reap을 실행했습니다. 고정 250ms는 그 뒤 OS 회수의 최대 budget이지 관측 시간값이 아닙니다. 반면 N05 loss 64 attempts에는 강제 종료가 없었습니다. 회수 syscall의 합성 EIO처럼 완료를 증명할 수 없는 분기는 통제된 wrapper 시험에만 둡니다.
+제한된 정리의 운영 경로에 범용 오류 주입 옵션을 넣지 않았습니다. 소유 PID만 강제 종료·회수하는 내부 계약과 시험 전용 시스템 호출 대역으로 경계를 시험합니다. 실제 시간 초과 세 시도는 정리 유예 뒤 SIGKILL과 소유 자식 회수를 실행했습니다. 고정 250ms는 그 뒤 운영체제 회수의 최대 한도이지 관측 시간값이 아닙니다. 반면 N05 손실 조건 64개 시도에는 강제 종료가 없었습니다. 회수 시스템 호출의 합성 EIO처럼 완료를 증명할 수 없는 분기는 통제된 대역 시험에만 둡니다.
 
-## 네트워크 비교 적격성은 fail closed
+## 네트워크 비교 적격성은 보수적으로 판정
 
-network attempt가 성공 상태라는 사실만으로 자동 비교에 넣지 않습니다. setup/scenario/cleanup begin/end의 정확히 여섯 observation 참조, 같은 attempt의 실제 observation, host network unchanged와 owned cleanup이 모두 있어야 합니다. 누락·중복·불일치·손상된 provenance는 비교 부적격입니다.
+네트워크 시도가 성공 상태라는 사실만으로 자동 비교에 넣지 않습니다. 셋업·시나리오·정리 시작과 끝의 정확히 여섯 관측 참조, 같은 시도의 실제 관측, 호스트 네트워크 불변과 소유 자원 정리가 모두 있어야 합니다. 누락·중복·불일치·손상된 출처 기록은 비교 부적격입니다.
 
-새 attempt 원장이 존재하지만 손상됐으면 `director.txt`나 자식 파일로 성공을 추정하지 않습니다. 과거 fallback은 원장이 전혀 없는 옛 TLS 자료에만 제한합니다. loopback metric은 설명용 분포에 보존할 수 있지만 network 비교 identity를 가진 것으로 간주하지 않습니다.
+새 시도 원장이 존재하지만 손상됐으면 `director.txt`나 자식 파일로 성공을 추정하지 않습니다. 대체 판독은 원장이 전혀 없는 옛 TLS 자료에만 제한합니다. loopback 지표는 설명용 분포에 보존할 수 있지만 네트워크 비교 식별 조건을 가진 것으로 간주하지 않습니다.
 
-## 조회 여부에 따라 topology 자원을 줄임
+## 조회 여부에 따라 토폴로지 자원을 줄임
 
-`scripts/netem-study.py run`은 실행 프로필의 `lookup.enabled`를 topology 선택의 기준으로 사용합니다. 조회가 켜지면 기존 client/server/ca/router 네 namespace·네 링크·네 방향을 그대로 사용합니다. 조회가 꺼지면 client/server/router 세 namespace·두 링크·두 TLS 방향만 만들고 C++에는 client/server namespace FD만 전달합니다. 비활성 CA 자원을 만들어 놓고 결과에서만 숨기는 방식은 선택하지 않았습니다.
+`scripts/netem-study.py run`은 실행 프로필의 `lookup.enabled`를 토폴로지 선택 기준으로 사용합니다. 조회가 켜지면 기존 클라이언트·서버·CA·router 이름공간 네 개, 링크 네 개와 방향 네 개를 그대로 사용합니다. 조회가 꺼지면 클라이언트·서버·router 이름공간 세 개, 링크 두 개와 TLS 방향 두 개만 만들고 C++에는 클라이언트·서버 이름공간 FD만 전달합니다. 비활성 CA 자원을 만들어 놓고 결과에서만 숨기는 방식은 선택하지 않았습니다.
 
-조회가 꺼진 설정에는 객체·캐시·snapshot 경로가 없어도 됩니다. attempt 참여자와 필수 원자료도 두 TLS 역할뿐입니다. `verify`의 기존 M13·M14 고정 묶음은 조회 경로 전용으로 유지하고, 순수 TLS는 일반 `run` 명령과 별도 통합 시험으로 확인합니다. 이 결정 때문에 고정 N05 64회 조건을 확장하거나 다시 실행하지 않습니다.
+조회가 꺼진 설정에는 객체·캐시·저장본 경로가 없어도 됩니다. 시도 참여자와 필수 원자료도 두 TLS 역할뿐입니다. `verify`의 기존 M13·M14 고정 묶음은 조회 경로 전용으로 유지하고, 순수 TLS는 일반 `run` 명령과 별도 통합 시험으로 확인합니다. 이 결정 때문에 고정 N05 64회 조건을 확장하거나 다시 실행하지 않습니다.
 
-namespace helper 준비에는 고정 sleep을 사용하지 않습니다. helper가 `unshare`와 namespace 진입을 마친 뒤 readiness pipe로 알리고, parent는 bounded 신호를 받은 뒤에만 namespace FD를 엽니다. 고정 30ms 대기는 동시 시작에서 ENODEV를 재현했으므로 거절했습니다. EOF·timeout·조기 종료는 준비 완료로 추정하지 않고 setup 실패로 처리합니다.
+이름공간 보조 프로세스 준비에는 고정된 시간만큼 기다리는 방식을 사용하지 않습니다. 보조 프로세스가 `unshare`와 이름공간 진입을 마친 뒤 준비 완료 pipe로 알리고, 상위 프로세스는 유한 시간 안에 신호를 받은 뒤에만 이름공간 FD를 엽니다. 고정 30ms 대기는 동시 시작에서 ENODEV를 재현했으므로 거절했습니다. EOF·시간 초과·조기 종료는 준비 완료로 추정하지 않고 셋업 실패로 처리합니다.
 
-## 네트워크 조건 identity와 integrity 결과를 분리
+## 네트워크 조건 식별값과 무결성 결과를 분리
 
-일반 TLS 보고 그룹에도 사용자가 요청한 net-profile과 provenance에서 확인한 실제 topology·활성 경로·qdisc·MTU·offload 조건을 함께 넣습니다. 준비 연결과 측정 연결 양쪽의 실제 소켓 설정도 조건입니다. 반면 metric은 측정 연결에서만 수집합니다.
+일반 TLS 보고 그룹에도 사용자가 요청한 net-profile과 출처 기록에서 확인한 실제 토폴로지·활성 경로·qdisc·MTU·offload 조건을 함께 넣습니다. 준비 연결과 측정 연결 양쪽의 실제 소켓 설정도 조건입니다. 반면 지표는 측정 연결에서만 수집합니다.
 
-host unchanged, phase observation, helper/observer 회수 같은 실행 integrity 결과와 success/timeout, drop, retrans는 안정 그룹 키에 넣지 않습니다. 이 결과는 표본·run metadata와 그룹의 최상위 자동 비교 적격성으로 판정합니다. 따라서 같은 네트워크 조건의 실패를 별도 조건처럼 분리하지 않으며, integrity가 실패한 표본의 metric은 비교 분포에 넣지 않습니다.
+호스트 불변, 단계 관측, 보조 프로세스·관측자 회수 같은 실행 무결성 결과와 성공·시간 초과·폐기·재전송은 안정 그룹 키에 넣지 않습니다. 이 결과는 표본·실행 부가정보와 그룹의 최상위 자동 비교 적격성으로 판정합니다. 따라서 같은 네트워크 조건의 실패를 별도 조건처럼 분리하지 않으며, 무결성이 실패한 표본의 지표는 비교 분포에 넣지 않습니다.
 
 ## 수명주기에서 구체 조회 책임을 분리
 
-공통 자식 제어 프로토콜은 `endpoint_protocol.cpp`로, 캐시·조회 wire·lookup 원자료와 모의 CA 실행은 `lookup_runtime.cpp`의 구체 `ClientLookupRuntime`으로 옮겼습니다. `lifecycle.cpp`는 표본·역할·연결의 순서와 실패 회수를 계속 소유합니다. 범용 플러그인이나 서비스 조회기를 만들지 않고 실제로 독립된 조회 책임만 분리했습니다.
+공통 자식 제어 프로토콜은 `endpoint_protocol.cpp`로, 캐시·조회 전송 형식·조회 원자료와 모의 CA 실행은 `lookup_runtime.cpp`의 구체 `ClientLookupRuntime`으로 옮겼습니다. 이후 구조 분리에서 `director.cpp`가 표본·시도 원장·자식·네트워크 인계와 실패 회수를, `role_runtime.cpp`가 TLS 엔드포인트 셋업과 연결 반복을 맡았습니다. 범용 플러그인이나 서비스 조회기를 만들지 않고 실제로 독립된 책임만 파일로 나눴습니다.
 
 ## 기능 성공과 I/O 관측 가능성을 분리
 
-OpenSSL native socket 경로에서는 TLS 라이브러리가 framework `Io`를 거치지 않습니다. 성공한 TLS와 응용 핑퐁을 framework stream·I/O·kernel receive 값 0으로 바꾸지 않고, 각 수집 통로를 이유 있는 unavailable로 기록합니다. native client의 TLS 호출 경과·스레드 CPU는 실제 호출 snapshot에서 보존하되 I/O 분해를 추정하지 않습니다. native server의 첫 성공 receive 기반 주 구간은 만들지 않으며 handshake 시작으로 대체하지 않습니다.
+OpenSSL 라이브러리 직접 소켓 경로에서는 TLS 라이브러리가 프레임워크 `Io`를 거치지 않습니다. 성공한 TLS와 응용 핑퐁에서 프레임워크 스트림·I/O·커널 수신이 보이지 않는 상태를 0으로 바꾸지 않고, 각 수집 통로를 이유 있는 사용 불가로 기록합니다. 해당 클라이언트의 TLS 호출 경과·스레드 CPU는 실제 호출 스냅샷에서 보존하되 I/O 분해를 추정하지 않습니다. 해당 서버의 첫 성공 수신 기반 주 구간은 만들지 않으며 핸드셰이크 시작으로 대체하지 않습니다.
 
-기능 유효성, 주 구간 availability와 I/O 분해 availability는 서로 독립입니다. native 그룹은 기존 자동 성능 비교에 넣지 않습니다. 해석기도 native 빈 stream을 성공한 0바이트 해독으로 보지 않으며, availability 필드가 없는 과거 library-only 자료만 명시적인 legacy 규칙으로 읽습니다. wolfSSL·Mbed TLS에는 native 지원을 추가하지 않았습니다.
+기능 유효성, 주 구간 가용성과 I/O 분해 가용성은 서로 독립입니다. 라이브러리 직접 소켓 그룹은 기존 자동 성능 비교에 넣지 않습니다. 해석기도 이 경로의 빈 스트림을 성공한 0바이트 해독으로 보지 않으며, 가용성 필드가 없는 과거 `library-only` 자료만 명시적인 구 자료 규칙으로 읽습니다. wolfSSL·Mbed TLS에는 라이브러리 직접 소켓 지원을 추가하지 않았습니다.
 
-## native/callback 외부 근거는 skb metadata로 제한
+## 라이브러리 직접 소켓·콜백의 외부 근거는 커널 패킷 버퍼 부가정보로 제한
 
-M6은 새 packet 도구나 netem 조건을 만들지 않고 기존 lookup=false zero-loss runner를 재사용합니다. 수신자 쪽 router egress의 AF_PACKET 행을 주소·TCP 4-tuple·방향으로 제한해 skb count와 payload 합을 기술하지만 두 모드의 수치 동일성을 요구하지 않습니다. 사용자 공간 observer-read timestamp, 근사 phase window, 재전송·분할 가능성을 함께 기록합니다. 이를 syscall trace, full pcap, 고유 TLS bytes, 물리 packet·wire 시각이라고 부르지 않습니다. M13·M14와 N05의 고정 범위는 바꾸지 않습니다.
+M6은 새 패킷 도구나 netem 조건을 만들지 않고 조회가 꺼진 기존 무손실 실행기를 재사용합니다. 수신자 쪽 router 송신 구간의 AF_PACKET 행을 주소·TCP 4-tuple·방향으로 제한해 커널 패킷 버퍼 개수와 페이로드 합을 기술하지만 두 모드의 수치 동일성을 요구하지 않습니다. 사용자 공간 관측자가 읽은 시각, 근사 단계 구간, 재전송·분할 가능성을 함께 기록합니다. 이를 시스템 호출 추적, 전체 pcap, 중복 제거된 TLS 바이트, 물리 패킷·전송 시각이라고 부르지 않습니다. M13·M14와 N05의 고정 범위는 바꾸지 않습니다.
 
-## 관측자 off는 포인터 하나만 바꿈
+## 관측자 끔은 포인터 하나만 바꿈
 
-M7은 공개 adapter ABI나 CLI 옵션을 추가하지 않고 JSON의 `measurement.channel_observer`만 사용합니다. 기본값과 과거 필드 부재는 true입니다. false이면 같은 callback transport에 전달하는 관측 함수 포인터만 null로 만들며 socket 설정·실제 버퍼·kernel timestamp 준비·호출/대기·keylog/plaintext·perf는 유지합니다. 따라서 observer-disabled를 uninstrumented 실행으로 부르지 않고 stream·I/O·kernel receive 수집만 이유 있는 unavailable로 기록합니다.
+M7은 공개 adapter ABI나 CLI 옵션을 추가하지 않고 JSON의 `measurement.channel_observer`만 사용합니다. 기본값과 과거 필드 부재는 `true`입니다. `false`이면 같은 콜백 전송 경로에 전달하는 관측 함수 포인터만 `null`로 만들며 소켓 설정·실제 버퍼·커널 시각 준비·호출·대기·키 로그·평문·성능 카운터는 유지합니다. 따라서 `observer-disabled`를 무계측 실행으로 부르지 않고 스트림·I/O·커널 수신 수집만 이유 있는 사용 불가로 기록합니다.
 
-## observer 비교에는 이름 있는 공통 호출 경계를 사용
+## 관측자 비교에는 이름 있는 공통 호출 경계를 사용
 
-기존 server primary는 first framework receive에서 시작하므로 observer off에서 unavailable인 의미를 바꾸지 않습니다. 대신 양 역할·양 모드에 `handshake_call_begin_to_application_complete`를 별도 계산합니다. 첫 handshake 호출 시작부터 역할의 전체 최종 application 호출 완료까지이며 partial progress를 모두 확인합니다. elapsed와 thread CPU는 독립 availability를 가지며 CPU 누락을 elapsed 실패로 확대하지 않습니다.
+기존 서버 주 구간은 프레임워크의 첫 수신에서 시작하므로 관측자 끔 상태에서 사용할 수 없다는 의미를 바꾸지 않습니다. 대신 양 역할·양 모드에 `handshake_call_begin_to_application_complete`를 별도 계산합니다. 첫 핸드셰이크 호출 시작부터 역할의 전체 최종 응용 호출 완료까지이며 부분 진행을 모두 확인합니다. 경과 시간과 스레드 CPU는 독립 가용성을 가지며 CPU 누락을 경과 시간 실패로 확대하지 않습니다.
 
-`channel_observer`는 안정 그룹 조건이고 공통 경계 metric은 기존 primary 이름과 분리합니다. observer off나 native server에도 공통 metric이 있을 수 있지만 이를 primary로 승격하거나 기존 자동 비교에 넣지 않습니다. TLS·parent 원장·network integrity가 실패하면 공통 metric도 그룹에 수용하지 않습니다. on/off 차이는 역할별 진단 산술값일 뿐 방향·부호·크기·유의성이나 WSL 성능 결론을 합격 기준으로 두지 않습니다.
+`channel_observer`는 안정 그룹 조건이고 공통 경계 지표는 기존 주 구간 이름과 분리합니다. 관측자 끔이나 라이브러리 직접 소켓 경로의 서버에도 공통 지표가 있을 수 있지만 이를 주 구간으로 승격하거나 기존 자동 비교에 넣지 않습니다. TLS·상위 프로세스 원장·네트워크 무결성이 실패하면 공통 지표도 그룹에 수용하지 않습니다. 켬/끔 차이는 역할별 진단 산술값일 뿐 방향·부호·크기·유의성이나 WSL 성능 결론을 합격 기준으로 두지 않습니다.
 
 ## 관측자 상태의 호환 판독을 하나로 맞춤
 
-명시적인 `config.channel_observer=false`이거나 `observation_level=observer-disabled`이면 observer off로 판독합니다. config 필드가 없고 marker도 없으면 과거 callback 기본값인 on입니다. `library-only`, native socket, TLS stream availability나 빈 stream만 보고 observer off를 추론하지 않습니다. native I/O visibility와 channel observer 선택은 서로 다른 조건입니다.
+명시적인 `config.channel_observer=false`이거나 `observation_level=observer-disabled`이면 관측자 끔으로 판독합니다. config 필드와 marker가 모두 없으면 과거 콜백 기본값인 켬입니다. `library-only`, 라이브러리 직접 소켓, TLS 스트림 가용성이나 빈 스트림만 보고 관측자 끔을 추론하지 않습니다. 라이브러리 직접 소켓 I/O 가시성과 채널 관측자 선택은 서로 다른 조건입니다.
 
-일반 보고서와 해석기는 이미 이 규칙을 사용했습니다. lookup 보고서의 조건 identity는 이전에 config 필드의 기본값 true만 읽어 marker-only 자료를 on으로 분류했으므로 같은 판독 정책으로 맞춥니다. 현재 producer는 `channel_observer` 필드를 항상 기록하므로 G011 실제 원자료와 검증 결과는 바뀌지 않습니다. 다만 필드가 없고 `observer-disabled` marker만 있는 호환 자료를 다시 보고하면 조건 키가 이전 on에서 off로 바뀔 수 있습니다. 이는 오래된 자료를 올바른 조건 그룹에 두는 correctness 수정이며 별도의 NOOP cleanup과 섞지 않습니다.
+일반 보고서와 해석기는 이미 이 규칙을 사용했습니다. 조회 보고서의 조건 식별값은 이전에 config 필드의 기본값 `true`만 읽어 marker-only 자료를 켬으로 분류했으므로 같은 판독 정책으로 맞춥니다. 현재 생성자는 `channel_observer` 필드를 항상 기록하므로 G011 실제 원자료와 검증 결과는 바뀌지 않습니다. 다만 필드가 없고 `observer-disabled` marker만 있는 호환 자료를 다시 보고하면 조건 키가 이전 켬에서 끔으로 바뀔 수 있습니다. 이는 오래된 자료를 올바른 조건 그룹에 두는 정확성 수정이며 별도의 NOOP 정리와 섞지 않습니다.
 
-## 여섯 phase 참조에는 관측 본문도 필요함
+## 여섯 단계 참조에는 관측 본문도 필요함
 
-성공한 network attempt의 setup/scenario/cleanup begin/end ID 여섯 개가 존재한다는 사실만으로 integrity를 통과시키지 않습니다. 각 참조 행에는 비어 있지 않은 `qdiscs` 객체가 있어야 하고, trace 요청이 true이면 `packet_trace`도 존재하며 null이 아니어야 합니다. 누락·빈 qdisc, 누락·null trace는 안정 condition identity를 바꾸지 않지만 integrity와 metric 수용을 fail closed로 만듭니다. lookup과 일반 pure TLS가 같은 shared 판독 규칙을 사용합니다.
+성공한 네트워크 시도에 셋업·시나리오·정리 시작과 끝의 ID 여섯 개가 존재한다는 사실만으로 무결성을 통과시키지 않습니다. 각 참조 행에는 비어 있지 않은 `qdiscs` 객체가 있어야 하고, trace 요청이 `true`이면 `packet_trace`도 존재하며 `null`이 아니어야 합니다. 누락·빈 qdisc, 누락·`null` trace는 안정 조건 식별값을 바꾸지 않지만 무결성과 지표 수용을 보수적으로 실패시킵니다. 조회와 일반 순수 TLS가 같은 공통 판독 규칙을 사용합니다.
 
-## noqueue의 null queue limit은 명시적 not-applicable
+## noqueue의 null queue limit은 명시적 해당 없음
 
-요청 qdisc와 실제 qdisc가 모두 `none`이고 실제 path kind가 `noqueue`이며 `limit_packets` 필드가 명시적으로 null인 경우에만 queue limit을 not-applicable로 받아들입니다. field 자체가 없거나 netem path의 limit가 null이면 관측 불완전으로 거절합니다. 이 구별은 보존한 N05 baseline의 실제 readback과 엄격한 누락 검사를 함께 유지하기 위한 좁은 호환 규칙입니다. runner, network 조건이나 N05 원자료는 바꾸거나 다시 실행하지 않습니다.
+요청 qdisc와 실제 qdisc가 모두 `none`이고 실제 경로 종류가 `noqueue`이며 `limit_packets` 필드가 명시적으로 `null`인 경우에만 큐 한도를 해당 없음으로 받아들입니다. 필드 자체가 없거나 netem 경로의 한도가 `null`이면 관측 불완전으로 거절합니다. 이 구별은 보존한 N05 기준 조건의 실제 적용값 재조회와 엄격한 누락 검사를 함께 유지하기 위한 좁은 호환 규칙입니다. 실행기, 네트워크 조건이나 N05 원자료는 바꾸거나 다시 실행하지 않습니다.
 
 ## 키 공유 생성은 핸드셰이크 측정 구간에 둔다
 
@@ -218,4 +218,10 @@ M7은 공개 adapter ABI나 CLI 옵션을 추가하지 않고 JSON의 `measureme
 
 요청 범위, `disabled|available|unsupported` 상태, 실제 범위를 독립적으로 기록합니다. 비활성과 미지원의 실제 범위 `null`은 알려진 상태이며, 필드 누락의 알 수 없음과 구별합니다. `user`의 미지원은 측정값만 미계측으로 두고 정상 TLS와 시간 측정을 계속합니다. 명시적 `user+kernel`을 적용하지 못하면 원자료·원장에 이유를 남기고 실패하며 `user`로 낮추지 않습니다. `perf=false`와 `user+kernel`은 실행 전 모순 설정으로 거절합니다.
 
-설정 실패 단계·errno·설명은 진단으로만 남기고 그룹 조건으로 삼지 않습니다. 일반 보고와 조회 보고 모두에서 양쪽 엔드포인트의 요청·상태·실제 범위를 안정 조건으로 사용합니다. 구 원자료에 필드가 없으면 기존 지표·분포는 보존하되 자동 비교만 제외합니다. 이 추가는 원자료 형식 1과 측정 계약 개정값 2를 바꾸지 않습니다.
+설정 실패 단계·errno·설명은 진단으로만 남기고 그룹 조건으로 삼지 않습니다. 일반 보고와 조회 보고 모두에서 양쪽 엔드포인트의 요청·상태·실제 범위를 안정 조건으로 사용합니다. 구 원자료에 필드가 없으면 기존 지표·분포는 보존하되 자동 비교만 제외합니다. 부분 선언에서 `perf_effective_scope`가 없으면 보고서에서도 그 키를 생략하고, 명시적 JSON `null`은 그대로 보존합니다. 둘을 새 표식으로 합치지 않으며 원자료 형식 1과 측정 계약 개정값 2도 바꾸지 않습니다.
+
+## 현재 연구 경계를 한 호스트와 고정한 보조 경로로 제한
+
+현재 목표에서는 원격 두 호스트 실행기나 서버의 계측 없는 외부 기준선을 새로 만들지 않습니다. 모든 역할과 모의 CA·격리 네트워크는 한 호스트에서 실행하며, 관측자 켬/끔 차이는 전체 계측 비용의 수학적 상한이나 하한으로 사용하지 않습니다. 두 호스트 시계·하드웨어 통제와 외부 기준선의 정의는 결과 해석을 바꾸므로 필요할 때 별도 실험 설계로 결정합니다.
+
+합성 조회·모의 CA·netem은 이미 문서화한 조건으로 고정합니다. 실제 인증서 경량화 기법이나 새 손실 조건으로 확장하지 않으며, 메시지별 시각 기능도 선택 기능으로 추가하지 않습니다. 추적 모드의 평문 알림은 시각 없는 종류·순서 대조 기준으로만 사용합니다. 이 결정은 기존 원자료와 검증 이력을 삭제하거나 다시 해석하지 않습니다.
