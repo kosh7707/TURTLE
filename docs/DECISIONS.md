@@ -78,8 +78,64 @@ M1의 연결 수 입력은 준비 연결 수와 구별합니다. `--connections`
 
 암호군 고정이 키 교환 그룹이나 인증서 서명 방식까지 고정한다는 뜻은 아닙니다. TLS 1.3의 이 선택들은 별개입니다([RFC 8446, 4.1.1절](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.1.1)). 따라서 인증서 체인·서명 방식 실험은 이 결정과 양립하며, 세 라이브러리의 공통 지원 범위는 별도로 지킵니다.
 
+## 합성 조회와 stock TLS를 분리
+
+2026년 10월 15일, 첫 모의 CA 범위는 클라이언트의 선행 인증서 객체 조회 뒤 표준 TLS를 실행하는 `synthetic-lookup-plus-standard-tls`로 고정했습니다. 조회 응답은 기준 원본과 byte-for-byte 비교하고 캐시에 삽입하여 실제로 소비하지만, 어댑터의 인증서 입력은 바꾸지 않습니다. 이 선택은 기존 adapter v1과 정상 TLS 의미를 보존하고 CA·조회 비용을 독립적으로 관측하기 위한 것입니다.
+
+범용 adapter v2 다중 소켓 API, 핸드셰이크 도중 조회, 서버 조회자, 누적 캐시, 인증서 압축은 구체 기법이 필요해질 때까지 도입하지 않습니다. 지금 결과를 인증서 축소나 stock TLS 최적화로 부르지 않습니다.
+
+## 캐시 초기 상태와 객체 수명
+
+공개 PEM 원본은 parent가 실행 시작 때 한 번 읽어 불변 기준 snapshot으로 보유합니다. 조회 캐시는 연결마다 같은 empty/fixed snapshot으로 직접 복원하며 이전 연결의 변경을 누적하지 않습니다. 객체 ID는 FNV-1a 식별값이고 실제 동일성은 크기와 바이트로 판단합니다. cache logical bytes, 선확보 capacity, reference bytes, framework reserved bytes와 allocator heap은 중복 합산하지 않습니다.
+
+## 모의 CA의 독립 계측
+
+모의 CA를 TLS `Role`에 추가하거나 TLS Declaration/Verification을 가짜로 채우지 않습니다. 별도 참여자·프로세스·서비스 schema와 heap tracker를 사용하며, CA process 경과·CPU·입출력·대기를 독립적으로 보고합니다. lookup의 시계·perf 관측은 클라이언트 TLS Meter를 재사용해 엔드포인트당 perf 그룹을 하나로 유지합니다.
+
+## 조회용 rootless 소유 topology와 netem 해석
+
+합성 조회에서는 host 네트워크를 바꾸는 단순 실행 대신 새 user/network namespace 안에서 client/server/ca/router 네 data namespace와 네 veth 링크를 소유합니다. `/run/netns`, host route, host interface와 host qdisc는 건드리지 않습니다. 수신자 직전 router egress의 네 방향 qdisc를 attempt마다 삭제·재생성하며, MTU와 TSO/GSO/GRO 실제 readback이 요청과 맞아야 합니다. 조회가 꺼진 topology의 후속 결정은 아래에 별도로 기록합니다.
+
+netem loss는 skb 단위 정책·집계입니다. qdisc drop, socket TCP retransmission, 조회 경과를 같은 단위나 순수 RTT로 취급하지 않습니다. 조건 그룹에는 topology·정책·MTU·offload 같은 안정 입력과 실제 적용 조건만 넣고 PID/FD/port/handle/timestamp 및 drop/retrans/outcome은 넣지 않습니다.
+
+## attempt 원장과 최초 원인 고정
+
+`samples`를 attempt 분모로 유지하고 별도 attempts 옵션을 만들지 않습니다. 기본 `fail-fast`와 명시적 `fixed-attempts`를 구별하며 실패를 자동 재시도로 채우지 않습니다. parent 원장이 child 파일보다 먼저 started 상태를 기록합니다.
+
+deadline은 attempt 전체의 하나의 absolute 시각입니다. 최초 terminal 원인이 deadline 초과면 timeout, 그 전에 확인한 오류면 error입니다. 뒤의 flush·kill은 최초 원인을 바꾸지 않습니다. abort 시 한 번 정한 기본 500ms flush grace를 연장하지 않으며, 그 뒤 SIGKILL과 별도 250ms OS reap 상한을 적용합니다. 회수 완료를 증명하지 못하면 다음 attempt를 시작하지 않습니다.
+
 ## 인증서 유효 기간을 한 번 계산
 
 이전 PKI 반복 시험의 `certificate is not yet valid`는 발급 도중 시계가 뒤로 움직이면 인증서마다 서로 다른 시작 시각을 얻던 방식에서 발생했습니다. 정상 인증서 검증을 끄지 않고, `make-pki.sh`가 발급 시작 때 UTC 시각을 한 번 읽어 root·intermediate·leaf 모두에 같은 유효 기간을 적용하도록 바꿨습니다. 시작은 그 시각보다 300초 앞, 끝은 발급 시각보다 3,650일 뒤입니다.
 
 임의 검증 시각 주입이나 검증 비활성화는 선택하지 않았습니다. OpenSSL 3.0에서도 명시적 시작·종료 시각을 지원하도록 `openssl ca`를 사용하고, 정상 `openssl verify`는 유지합니다. ECDSA·RSA2048·Ed25519 잎과 체인 길이 1~3의 9조합을 각 두 번 system OpenSSL 3.0과 고정 OpenSSL 3.5에서 확인했습니다. 별도 shim은 host 시계를 역행시키지 않고 발급 과정의 `date` 출력만 실제 검증 시각보다 240초 앞당겼으며, 그렇게 발급한 인증서도 실제 시각의 정상 검증을 통과했습니다.
+
+## 정적 검사 실패를 보존하고 수정
+
+Mock CA 통합 뒤 첫 `static-first.log`는 cppcheck의 `passedByValue` 2건과 clang analyzer의 dead store 2건 때문에 실패했습니다. 이를 성공 기록으로 바꾸지 않습니다. 불필요한 값 복사와 사용되지 않는 상태 저장을 제거한 뒤 `pre-loss-static.log`에서 21개 생산 번역 단위의 cppcheck·clang-tidy가 통과했습니다.
+
+bounded cleanup의 운영 경로에 범용 오류 주입 옵션을 넣지 않았습니다. 소유 PID만 kill/reap하는 내부 계약과 테스트 전용 wrapper로 경계를 시험합니다. 실제 timeout 세 attempt는 cleanup grace 뒤 SIGKILL과 owned reap을 실행했습니다. 고정 250ms는 그 뒤 OS 회수의 최대 budget이지 관측 시간값이 아닙니다. 반면 N05 loss 64 attempts에는 강제 종료가 없었습니다. 회수 syscall의 합성 EIO처럼 완료를 증명할 수 없는 분기는 통제된 wrapper 시험에만 둡니다.
+
+## 네트워크 비교 적격성은 fail closed
+
+network attempt가 성공 상태라는 사실만으로 자동 비교에 넣지 않습니다. setup/scenario/cleanup begin/end의 정확히 여섯 observation 참조, 같은 attempt의 실제 observation, host network unchanged와 owned cleanup이 모두 있어야 합니다. 누락·중복·불일치·손상된 provenance는 비교 부적격입니다.
+
+새 attempt 원장이 존재하지만 손상됐으면 `director.txt`나 자식 파일로 성공을 추정하지 않습니다. 과거 fallback은 원장이 전혀 없는 옛 TLS 자료에만 제한합니다. loopback metric은 설명용 분포에 보존할 수 있지만 network 비교 identity를 가진 것으로 간주하지 않습니다.
+
+## 조회 여부에 따라 topology 자원을 줄임
+
+`scripts/netem-study.py run`은 실행 프로필의 `lookup.enabled`를 topology 선택의 기준으로 사용합니다. 조회가 켜지면 기존 client/server/ca/router 네 namespace·네 링크·네 방향을 그대로 사용합니다. 조회가 꺼지면 client/server/router 세 namespace·두 링크·두 TLS 방향만 만들고 C++에는 client/server namespace FD만 전달합니다. 비활성 CA 자원을 만들어 놓고 결과에서만 숨기는 방식은 선택하지 않았습니다.
+
+조회가 꺼진 설정에는 객체·캐시·snapshot 경로가 없어도 됩니다. attempt 참여자와 필수 원자료도 두 TLS 역할뿐입니다. `verify`의 기존 M13·M14 고정 묶음은 조회 경로 전용으로 유지하고, 순수 TLS는 일반 `run` 명령과 별도 통합 시험으로 확인합니다. 이 결정 때문에 고정 N05 64회 조건을 확장하거나 다시 실행하지 않습니다.
+
+namespace helper 준비에는 고정 sleep을 사용하지 않습니다. helper가 `unshare`와 namespace 진입을 마친 뒤 readiness pipe로 알리고, parent는 bounded 신호를 받은 뒤에만 namespace FD를 엽니다. 고정 30ms 대기는 동시 시작에서 ENODEV를 재현했으므로 거절했습니다. EOF·timeout·조기 종료는 준비 완료로 추정하지 않고 setup 실패로 처리합니다.
+
+## 네트워크 조건 identity와 integrity 결과를 분리
+
+일반 TLS 보고 그룹에도 사용자가 요청한 net-profile과 provenance에서 확인한 실제 topology·활성 경로·qdisc·MTU·offload 조건을 함께 넣습니다. 준비 연결과 측정 연결 양쪽의 실제 소켓 설정도 조건입니다. 반면 metric은 측정 연결에서만 수집합니다.
+
+host unchanged, phase observation, helper/observer 회수 같은 실행 integrity 결과와 success/timeout, drop, retrans는 안정 그룹 키에 넣지 않습니다. 이 결과는 표본·run metadata와 그룹의 최상위 자동 비교 적격성으로 판정합니다. 따라서 같은 네트워크 조건의 실패를 별도 조건처럼 분리하지 않으며, integrity가 실패한 표본의 metric은 비교 분포에 넣지 않습니다.
+
+## 수명주기에서 구체 조회 책임을 분리
+
+공통 자식 제어 프로토콜은 `endpoint_protocol.cpp`로, 캐시·조회 wire·lookup 원자료와 모의 CA 실행은 `lookup_runtime.cpp`의 구체 `ClientLookupRuntime`으로 옮겼습니다. `lifecycle.cpp`는 표본·역할·연결의 순서와 실패 회수를 계속 소유합니다. 범용 플러그인이나 서비스 조회기를 만들지 않고 실제로 독립된 조회 책임만 분리했습니다.

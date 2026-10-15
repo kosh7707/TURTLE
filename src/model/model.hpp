@@ -6,16 +6,47 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 namespace turtle::model {
 
 inline constexpr unsigned record_schema = 1;
+inline constexpr unsigned lookup_record_schema = 1;
+inline constexpr unsigned attempt_ledger_schema = 1;
 inline constexpr const char* framework_version = "0.1.0";
+inline constexpr const char* lookup_scenario_name =
+    "synthetic-lookup-plus-standard-tls";
 
 enum class Mode { Timing, Memory, Trace };
 enum class Direction { Sent, Received };
+enum class ParticipantKind { TlsClient, TlsServer, MockCa };
+enum class CacheMode { Empty, FixedSnapshot };
+enum class FailurePolicy { FailFast, FixedAttempts };
+enum class AttemptStatus { NotAttempted, Success, Timeout, Error, Incomplete };
+enum class FailurePhase { None, Startup, Listener, TcpReady, Scenario, Flush, Exit };
+enum class ArtifactStatus { Complete, Partial, Missing };
+enum class HeapDomain { Tls, Lookup, MockCa };
+enum class ServiceEventKind {
+    CacheLookup,
+    CacheHit,
+    CacheMiss,
+    CacheInsert,
+    RequestBegin,
+    ResponseComplete,
+    UsableObject,
+    ScenarioBegin,
+    ScenarioEnd,
+    CaProcessBegin,
+    CaProcessEnd,
+    IoSendEnter,
+    IoSendReturn,
+    IoRecvEnter,
+    IoRecvReturn,
+    WaitBegin,
+    WaitEnd
+};
 enum class Location { Boundary, Framework, Kernel, Hardware, Syscall, Library };
 enum class Call {
     None,
@@ -53,6 +84,41 @@ enum class EventKind {
     Save
 };
 
+// Profile input for the explicit certificate lookup followed by stock TLS.
+// Paths are resolved by config relative to the profile before RunConfig is
+// handed to lifecycle. An empty snapshot_file means JSON null/not supplied.
+struct LookupConfig {
+    bool enabled = false;
+    std::string object_file;
+    CacheMode cache_mode = CacheMode::Empty;
+    std::string snapshot_file;
+};
+
+// Parsed C3 manifest handoff. File descriptors are borrowed copies inherited
+// from the Python coordinator. The director/roles close only their copies and
+// never receive the router namespace fd.
+struct NetworkHandoff {
+    int client_namespace_fd = -1;
+    int server_namespace_fd = -1;
+    int ca_namespace_fd = -1;
+    int phase_control_fd = -1;
+    std::string client_tls_address;
+    std::string server_address;
+    std::string client_ca_address;
+    std::string ca_address;
+    std::string client_tls_interface;
+    std::string server_interface;
+    std::string client_ca_interface;
+    std::string ca_interface;
+    std::string router_client_tls_interface;
+    std::string router_server_interface;
+    std::string router_client_ca_interface;
+    std::string router_ca_interface;
+    std::string net_profile_document;
+    std::string provenance_file;
+    std::string observations_file;
+};
+
 struct RunConfig {
     TlsConfig tls;
     std::string client_adapter = "openssl";
@@ -70,6 +136,11 @@ struct RunConfig {
     std::uint64_t batch = 1;
     std::uint64_t seed = 1;
     unsigned timeout_ms = 10000;
+    unsigned flush_grace_ms = 500;
+    FailurePolicy failure_policy = FailurePolicy::FailFast;
+    LookupConfig lookup;
+    std::string network_manifest;
+    std::optional<NetworkHandoff> network_handoff;
     std::size_t event_capacity = 32768;
     std::size_t stream_capacity = 1024 * 1024;
     std::size_t keylog_capacity = 256 * 1024;
@@ -84,6 +155,7 @@ struct RunConfig {
     int director_cpu = -1;
     int client_cpu = -1;
     int server_cpu = -1;
+    int ca_cpu = -1;
 };
 
 struct HeapSnapshot {
@@ -179,6 +251,37 @@ struct SocketSettings {
     bool kernel_timestamps = false;
 };
 
+// A disengaged field is unsupported or was not collected; it is never an
+// observed zero. `structure_bytes` is the TCP_INFO length returned by Linux.
+// `note` explains a missing snapshot or fields unavailable at that length.
+struct TcpInfoSnapshot {
+    std::size_t structure_bytes = 0;
+    std::optional<std::uint8_t> state;
+    std::optional<std::uint8_t> retransmits;
+    std::optional<std::uint32_t> retrans;
+    std::optional<std::uint32_t> total_retrans;
+    std::optional<std::uint32_t> unacked;
+    std::optional<std::uint32_t> lost;
+    std::optional<std::uint32_t> snd_mss;
+    std::optional<std::uint32_t> rcv_mss;
+    std::optional<std::uint32_t> segs_out;
+    std::optional<std::uint32_t> segs_in;
+    std::optional<std::uint32_t> data_segs_out;
+    std::optional<std::uint32_t> data_segs_in;
+    std::optional<std::uint64_t> bytes_acked;
+    std::optional<std::uint64_t> bytes_received;
+    std::string note;
+};
+
+struct DomainMemory {
+    HeapDomain domain = HeapDomain::Tls;
+    std::optional<HeapSnapshot> heap;
+    std::size_t logical_cache_bytes = 0;
+    std::size_t cache_capacity = 0;
+    std::size_t reference_bytes = 0;
+    std::size_t framework_reserved_bytes = 0;
+};
+
 struct ConnectionInfo {
     std::size_t index = 0;
     bool warmup = false;
@@ -188,6 +291,8 @@ struct ConnectionInfo {
     std::uint64_t start_sequence = 0;
     std::uint64_t end_sequence = 0;
     std::optional<SocketSettings> socket;
+    std::optional<TcpInfoSnapshot> tcp_start;
+    std::optional<TcpInfoSnapshot> tcp_end;
 };
 
 struct SampleInfo {
@@ -217,12 +322,22 @@ struct SampleInfo {
 const char* name(Role value) noexcept;
 const char* name(Mode value) noexcept;
 const char* name(Direction value) noexcept;
+const char* name(ParticipantKind value) noexcept;
+const char* name(CacheMode value) noexcept;
+const char* name(FailurePolicy value) noexcept;
+const char* name(AttemptStatus value) noexcept;
+const char* name(FailurePhase value) noexcept;
+const char* name(ArtifactStatus value) noexcept;
+const char* name(HeapDomain value) noexcept;
+const char* name(ServiceEventKind value) noexcept;
 const char* name(Location value) noexcept;
 const char* name(Call value) noexcept;
 const char* name(EventKind value) noexcept;
 const char* name(Verification value) noexcept;
 const char* name(Step value) noexcept;
 std::string fingerprint(const std::string& text);
+std::uint64_t fnv1a64(std::span<const std::uint8_t> bytes) noexcept;
+std::string fingerprint(std::span<const std::uint8_t> bytes);
 const char* build_information() noexcept;
 
 } // namespace turtle::model

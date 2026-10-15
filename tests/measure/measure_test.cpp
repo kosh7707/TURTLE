@@ -67,6 +67,56 @@ int main() {
     plain.deallocate(plain.context, block);
     assert(!timing.read().heap);
 
+    measure::HeapTracker tls_heap(true);
+    measure::HeapTracker lookup_heap(true);
+    const auto tls_allocator = tls_heap.allocator();
+    const auto lookup_allocator = lookup_heap.allocator();
+    void* tls_block = tls_allocator.allocate(tls_allocator.context, 20);
+    void* lookup_block = lookup_allocator.allocate(lookup_allocator.context, 7);
+    assert(tls_block && lookup_block);
+    tls_block = tls_allocator.reallocate(tls_allocator.context, tls_block, 5);
+    assert(tls_block);
+    const auto tls_before_lookup_read = *tls_heap.read(false);
+    assert(tls_before_lookup_read.live == 5 && tls_before_lookup_read.peak == 20);
+    assert(tls_before_lookup_read.interval_peak == 20);
+    assert(tls_before_lookup_read.allocations == 2 && tls_before_lookup_read.frees == 1);
+    assert(tls_before_lookup_read.allocated_total == 25);
+    const auto lookup_snapshot = *lookup_heap.read();
+    assert(lookup_snapshot.live == 7 && lookup_snapshot.peak == 7);
+    assert(lookup_snapshot.interval_peak == 7);
+    assert(lookup_snapshot.allocations == 1 && lookup_snapshot.frees == 0);
+    assert(lookup_snapshot.allocated_total == 7);
+    assert(tls_heap.read(false)->interval_peak == 20);
+    assert(tls_heap.read()->interval_peak == 20);
+    assert(tls_heap.read(false)->interval_peak == 5);
+    assert(lookup_heap.read(false)->interval_peak == 7);
+
+    measure::Meter tls_meter(model::Mode::Memory, false);
+    const auto tls_meter_allocator = tls_meter.allocator();
+    void* tls_meter_block = tls_meter_allocator.allocate(tls_meter_allocator.context, 13);
+    tls_meter_block =
+        tls_meter_allocator.reallocate(tls_meter_allocator.context, tls_meter_block, 3);
+    assert(tls_meter_block);
+    lookup_heap.read();
+    assert(tls_meter.read(false).heap->interval_peak == 13);
+    assert(tls_meter.read().heap->interval_peak == 13);
+    assert(tls_meter.read(false).heap->interval_peak == 3);
+    tls_meter_allocator.deallocate(tls_meter_allocator.context, tls_meter_block);
+
+    tls_allocator.deallocate(tls_allocator.context, tls_block);
+    lookup_allocator.deallocate(lookup_allocator.context, lookup_block);
+    assert(tls_heap.read()->live == 0);
+    assert(lookup_heap.read()->live == 0);
+
+    measure::HeapTracker disabled_heap(false);
+    const auto disabled_allocator = disabled_heap.allocator();
+    void* disabled_block = disabled_allocator.allocate(disabled_allocator.context, 11);
+    disabled_block =
+        disabled_allocator.reallocate(disabled_allocator.context, disabled_block, 23);
+    assert(disabled_block);
+    disabled_allocator.deallocate(disabled_allocator.context, disabled_block);
+    assert(!disabled_heap.read());
+
     measure::Meter perf(model::Mode::Timing, true);
     const auto observed = perf.read();
     if (!perf.capabilities().perf) {

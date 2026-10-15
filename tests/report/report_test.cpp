@@ -202,6 +202,8 @@ int main() {
         candidate["declaration"]["library"] = library;
         candidate["declaration"]["version"] = library + "-version";
         candidate["declaration"]["build_options"] = library + "-build";
+        candidate["loaded_context_size"] = 0;
+        candidate["loaded_context_hash"] = "";
         candidate["connections"][0]["socket"] = socket;
         const auto folder = root / folder_name;
         std::filesystem::create_directory(folder);
@@ -295,60 +297,183 @@ int main() {
     });
     assert(summarize(sockets_dir, dir / "peer-socket-report")["groups"].size() == 2);
 
-    auto add_warmup = [&](const std::filesystem::path& path) {
-        std::ifstream input(path);
-        std::vector<J> lines;
-        std::string line;
-        while (std::getline(input, line))
-            lines.push_back(J::parse(line));
-        input.close();
-        lines[0]["config"]["warmups"] = 1;
-        lines[0]["config"]["connections"] = 1;
-        lines[0]["connections"] =
-            J::array({{{"index", 0}, {"warmup", true}, {"socket", socket}},
-                      {{"index", 1}, {"warmup", false}, {"socket", socket}}});
-        for (std::size_t i = 1; i < lines.size(); ++i)
-            lines[i]["connection"] = 1;
-        std::ofstream output(path);
-        for (const auto& value : lines)
-            output << value.dump() << '\n';
-    };
     const auto warmup_sockets_dir = dir / "warmup-socket-settings";
     std::filesystem::create_directory(warmup_sockets_dir);
     for (const auto* folder : {"first", "second"}) {
         write_candidate(warmup_sockets_dir, folder, "same-adapter", "fixed-peer",
                         "same-profile", "same-library");
         for (const auto* role : {"client", "server"})
-            add_warmup(warmup_sockets_dir / folder / (std::string(role) + ".jsonl"));
+            update_header(warmup_sockets_dir / folder / (std::string(role) + ".jsonl"),
+                          [&](J& metadata) {
+                              metadata["config"]["warmups"] = 1;
+                              metadata["connections"].push_back(
+                                  {{"index", 1}, {"warmup", true}, {"socket", socket}});
+                          });
     }
     update_header(warmup_sockets_dir / "second/client.jsonl", [](J& metadata) {
-        metadata["connections"][0]["socket"]["send_buffer"] = 262144;
+        metadata["connections"][1]["socket"]["send_buffer"] = 262144;
     });
-    const auto different_warmup =
+    const auto warmup_sockets =
         summarize(warmup_sockets_dir, dir / "warmup-socket-report");
-    assert(different_warmup["groups"].size() == 2);
-    assert(different_warmup["comparisons"].empty());
-
-    const auto missing_warmup_dir = dir / "missing-warmup-socket";
-    std::filesystem::create_directory(missing_warmup_dir);
-    for (const auto* adapter : {"adapter-a", "adapter-b"}) {
-        write_candidate(missing_warmup_dir, adapter, adapter, "fixed-peer", "same-profile",
-                        adapter);
-        for (const auto* role : {"client", "server"})
-            add_warmup(missing_warmup_dir / adapter / (std::string(role) + ".jsonl"));
+    assert(warmup_sockets["groups"].size() == 2);
+    assert(warmup_sockets["comparisons"].empty());
+    for (const auto& group : warmup_sockets["groups"]) {
+        assert(group["dimensions"]["socket_settings"].size() == 2);
+        assert(group["metrics"]["elapsed_ns"]["count"] == 1);
     }
-    update_header(missing_warmup_dir / "adapter-b/client.jsonl", [](J& metadata) {
-        metadata["connections"][0].erase("socket");
+
+    const auto missing_warmup_socket_dir = dir / "missing-warmup-socket";
+    std::filesystem::create_directory(missing_warmup_socket_dir);
+    write_candidate(missing_warmup_socket_dir, "complete", "adapter-a", "fixed-peer",
+                    "same-profile", "library-a");
+    write_candidate(missing_warmup_socket_dir, "missing", "adapter-b", "fixed-peer",
+                    "same-profile", "library-b");
+    for (const auto* folder : {"complete", "missing"})
+        for (const auto* role : {"client", "server"})
+            update_header(missing_warmup_socket_dir / folder /
+                              (std::string(role) + ".jsonl"),
+                          [&](J& metadata) {
+                              metadata["config"]["warmups"] = 1;
+                              metadata["connections"].push_back(
+                                  {{"index", 1}, {"warmup", true}, {"socket", socket}});
+                          });
+    update_header(missing_warmup_socket_dir / "missing/client.jsonl", [](J& metadata) {
+        metadata["connections"][1].erase("socket");
     });
-    const auto missing_warmup =
-        summarize(missing_warmup_dir, dir / "missing-warmup-socket-report");
-    assert(missing_warmup["groups"].size() == 2);
-    assert(missing_warmup["comparisons"].empty());
-    bool preserved_missing_warmup = false;
-    for (const auto& group : missing_warmup["groups"])
-        preserved_missing_warmup =
-            preserved_missing_warmup || group["dimensions"]["socket_settings"][0].is_null();
-    assert(preserved_missing_warmup);
+    const auto missing_warmup_socket =
+        summarize(missing_warmup_socket_dir, dir / "missing-warmup-socket-report");
+    assert(missing_warmup_socket["groups"].size() == 2);
+    assert(missing_warmup_socket["comparisons"].empty());
+    bool missing_identity_observed = false;
+    for (const auto& group : missing_warmup_socket["groups"]) {
+        const auto& settings = group["dimensions"]["socket_settings"];
+        assert(settings.size() == 2);
+        missing_identity_observed = missing_identity_observed || settings[1].is_null();
+    }
+    assert(missing_identity_observed);
+
+    const auto pure_netem_dir = dir / "pure-tls-netem";
+    std::filesystem::create_directory(pure_netem_dir);
+    auto write_network_run = [&](const char* name, int delay_ms) {
+        const auto run = pure_netem_dir / name;
+        std::filesystem::create_directory(run);
+        write_candidate(run, "sample-1", "same-adapter", "fixed-peer", "same-profile",
+                        "same-library");
+        for (const auto* role : {"client", "server"})
+            update_header(run / "sample-1" / (std::string(role) + ".jsonl"),
+                          [&](J& metadata) {
+                              metadata["config"]["network_handoff"] = J::object();
+                              metadata["config"]["network_handoff"]["net_profile"] = {
+                                  {"paths", {{"tls_c2s", {{"delay_ms", delay_ms}}},
+                                             {"tls_s2c", {{"delay_ms", delay_ms}}}}}};
+                          });
+        const J observation_ids = J::array(
+            {"1:setup:begin", "1:setup:end", "1:scenario:begin", "1:scenario:end",
+             "1:cleanup:begin", "1:cleanup:end"});
+        {
+            std::ofstream ledger(run / "attempts.jsonl");
+            ledger << J({{"type", "turtle-attempt-ledger"}, {"schema", 1},
+                         {"record_kind", "run_config"}, {"requested_count", 1}})
+                              .dump()
+                   << '\n';
+            ledger << J({{"type", "turtle-attempt-ledger"}, {"schema", 1},
+                         {"record_kind", "attempt_started"}, {"attempt_id", 1},
+                         {"started", true}, {"final_status", "not_attempted"},
+                         {"network_observation_ids", J::array()}})
+                              .dump()
+                   << '\n';
+            ledger << J({{"type", "turtle-attempt-ledger"}, {"schema", 1},
+                         {"record_kind", "attempt_final"}, {"attempt_id", 1},
+                         {"final_status", "success"},
+                         {"network_observation_ids", observation_ids}})
+                              .dump()
+                   << '\n';
+            ledger << J({{"type", "turtle-attempt-ledger"}, {"schema", 1},
+                         {"record_kind", "run_summary"}, {"requested", 1},
+                         {"started", 1}, {"success", 1}, {"timeout", 0},
+                         {"error", 0}, {"incomplete", 0}, {"not_attempted", 0},
+                         {"missing_artifacts", 0}, {"missing_artifact_rows", J::array()}})
+                              .dump()
+                   << '\n';
+        }
+        const J paths = {
+            {"tls_c2s", {{"delay_ms", delay_ms}, {"loss_percent", 0.0}, {"limit_packets", 10000}}},
+            {"tls_s2c", {{"delay_ms", delay_ms}, {"loss_percent", 0.0}, {"limit_packets", 10000}}}};
+        const J readbacks = {
+            {"tls_c2s", {{"interface", "rstls"}}},
+            {"tls_s2c", {{"interface", "rctls"}}}};
+        std::ofstream(run / "network-provenance.json")
+            << J({{"type", "turtle-network-provenance"}, {"schema", 1},
+                  {"status", "complete"}, {"director", {{"returncode", 0}}},
+                  {"host_network_identity", {{"unchanged", true},
+                                               {"before", {{"supported", true}}},
+                                               {"after", {{"supported", true}}}}},
+                  {"lifecycle", {{"namespace_fds_closed", true},
+                                   {"owned_pipe_fds_closed", true}}},
+                  {"cleanup", J::array({{{"helper", "client"}, {"result", "reaped"}},
+                                         {{"helper", "server"}, {"result", "reaped"}},
+                                         {{"helper", "router"}, {"result", "reaped"}}})},
+                  {"finished_monotonic_ns", 1000},
+                  {"applied_qdisc_readback", readbacks},
+                  {"condition_identity",
+                   {{"topology", {{"kind", "three-netns-receiver-facing-router-egress"},
+                                    {"addresses", {{"client_tls", "10.203.1.2"},
+                                                    {"server", "10.203.2.2"}}},
+                                    {"interfaces", {{"client_tls", "ctls"},
+                                                     {"server", "stls"},
+                                                     {"router_client_tls", "rctls"},
+                                                     {"router_server", "rstls"}}}}},
+                    {"requested", {{"paths", paths}}},
+                    {"actual", {{"qdisc", "netem"}, {"paths", paths}}},
+                    {"mtu", {{"requested", 1500}, {"actual", {{"ctls", 1500}}}}},
+                    {"offload", {{"requested", false}, {"actual", {{"ctls", false}}}}},
+                    {"trace", {{"requested", false}}}}}})
+                   .dump(2)
+            << '\n';
+        std::ofstream observations(run / "network-observations.jsonl");
+        for (const auto& id : observation_ids) {
+            const auto text = id.get<std::string>();
+            const auto phase = text.find(":setup:") != std::string::npos
+                                   ? "setup"
+                                   : text.find(":cleanup:") != std::string::npos ? "cleanup"
+                                                                                  : "scenario";
+            observations << J({{"type", "network-observation"}, {"schema", 1},
+                               {"observation_id", text}, {"attempt", 1},
+                               {"phase", phase},
+                               {"edge", text.ends_with("begin") ? "begin" : "end"}})
+                                    .dump()
+                         << '\n';
+        }
+    };
+    write_network_run("zero", 0);
+    write_network_run("twenty", 20);
+    const auto pure_netem = summarize(pure_netem_dir, dir / "pure-netem-report");
+    assert(pure_netem["groups"].size() == 2);
+    assert(pure_netem["comparisons"].empty());
+    assert(!pure_netem.contains("lookup_summary"));
+    assert(!std::filesystem::exists(dir / "pure-netem-report" / "lookup-summary.json"));
+    J zero_dimensions;
+    for (const auto& group : pure_netem["groups"]) {
+        const auto& dimensions = group["dimensions"];
+        assert(dimensions["network_actual_identity"]["topology"]["kind"] ==
+               "three-netns-receiver-facing-router-egress");
+        assert(dimensions["automatic_comparison_identity_complete"] == true);
+        assert(group["automatic_comparison_eligible"] == true);
+        if (dimensions["network_actual_identity"]["actual"]["paths"]["tls_c2s"]
+                      ["delay_ms"] == 0)
+            zero_dimensions = dimensions;
+    }
+    const auto zero_provenance_path = pure_netem_dir / "zero" / "network-provenance.json";
+    auto host_changed_provenance = J::parse(std::ifstream(zero_provenance_path));
+    host_changed_provenance["host_network_identity"]["unchanged"] = false;
+    std::ofstream(zero_provenance_path) << host_changed_provenance.dump(2) << '\n';
+    const auto host_changed_report =
+        summarize(pure_netem_dir / "zero", dir / "host-changed-network-report");
+    assert(host_changed_report["groups"].size() == 1);
+    assert(host_changed_report["groups"][0]["dimensions"] == zero_dimensions);
+    assert(host_changed_report["groups"][0]["automatic_comparison_eligible"] == false);
+    assert(host_changed_report["groups"][0]["metrics"].empty());
+    assert(host_changed_report["samples"][0]["network_integrity"]["eligible"] == false);
 
     const auto contexts_dir = dir / "context-identities";
     std::filesystem::create_directory(contexts_dir);
@@ -387,6 +512,24 @@ int main() {
     assert(unknown_context["groups"].size() == 2);
     assert(unknown_context["comparisons"].empty());
 
+    const auto missing_context_size_dir = dir / "missing-context-size";
+    std::filesystem::create_directory(missing_context_size_dir);
+    write_candidate(missing_context_size_dir, "observed-zero", "adapter-a", "fixed-peer",
+                    "same-profile", "library-a");
+    write_candidate(missing_context_size_dir, "missing", "adapter-b", "fixed-peer",
+                    "same-profile", "library-b");
+    for (const auto* role : {"client", "server"})
+        update_header(missing_context_size_dir / "missing" /
+                          (std::string(role) + ".jsonl"),
+                      [](J& metadata) {
+                          metadata.erase("loaded_context_size");
+                          metadata.erase("loaded_context_hash");
+                      });
+    const auto missing_context_size =
+        summarize(missing_context_size_dir, dir / "missing-context-size-report");
+    assert(missing_context_size["groups"].size() == 2);
+    assert(missing_context_size["comparisons"].empty());
+
     const auto unknown_socket_dir = dir / "unknown-sockets";
     std::filesystem::create_directory(unknown_socket_dir);
     for (const auto* adapter : {"adapter-a", "adapter-b"}) {
@@ -407,6 +550,49 @@ int main() {
     const auto director_invalid = summarize(director_dir, dir / "director-report");
     assert(director_invalid["groups"].empty());
     assert(director_invalid["invalid_samples"] == 2);
+    auto reject_bad_ledger = [&](const char* name, const std::string& contents) {
+        const auto bad = dir / name;
+        std::filesystem::create_directory(bad);
+        write_candidate(bad, "sample", "adapter-a", "fixed-peer", "same-profile", "library-a");
+        std::ofstream(bad / "attempts.jsonl") << contents;
+        bool rejected = false;
+        try {
+            (void)summarize(bad, dir / (std::string(name) + "-report"));
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        assert(rejected);
+    };
+    reject_bad_ledger("empty-attempt-ledger", "");
+    reject_bad_ledger("malformed-attempt-ledger", "{broken\n");
+    reject_bad_ledger(
+        "middle-malformed-attempt-ledger",
+        "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,\"record_kind\":"
+        "\"run_config\",\"requested_count\":1}\n{broken\n"
+        "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,\"record_kind\":"
+        "\"run_summary\",\"requested\":1,\"started\":0,\"success\":0,"
+        "\"timeout\":0,\"error\":0,\"incomplete\":0,\"not_attempted\":1,"
+        "\"missing_artifacts\":0,\"missing_artifact_rows\":[]}\n");
+
+    const auto truncated_ledger_dir = dir / "truncated-final-attempt-ledger";
+    std::filesystem::create_directory(truncated_ledger_dir);
+    write_candidate(truncated_ledger_dir, "sample", "adapter-a", "fixed-peer",
+                    "same-profile", "library-a");
+    {
+        std::ofstream ledger(truncated_ledger_dir / "attempts.jsonl");
+        ledger << "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
+                  "\"record_kind\":\"run_config\",\"requested_count\":1}\n";
+        ledger << "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
+                  "\"record_kind\":\"attempt_started\",\"attempt_id\":1}\n";
+        ledger << "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
+                  "\"record_kind\":\"attempt_final\",\"attempt_id\":";
+    }
+    const auto truncated_ledger =
+        summarize(truncated_ledger_dir, dir / "truncated-final-report");
+    assert(truncated_ledger["groups"].empty());
+    assert(truncated_ledger["invalid_samples"] == 2);
+    for (const auto& sample : truncated_ledger["samples"])
+        assert(sample["invalid_reason"] == "parent attempt ledger status: incomplete");
     std::filesystem::remove_all(dir);
     std::cout << "report tests passed\n";
 }

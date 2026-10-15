@@ -1,3 +1,6 @@
 add_executable(turtle_report_test report_test.cpp)
 target_link_libraries(turtle_report_test PRIVATE turtle_report)
 add_test(NAME report COMMAND turtle_report_test)
+add_executable(turtle_lookup_report_test lookup_report_test.cpp)
+target_link_libraries(turtle_lookup_report_test PRIVATE turtle_report)
+add_test(NAME lookup_report COMMAND turtle_lookup_report_test)

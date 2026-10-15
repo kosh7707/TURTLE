@@ -135,49 +135,66 @@ bool pin_to_cpu(int cpu, std::string& explanation) {
     return true;
 }
 void choose_cpus(model::RunConfig& config, const model::Environment& environment) {
-    if (!config.pin_cores)
+    if (!config.pin_cores) {
+        config.director_cpu = -1;
+        config.client_cpu = -1;
+        config.server_cpu = -1;
+        config.ca_cpu = -1;
         return;
-    // Select only verified representatives. Explicit sibling CPUs are accepted
-    // when their physical identity can be checked against the other selections.
+    }
+
+    const bool with_ca = config.lookup.enabled;
+    const std::size_t required = with_ca ? 4 : 3;
+    int selected[4] = {config.director_cpu, config.client_cpu, config.server_cpu,
+                       with_ca ? config.ca_cpu : -1};
     std::set<std::string> used;
-    auto key = [&](int cpu) {
-        auto physical = core_key(cpu);
-        if (physical.empty() &&
+    auto physical_key = [&](int cpu) {
+        auto key = core_key(cpu);
+        if (key.empty() &&
             std::find(environment.physical_cpus.begin(), environment.physical_cpus.end(), cpu) !=
                 environment.physical_cpus.end())
-            physical = "verified:" + std::to_string(cpu);
-        return physical;
+            key = "representative:" + std::to_string(cpu);
+        return key;
     };
-    int selected[] = {config.director_cpu, config.client_cpu, config.server_cpu};
-    for (const int cpu : selected) {
+
+    for (std::size_t index = 0; index < required; ++index) {
+        const int cpu = selected[index];
         if (cpu < 0)
             continue;
         if (std::find(environment.allowed_cpus.begin(), environment.allowed_cpus.end(), cpu) ==
             environment.allowed_cpus.end())
             throw std::runtime_error("Requested CPU is not allowed");
-        const auto physical = key(cpu);
-        if (physical.empty() || !used.insert(physical).second)
+        const auto key = physical_key(cpu);
+        if (key.empty())
+            throw std::runtime_error("Requested CPU physical core cannot be verified");
+        if (!used.insert(key).second)
             throw std::runtime_error("Requested CPUs must have distinct verified physical cores");
     }
-    for (int& cpu : selected) {
-        if (cpu >= 0)
+
+    for (std::size_t index = 0; index < required; ++index) {
+        if (selected[index] >= 0)
             continue;
         for (const int candidate : environment.physical_cpus) {
             if (std::find(environment.allowed_cpus.begin(), environment.allowed_cpus.end(),
                           candidate) == environment.allowed_cpus.end())
                 continue;
-            const auto physical = key(candidate);
-            if (!physical.empty() && used.insert(physical).second) {
-                cpu = candidate;
+            const auto key = physical_key(candidate);
+            if (!key.empty() && used.insert(key).second) {
+                selected[index] = candidate;
                 break;
             }
         }
-        if (cpu < 0)
-            throw std::runtime_error("Three distinct physical cores are unavailable; explicitly "
+        if (selected[index] < 0) {
+            const char* count = with_ca ? "Four" : "Three";
+            throw std::runtime_error(std::string(count) +
+                                     " distinct physical cores are unavailable; explicitly "
                                      "disable affinity to proceed");
+        }
     }
+
     config.director_cpu = selected[0];
     config.client_cpu = selected[1];
     config.server_cpu = selected[2];
+    config.ca_cpu = with_ca ? selected[3] : -1;
 }
 } // namespace turtle::capability

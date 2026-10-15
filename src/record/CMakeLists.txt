@@ -1,4 +1,4 @@
-add_library(turtle_record record.cpp)
+add_library(turtle_record record.cpp service.cpp)
 target_compile_features(turtle_record PUBLIC cxx_std_20)
 target_include_directories(turtle_record PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
 target_include_directories(turtle_record PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party")

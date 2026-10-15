@@ -1,4 +1,5 @@
 #include "report/report.hpp"
+#include "report/network_evidence.hpp"
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -225,10 +226,18 @@ bool observed_sockets(const Json& settings) {
 }
 
 Json context_identity(const Json& header) {
-    const auto size = header.value("loaded_context_size", std::size_t{0});
-    const auto hash = header.value("loaded_context_hash", std::string{});
-    return {{"size", size},
-            {"hash", size == 0 ? Json("") : (hash.empty() ? Json(nullptr) : Json(hash))}};
+    if (!header.contains("loaded_context_size") ||
+        (!header.at("loaded_context_size").is_number_unsigned() &&
+         (!header.at("loaded_context_size").is_number_integer() ||
+          header.at("loaded_context_size").get<std::int64_t>() < 0)))
+        return {{"size", nullptr}, {"hash", nullptr}};
+    const auto size = header.at("loaded_context_size").get<std::size_t>();
+    if (size == 0)
+        return {{"size", 0}, {"hash", ""}};
+    if (!header.contains("loaded_context_hash") || !header.at("loaded_context_hash").is_string() ||
+        header.at("loaded_context_hash").get<std::string>().empty())
+        return {{"size", size}, {"hash", nullptr}};
+    return {{"size", size}, {"hash", header.at("loaded_context_hash")}};
 }
 
 PeerHeader peer_header(const std::filesystem::path& path, const Json& header) {
@@ -277,6 +286,27 @@ std::optional<std::string> director_invalid_reason(const std::filesystem::path& 
     std::string line;
     if (!std::getline(file, line) || line != "valid") {
         return line.empty() ? "director status is empty" : line;
+    }
+    return std::nullopt;
+}
+std::optional<AuthoritativeLedger> authoritative_ledger(
+    const std::filesystem::path& sample_path, const std::filesystem::path& input_root) {
+    auto directory = sample_path.parent_path();
+    const auto boundary = std::filesystem::is_regular_file(input_root)
+                              ? input_root.parent_path()
+                              : input_root;
+    while (true) {
+        const auto path = directory / "attempts.jsonl";
+        std::error_code status_error;
+        const auto status = std::filesystem::symlink_status(path, status_error);
+        if (status_error && status_error != std::errc::no_such_file_or_directory)
+            throw std::runtime_error("cannot inspect authoritative attempt ledger: " +
+                                     path.string());
+        if (status.type() != std::filesystem::file_type::not_found)
+            return read_authoritative_ledger(path);
+        if (directory == boundary || directory == directory.root_path())
+            break;
+        directory = directory.parent_path();
     }
     return std::nullopt;
 }
@@ -497,9 +527,11 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         Json dimensions;
         std::map<std::string, std::vector<double>> metrics;
         std::map<std::uint64_t, std::vector<double>> batches;
+        bool automatic_comparison_eligible = true;
     };
     std::map<std::string, Group> collected;
     std::size_t invalid = 0;
+    bool saw_lookup_scenario = false;
     for (const auto& path : paths) {
         std::ifstream file(path);
         std::string line;
@@ -508,6 +540,14 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         auto header = Json::parse(line);
         if (header.at("type") != "sample" || header.at("schema") != 1)
             throw std::runtime_error("unsupported raw record schema");
+        const auto scenario_name =
+            header.at("config").value("scenario_name", std::string("standard-tls"));
+        const bool lookup_scenario =
+            scenario_name == "synthetic-lookup-plus-standard-tls" ||
+            (header.at("config").contains("lookup") &&
+             header.at("config").at("lookup").is_object() &&
+             header.at("config").at("lookup").value("enabled", false));
+        saw_lookup_scenario = saw_lookup_scenario || lookup_scenario;
         std::vector<Json> events;
         while (std::getline(file, line))
             if (!line.empty())
@@ -561,6 +601,39 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         }
         const auto peer = peer_header(path, header);
         const auto director_reason = director_invalid_reason(path.parent_path());
+        const auto ledger = authoritative_ledger(path, input);
+        std::optional<std::string> parent_status;
+        NetworkEvidence network;
+        if (ledger) {
+            const auto sample = header.at("sample").get<std::uint64_t>();
+            parent_status = ledger->attempts.contains(sample)
+                                ? std::optional<std::string>(ledger->attempts.at(sample).status)
+                                : std::optional<std::string>("incomplete");
+            std::vector<NetworkAttempt> attempts;
+            attempts.reserve(ledger->attempts.size());
+            for (const auto& [id, attempt] : ledger->attempts) {
+                (void)id;
+                attempts.push_back(attempt);
+            }
+            network = read_network_evidence(
+                ledger->root,
+                lookup_scenario ? NetworkTopology::lookup_4ns
+                                : NetworkTopology::tls_3ns_or_legacy_4ns,
+                attempts);
+        }
+        const bool network_handoff =
+            header.at("config").contains("network_handoff") &&
+            header.at("config").at("network_handoff").is_object();
+        const bool network_required = network.present || network_handoff;
+        if (!network_required) {
+            network.integrity = {{"status", "not_applicable_loopback"},
+                                 {"eligible", true},
+                                 {"reasons", Json::array()}};
+        } else if (!network.present) {
+            network.integrity = {
+                {"status", "failed"}, {"eligible", false},
+                {"reasons", Json::array({"network_provenance_missing_or_unreadable"})}};
+        }
         bool valid = header.value("valid", false);
         for (const auto& p : parts)
             valid = valid && p.value("valid", false);
@@ -568,9 +641,13 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             valid = false;
         if (director_reason)
             valid = false;
+        if (parent_status && *parent_status != "success")
+            valid = false;
         std::string invalid_reason = header.value("invalid_reason", "");
         if (director_reason)
             invalid_reason = *director_reason;
+        if (parent_status && *parent_status != "success")
+            invalid_reason = "parent attempt ledger status: " + *parent_status;
         samples.push_back({{"path", path.string()},
                            {"sample", header.at("sample")},
                            {"role", header.at("role")},
@@ -580,11 +657,13 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                            {"peer_header_reason", peer.reason},
                            {"decoded_sidecar_status", sidecar_status},
                            {"decoded_sidecar_reason", sidecar_reason},
+                           {"network_integrity", network.integrity},
                            {"connections", parts}});
         if (!valid) {
             ++invalid;
             continue;
         }
+        const auto own_context = context_identity(header);
         Json dimensions = {
             {"role", header.at("role")},
             {"profile_hash", header.at("profile_hash")},
@@ -592,8 +671,10 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             {"mode", header.at("mode")},
             {"observation_level", header.value("observation_level", "L0")},
             {"warmups", header.at("config").value("warmups", 0)},
-            {"loaded_context", header.value("loaded_context_size", 0) > 0},
-            {"context_identity", context_identity(header)},
+            {"loaded_context", own_context.at("size").is_null()
+                                   ? Json(nullptr)
+                                   : Json(own_context.at("size").get<std::size_t>() > 0)},
+            {"context_identity", own_context},
             {"peer_context_identity", peer.verified ? context_identity(peer.header) : Json(nullptr)},
             {"socket_settings", socket_settings(header)},
             {"peer_socket_settings", peer.verified ? socket_settings(peer.header) : Json(nullptr)},
@@ -624,6 +705,18 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             {"correction", "raw"},
             {"timing_interpretation",
              header.at("mode") == "timing" ? "performance" : "diagnostic_only"}};
+        dimensions["scenario_name"] = scenario_name;
+        dimensions["lookup_requested_identity"] =
+            lookup_scenario ? header.at("config").value("lookup", Json(nullptr)) : Json(nullptr);
+        dimensions["network_requested_identity"] = nullptr;
+        if (network_handoff)
+            dimensions["network_requested_identity"] =
+                header.at("config").at("network_handoff").value("net_profile", Json(nullptr));
+        dimensions["network_actual_identity"] = network.condition_identity;
+        // Lookup-specific cache/object identity remains in lookup-summary.json. Generic TLS
+        // comparisons additionally require complete network evidence when a runner was used.
+        dimensions["automatic_comparison_identity_complete"] =
+            !lookup_scenario && (!network_required || network.condition_identity.is_object());
         for (const char* control :
              {"perf", "kernel_timestamps", "isolate", "pin_cores", "tcp_nodelay",
               "socket_send_buffer", "socket_receive_buffer", "event_capacity", "stream_capacity",
@@ -635,6 +728,12 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             dimensions["connection"] = p.at("connection");
             auto& group = collected[dimensions.dump()];
             group.dimensions = dimensions;
+            const bool metrics_admitted =
+                !network_required || network.integrity.value("eligible", false);
+            group.automatic_comparison_eligible =
+                group.automatic_comparison_eligible && metrics_admitted;
+            if (!metrics_admitted)
+                continue;
             for (const auto* metric :
                  {"elapsed_ns", "computation_ns", "io_ns", "wait_ns", "gap_ns", "thread_cpu_ns",
                   "cycles", "instructions", "heap_peak_bytes"})
@@ -663,7 +762,9 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         (void)key;
         Json item = {{"dimensions", group.dimensions},
                      {"metrics", Json::object()},
-                     {"batches", Json::array()}};
+                     {"batches", Json::array()},
+                     {"automatic_comparison_eligible",
+                      group.automatic_comparison_eligible}};
         for (const auto& [name, values] : group.metrics)
             item["metrics"][name] = distribution(values);
         if (group.metrics.contains(std::string(alternate_elapsed))) {
@@ -683,11 +784,17 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             item["batch_ids"].push_back(batch);
             batch_stq.push_back(d["stq2"].get<double>());
         }
-        item["batch_stq2_range_ns"] = *std::max_element(batch_stq.begin(), batch_stq.end()) -
-                                      *std::min_element(batch_stq.begin(), batch_stq.end());
-        const auto filename = "distribution-" + std::to_string(group_index++) + ".svg";
-        svg(output / filename, group.metrics.at("elapsed_ns"));
-        item["distribution_svg"] = filename;
+        item["batch_stq2_range_ns"] = batch_stq.empty()
+                                          ? Json(nullptr)
+                                          : Json(*std::max_element(batch_stq.begin(), batch_stq.end()) -
+                                                 *std::min_element(batch_stq.begin(), batch_stq.end()));
+        if (group.metrics.contains("elapsed_ns")) {
+            const auto filename = "distribution-" + std::to_string(group_index++) + ".svg";
+            svg(output / filename, group.metrics.at("elapsed_ns"));
+            item["distribution_svg"] = filename;
+        } else {
+            item["distribution_svg"] = nullptr;
+        }
         groups.push_back(item);
     }
     Json comparisons = Json::array();
@@ -695,6 +802,12 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         for (std::size_t b = a + 1; b < groups.size(); ++b) {
             auto da = groups[a]["dimensions"], db = groups[b]["dimensions"];
             if (da["mode"] != "timing" || db["mode"] != "timing")
+                continue;
+            if (!groups[a].value("automatic_comparison_eligible", false) ||
+                !groups[b].value("automatic_comparison_eligible", false))
+                continue;
+            if (!da.value("automatic_comparison_identity_complete", false) ||
+                !db.value("automatic_comparison_identity_complete", false))
                 continue;
             if (!da.value("peer_verified", false) || !db.value("peer_verified", false) ||
                 !da.value("peer_valid", false) || !db.value("peer_valid", false))
@@ -750,6 +863,23 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                      "Kernel timestamps are excluded from L0 partitions.",
                      "Raw boundary times; no calibration subtraction is applied.",
                      "Missing or multiplexed counters are not synthesized."}}};
+    bool has_lookup_artifacts = false;
+    if (!std::filesystem::is_regular_file(input)) {
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(input)) {
+            if (entry.is_regular_file() &&
+                (entry.path().filename() == "lookup.jsonl" ||
+                 entry.path().filename() == "ca.jsonl")) {
+                has_lookup_artifacts = true;
+                break;
+            }
+        }
+    }
+    if (saw_lookup_scenario || has_lookup_artifacts) {
+        (void)summarize_lookup(input, output);
+        result["lookup_summary"] = {{"path", "lookup-summary.json"},
+                                    {"type", "turtle-lookup-summary"},
+                                    {"schema", 1}};
+    }
     std::ofstream out(output / "summary.json");
     out.exceptions(std::ios::badbit | std::ios::failbit);
     out << result.dump(2) << '\n';

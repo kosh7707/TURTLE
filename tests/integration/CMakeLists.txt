@@ -10,13 +10,28 @@ add_test(NAME local_pki_matrix COMMAND ${Python3_EXECUTABLE}
   "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/make-pki.sh" "${TURTLE_OPENSSL_PROGRAM}")
 set_tests_properties(local_pki_matrix PROPERTIES TIMEOUT 60 LABELS integration)
 
+# Contract-only coordinator coverage with a fake director.  The privileged
+# fixed N05 loss gate is an explicit one-shot verification and is never a
+# repeated CTest.
+add_test(NAME netem_runner_contracts COMMAND ${Python3_EXECUTABLE}
+  "${CMAKE_CURRENT_SOURCE_DIR}/netem.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/netem-study.py")
+set_tests_properties(netem_runner_contracts PROPERTIES TIMEOUT 30 LABELS integration)
+
 set(adapters)
 foreach(name openssl wolfssl mbedtls)
   if(TARGET turtle_adapter_${name})
     list(APPEND adapters ${name})
   endif()
 endforeach()
-if(TARGET turtle_adapter_openssl AND TARGET turtle-interpret)
+if(TARGET turtle_adapter_openssl AND TARGET turtle-report AND TARGET turtle-interpret)
+  add_test(NAME pure_tls_netem_actual COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/pure_tls_netem.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/netem-study.py"
+    "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>"
+    "$<TARGET_FILE:turtle-interpret>" "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
+  set_tests_properties(pure_tls_netem_actual PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 240 LABELS integration)
   add_test(NAME pipeline_multiple_connections COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/pipeline.py"
     "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
@@ -53,4 +68,12 @@ foreach(name IN LISTS adapters)
   add_test(NAME ${name}_allocator_lifetime COMMAND turtle_adapter_memory
     "$<TARGET_FILE:turtle_adapter_${name}>" "${test_pki}")
   set_tests_properties(${name}_allocator_lifetime PROPERTIES FIXTURES_REQUIRED local_pki TIMEOUT 15)
+  if(TARGET turtle-report AND TARGET turtle-interpret)
+    add_test(NAME lookup_${name}_same_library COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/lookup.py"
+      "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
+      "${CMAKE_BINARY_DIR}/adapters" "${test_pki}" "${name}")
+    set_tests_properties(lookup_${name}_same_library PROPERTIES
+      FIXTURES_REQUIRED local_pki TIMEOUT 240 LABELS integration)
+  endif()
 endforeach()

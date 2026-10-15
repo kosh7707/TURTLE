@@ -8,6 +8,20 @@
 
 namespace turtle::measure {
 
+class HeapTracker {
+  public:
+    explicit HeapTracker(bool enabled);
+    ~HeapTracker();
+    HeapTracker(const HeapTracker&) = delete;
+    HeapTracker& operator=(const HeapTracker&) = delete;
+    Allocator allocator() noexcept;
+    std::optional<model::HeapSnapshot> read(bool reset_interval = true) noexcept;
+
+  private:
+    struct State;
+    std::unique_ptr<State> state_;
+};
+
 class Meter {
   public:
     explicit Meter(model::Mode mode, bool request_perf = true);

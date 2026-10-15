@@ -59,8 +59,9 @@ ClientHello와 Finished 경계의 묶임 여부를 각각 표시합니다. 이 �
 두 그룹이 포함한 묶음 번호의 집합도 완전히 같아야 합니다. 서로 다른 묶음에서 나온 두
 그룹을 자동으로 비교하지 않습니다.
 
-양쪽 엔드포인트가 조회한 실제 소켓 설정도 비교 조건에 포함합니다. 요청 버퍼 크기가
-같더라도 커널이 적용한 값이 다르면 그룹을 나눕니다. 연결의 `socket`이 없는 예전 자료는
+양쪽 엔드포인트가 조회한 실제 소켓 설정도 비교 조건에 포함합니다. 준비 연결과 측정 연결의
+실제 설정을 모두 순서대로 조건 identity에 넣습니다. 요청 버퍼 크기가 같더라도 커널이 적용한
+값이 다르면 그룹을 나눕니다. 연결의 `socket`이 없는 예전 자료는
 미관측으로 유지하며 새 자료의 조회값으로 대신 채우지 않습니다.
 자기 역할이나 상대 역할의 실제 소켓 설정이 빠진 자료는 요약만 만들고 자동 비교에서는
 제외합니다.
@@ -77,3 +78,63 @@ ClientHello와 Finished 경계의 묶임 여부를 각각 표시합니다. 이 �
 후보의 차이와 95퍼센트 구간은 두 그룹을 독립적으로 다시 뽑는 부트스트랩으로 계산합니다.
 이 결과는 탐색적인 비교 후보일 뿐입니다. 두 구현이 같은 동작을 한다거나 결과가 서로
 같다는 것을 판정하지 않습니다.
+
+### 순수 TLS의 격리 네트워크 조건
+
+조회 원자료가 없는 일반 TLS 실행도 network handoff가 있으면 요청 정책과 실제 적용 정책을
+모두 안정 그룹 키에 넣습니다. 요청 identity는 역할 원자료의 `network_handoff.net_profile`,
+실제 identity는 provenance에서 변동값을 제거한 topology·활성 경로·qdisc readback·MTU·offload
+조건입니다. 따라서 0ms와 20ms 또는 client와 server 역할은 서로 다른 그룹이며, CA 경로가
+없는 세 namespace topology는 조회용 네 namespace topology와 섞이지 않습니다.
+
+host unchanged, phase observation 완전성, helper/observer 회수 같은 integrity **결과**는 안정
+그룹 키에 넣지 않습니다. 같은 요청·실제 정책에서 integrity 결과가 달라도 조건 그룹을 새로
+만들지 않고, 원래 run-level provenance·attempt metadata와 표본의 `network_integrity`, 그룹의
+최상위 `automatic_comparison_eligible`에서 부적격을 표시합니다. 부적격 표본의 측정값은 그룹
+metric에 넣지 않습니다. success/timeout, drop, retrans도 같은 이유로 조건 키가 아닙니다.
+
+준비 연결과 측정 연결의 실제 소켓 설정은 모두 조건을 구성하지만, 경과 시간·스레드 CPU를
+비롯한 metric에는 `warmup=false`인 측정 연결만 들어갑니다. 준비 연결을 표본 수나 metric 수에
+더하지 않습니다.
+
+## 인증서 조회 시나리오 보고
+
+조회 원자료가 있으면 `turtle-report`는 기존 `summary.json`과 별도로 `lookup-summary.json`을 만듭니다. 보고서 제목과 `scenario_disclosure`는 이 실행이 **합성 조회 + stock 인증서 기반 TLS**이며 인증서 경량화 결과가 아님을 명시합니다.
+
+### 분모와 상태
+
+`attempts.jsonl`의 parent 최종 행이 상태의 기준입니다. 자식 파일의 `valid=true`가 parent의 timeout/error를 덮지 않습니다. 원장에는 다음 항등식이 유지되어야 합니다.
+
+```text
+requested = started + not_attempted
+started = success + timeout + error + incomplete
+```
+
+`attempt_table`은 attempt 상태와 그 attempt에 속한 연결 행 참조를 담습니다. `connection_table`은 warmup 여부와 연결 상태를 담습니다. 여러 연결의 시간을 더해 독립 attempt 시간으로 만들지 않습니다. timeout의 누락값을 성공 분포에 timeout 길이나 0으로 넣지 않습니다. 과거 원자료에 원장이 없으면 TLS header와 `director.txt` fallback을 명시적으로 표시하며, 새 원장이 있을 때는 fallback으로 상태를 바꾸지 않습니다.
+
+### 연결 행의 시간과 자원
+
+`joined_rows`는 lookup·CA·TLS와 network observation을 `(attempt, connection, request_id)` 및 observation ID로 연결합니다.
+
+- `remote_lookup_duration_ns`: miss의 `REQUEST_BEGIN`→`RESPONSE_COMPLETE`입니다. hit이면 not-applicable `null`입니다.
+- `usable_duration_ns`: 조회 시작→`USABLE_OBJECT`입니다. 응답 수신 뒤 바이트 대조와 cache insert를 포함합니다.
+- `tls_elapsed_ns`: 기존 클라이언트 TLS 경계입니다. 조회 시간이 섞이지 않습니다.
+- `scenario_elapsed_ns`: 조회 시작부터 TLS 완료까지의 시나리오 경계입니다.
+- `ca_process_ns`, `ca_cpu_ns`, `ca_io_ns`, `ca_wait_ns`: 모의 CA 엔드포인트의 독립 경계입니다.
+- `tcp_counter_deltas`: lookup, CA, TLS client, TLS server 소켓의 시작/끝 차이입니다.
+
+CA process, I/O, wait는 서로 겹치거나 포함 관계가 있을 수 있는 관측 경계입니다. `remote_lookup_duration_ns`를 RTT라고 부르거나 CA 시간과 더해 총시간을 만들지 않습니다. 보고서도 `ca_plus_rtt=never_summed` 규칙을 남깁니다.
+
+### 손실 근거와 조건 그룹
+
+netem 요청 loss는 조건이고, qdisc actual drop은 skb 집계 결과이며, `TCP_INFO.total_retrans` 차이는 소켓의 TCP 재전송 결과입니다. 세 값은 단위와 관측 위치가 다릅니다. AF_PACKET packet도 물리 wire packet이 아닙니다. TSO/GSO/GRO 요청·실제 readback을 함께 읽어야 하며, qdisc 집계를 특정 connection에 나눠 주거나 연결 수만큼 더하지 않습니다.
+
+조건 그룹에는 합성 시나리오, cache mode와 초기 상태, 객체 ID·크기, TLS 프로필, 연결 정책, 실제 CPU·소켓 준비값, topology, 방향별 qdisc 정책, MTU, offload 요청·실제값 같은 안정 조건만 넣습니다. namespace PID/FD/path, 동적 port, qdisc handle, timestamp 같은 provenance와 success/timeout, drop, retrans 같은 **결과**는 그룹 키에서 뺍니다. 결과가 다르다는 이유로 같은 조건을 서로 다른 그룹으로 나누지 않습니다. 반대로 필수 조건 identity가 없거나 실제 offload·MTU·소켓 준비값이 다르면 자동 비교에서 제외하거나 그룹을 나눕니다.
+
+고정 netem 검증 manifest의 일곱 실행은 각 run의 원장·네트워크 provenance·host unchanged·소유 자원 cleanup integrity를 통과했습니다. 최신 보고 도구는 성공한 network attempt마다 setup/scenario/cleanup begin/end의 정확히 여섯 observation 참조를 확인하고, host unchanged 및 owned cleanup과 함께 자동 비교 적격성에 반영합니다. 참조·provenance·원장이 누락되거나 잘못되면 fail closed입니다.
+
+loopback 자료는 네트워크 integrity가 not-applicable이므로 측정값을 설명용 분포에 남길 수 있습니다. 그러나 격리 topology·실제 적용 network identity가 없으므로 자동 network 비교 적격성은 얻지 않습니다. **설명용 metric 보존과 비교 적격성은 별도 판단입니다.**
+
+`results/mock-ca-goal/netem-verify-final/report-final/lookup-summary.json`은 보존한 일곱 실행을 합산합니다. requested=started=100, success=97, timeout=3이며 attempt table, connection table, joined rows가 각각 100개입니다. 일곱 조건은 각각 자기 분모와 condition group을 유지합니다. timeout 세 건은 비교 분포에 들어가지 않습니다.
+
+194개 유효 TLS 역할 파일은 모두 해독됐습니다. timeout에서 없거나 유효하지 않은 역할 파일 6개는 그대로 결측으로 남겨 성공으로 승격하지 않았습니다. `latency-diagnostics.json`의 중앙값은 경로 동작을 보는 `diagnostic_only` 값이며 어떤 gate도 latency 임계값으로 판정하지 않습니다. 논문 성능 주장에도 사용하지 않습니다.

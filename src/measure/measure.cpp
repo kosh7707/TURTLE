@@ -40,18 +40,12 @@ struct alignas(std::max_align_t) Allocation {
 };
 } // namespace
 
-struct Meter::State {
-    model::Capabilities capabilities;
-    model::HeapSnapshot heap;
-    int cycles = -1;
-    int instructions = -1;
+struct HeapTracker::State {
+    explicit State(bool tracking_enabled) : enabled(tracking_enabled) {}
 
-    ~State() {
-        if (instructions >= 0)
-            ::close(instructions);
-        if (cycles >= 0)
-            ::close(cycles);
-    }
+    bool enabled;
+    model::HeapSnapshot heap;
+
     void added(std::size_t size) noexcept {
         heap.live += size;
         heap.allocated_total += size;
@@ -61,7 +55,7 @@ struct Meter::State {
     }
     static void* allocate(void* opaque, std::size_t size) noexcept {
         auto& self = *static_cast<State*>(opaque);
-        if (!self.capabilities.heap_tracking)
+        if (!self.enabled)
             return std::malloc(size);
         if (size > std::numeric_limits<std::size_t>::max() - sizeof(Allocation))
             return nullptr;
@@ -74,7 +68,7 @@ struct Meter::State {
     }
     static void deallocate(void* opaque, void* ptr) noexcept {
         auto& self = *static_cast<State*>(opaque);
-        if (!self.capabilities.heap_tracking) {
+        if (!self.enabled) {
             std::free(ptr);
             return;
         }
@@ -87,7 +81,7 @@ struct Meter::State {
     }
     static void* reallocate(void* opaque, void* ptr, std::size_t size) noexcept {
         auto& self = *static_cast<State*>(opaque);
-        if (!self.capabilities.heap_tracking)
+        if (!self.enabled)
             return std::realloc(ptr, size);
         if (!ptr)
             return allocate(opaque, size);
@@ -110,7 +104,38 @@ struct Meter::State {
     }
 };
 
-Meter::Meter(model::Mode mode, bool request_perf) : state_(std::make_unique<State>()) {
+HeapTracker::HeapTracker(bool enabled) : state_(std::make_unique<State>(enabled)) {}
+HeapTracker::~HeapTracker() = default;
+Allocator HeapTracker::allocator() noexcept {
+    return {state_.get(), State::allocate, State::reallocate, State::deallocate};
+}
+std::optional<model::HeapSnapshot> HeapTracker::read(bool reset_interval) noexcept {
+    if (!state_->enabled)
+        return std::nullopt;
+    const auto result = state_->heap;
+    if (reset_interval)
+        state_->heap.interval_peak = state_->heap.live;
+    return result;
+}
+
+struct Meter::State {
+    explicit State(bool heap_enabled) : heap(heap_enabled) {}
+
+    model::Capabilities capabilities;
+    HeapTracker heap;
+    int cycles = -1;
+    int instructions = -1;
+
+    ~State() {
+        if (instructions >= 0)
+            ::close(instructions);
+        if (cycles >= 0)
+            ::close(cycles);
+    }
+};
+
+Meter::Meter(model::Mode mode, bool request_perf)
+    : state_(std::make_unique<State>(mode == model::Mode::Memory)) {
     auto& caps = state_->capabilities;
     timespec resolution{};
     caps.monotonic_clock = clock_getres(CLOCK_MONOTONIC, &resolution) == 0;
@@ -160,15 +185,11 @@ model::Snapshot Meter::read(bool reset_heap_interval) noexcept {
     }
     result.thread_cpu_ns = clock_ns(CLOCK_THREAD_CPUTIME_ID);
     result.monotonic_ns = clock_ns(CLOCK_MONOTONIC);
-    if (state_->capabilities.heap_tracking) {
-        result.heap = state_->heap;
-        if (reset_heap_interval)
-            state_->heap.interval_peak = state_->heap.live;
-    }
+    result.heap = state_->heap.read(reset_heap_interval);
     return result;
 }
 Allocator Meter::allocator() noexcept {
-    return {state_.get(), State::allocate, State::reallocate, State::deallocate};
+    return state_->heap.allocator();
 }
 const model::Capabilities& Meter::capabilities() const noexcept {
     return state_->capabilities;

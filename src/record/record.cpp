@@ -1,4 +1,5 @@
 #include "record/record.hpp"
+#include "record/json.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -67,6 +68,22 @@ Json tls_json(const TlsConfig& v) {
             {"record_size_limit", v.record_size_limit},
             {"certificate_compression", v.certificate_compression}};
 }
+Json lookup_json(const model::LookupConfig& value) {
+    return {{"enabled", value.enabled},
+            {"cache_mode", model::name(value.cache_mode)},
+            {"object_file", value.object_file.empty() ? Json(nullptr) : Json(value.object_file)},
+            {"snapshot_file",
+             value.snapshot_file.empty() ? Json(nullptr) : Json(value.snapshot_file)}};
+}
+Json network_handoff_json(const std::optional<model::NetworkHandoff>& value) {
+    if (!value)
+        return nullptr;
+    return {{"provenance_file", value->provenance_file},
+            {"observations_file", value->observations_file},
+            {"net_profile", value->net_profile_document.empty()
+                                ? Json(nullptr)
+                                : Json::parse(value->net_profile_document)}};
+}
 Json config_json(const model::RunConfig& v) {
     return {{"client_adapter", v.client_adapter},
             {"server_adapter", v.server_adapter},
@@ -82,6 +99,14 @@ Json config_json(const model::RunConfig& v) {
             {"batch", v.batch},
             {"seed", v.seed},
             {"timeout_ms", v.timeout_ms},
+            {"flush_grace_ms", v.flush_grace_ms},
+            {"failure_policy", model::name(v.failure_policy)},
+            {"scenario_name",
+             v.lookup.enabled ? model::lookup_scenario_name : "standard-tls"},
+            {"lookup", lookup_json(v.lookup)},
+            {"network_manifest",
+             v.network_manifest.empty() ? Json(nullptr) : Json(v.network_manifest)},
+            {"network_handoff", network_handoff_json(v.network_handoff)},
             {"event_capacity", v.event_capacity},
             {"stream_capacity", v.stream_capacity},
             {"keylog_capacity", v.keylog_capacity},
@@ -96,6 +121,7 @@ Json config_json(const model::RunConfig& v) {
             {"director_cpu", v.director_cpu},
             {"client_cpu", v.client_cpu},
             {"server_cpu", v.server_cpu},
+            {"ca_cpu", v.ca_cpu},
             {"tls", tls_json(v.tls)},
             {"mode", model::name(v.mode)}};
 }
@@ -190,7 +216,9 @@ Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
                                {"application_verified", c.application_verified},
                                {"start_sequence", c.start_sequence},
                                {"end_sequence", c.end_sequence},
-                               {"socket", socket_json(c.socket)}});
+                               {"socket", socket_json(c.socket)},
+                               {"tcp_start", detail::tcp_json(c.tcp_start)},
+                               {"tcp_end", detail::tcp_json(c.tcp_end)}});
     }
     std::string reason = v.invalid_reason;
     if (buffer.overflowed()) {

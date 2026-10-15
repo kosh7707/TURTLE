@@ -10,6 +10,14 @@
 - `<역할>.context.bin`: 다음 프로세스에 전달할 구현체 상태입니다.
 - `<역할>.plaintext.bin`, `plaintext.jsonl`: 선택적인 라이브러리 알림 원문과 색인입니다. 색인은 연결, 방향, 내용 종류, 원문 파일 내 위치와 길이를 담습니다. 이것은 네트워크 바이트 위치가 아닙니다.
 
+조회 시나리오는 기존 TLS schema 1을 바꾸지 않고 다음 파일을 더 만듭니다.
+
+- 실행 루트의 `attempts.jsonl`: parent가 먼저 쓰는 요청·시작·최종 상태 원장입니다.
+- 표본 폴더의 `lookup.jsonl`, `ca.jsonl`: 각각 `certificate-lookup`, `mock-ca` type의 schema 1 서비스 기록입니다. TLS Declaration/Verification을 가짜로 채우지 않습니다.
+- `lookup-<연결>.sent.bin`, `.received.bin`, `ca-<연결>.sent.bin`, `.received.bin`: 44바이트 wire header를 포함한 실제 성공 바이트입니다. TLS stream과 섞거나 TLS 해독기에 넣지 않습니다.
+- 실행 루트의 `network-manifest.json`, `network-provenance.json`, `network-observations.jsonl`, `packets.jsonl`: 요청한 격리 조건, 실제 readback, phase별 qdisc 관측, 선택 packet trace입니다.
+- 보고 출력의 `lookup-summary.json`: 원장·조회·CA·TLS·TCP·network observation을 ID로 연결한 자료입니다.
+
 ## 표본 머리
 
 `schema`, `sample`, `batch`, `role`, `pid`, `mode`, `valid`, `invalid_reason`, 프로필·환경 해시를 담습니다. `config`, `environment`, `capabilities`, `declaration`, `calibration`, `connections`에는 공통 값 구조의 모든 설정과 관측 결과를 보존합니다. 비밀 키 파일 경로는 설정의 일부이며 키 파일 내용 자체는 JSON에 넣지 않습니다.
@@ -23,6 +31,26 @@
 ## 사건
 
 각 줄에 표본·묶음·역할·프로필 해시·환경 해시와 연결 번호, 사건 순번, 종류, 관측 위치, 호출 종류·번호를 붙입니다. 시간은 나노초입니다. 사이클·명령어·성능 카운터 실행 시간·힙을 얻지 못하면 `null`입니다. 실제로 관측한 0과 다릅니다.
+
+### 조회·CA 서비스 사건
+
+서비스 기록은 `header`, `event`, `connection_summary`, `footer` 순서입니다. 사건은 attempt/sample, 0-based connection, request ID 1, sequence, participant, stream ID, 단조 시각과 스레드 CPU를 가집니다. 주요 사건은 `CACHE_LOOKUP`, `HIT`, `MISS`, `CACHE_INSERT`, `REQUEST_BEGIN`, `RESPONSE_COMPLETE`, `USABLE_OBJECT`, `SCENARIO_BEGIN/END`, `CA_PROCESS_BEGIN/END`, 입출력과 대기 begin/end입니다.
+
+`RESPONSE_COMPLETE`는 마지막 응답 바이트를 받은 경계입니다. `USABLE_OBJECT`는 원본 바이트 비교와 cache insert 뒤의 경계입니다. 둘 사이를 같은 사건으로 취급하지 않습니다. cache hit에는 wire 요청이 없으므로 `request_count=0`이며 remote lookup 시간은 관측된 0이 아니라 not-applicable `null`입니다.
+
+각 연결 요약은 객체 ID·크기, cache hit, 요청 수, `tcp_start`/`tcp_end`, artifact 상태와 heap 도메인을 가집니다. `logical_cache_bytes`, `cache_capacity`, `reference_bytes`, `framework_reserved_bytes`는 서로 다른 설명값입니다. heap 합계에 다시 더하지 않습니다. timing 모드 heap, 미지원 TCP_INFO, timeout 때문에 없는 경계는 이유가 있는 `null`입니다.
+
+`attempts.jsonl`은 `run_config`, `attempt_started`, `attempt_final`, `run_summary` 행을 씁니다. hard kill로 자식 파일이 없어도 parent가 durable하게 쓴 started attempt는 사라지지 않습니다. `final_status`는 `success`, `timeout`, `error`, `incomplete`, `not_attempted`를 구별하고 최초 `failure_phase`, 주 이유, 후속 이유, absolute deadline, flush grace, 참여자, 연결, artifact 상태, network observation ID를 보존합니다.
+
+packet trace의 관측 단위는 router veth에서 본 skb입니다. 물리 wire packet이라고 부르지 않습니다. qdisc 통계는 phase observation의 공유 집계이며 연결 행마다 복제해 합산하지 않습니다. 소켓별 TCP counter 차이와 별도로 읽습니다.
+
+고정 N05 실행의 `packets.jsonl`에는 packet 행 4,148개가 남았습니다. router의 여러 veth와 ingress/egress 관측 때문에 같은 통신이 중복될 수 있으므로 이 행 수를 물리 또는 고유 패킷 수로 해석하지 않습니다. 같은 실행의 scenario qdisc drop 차이 94와 CA 소켓 `total_retrans` 차이 58은 이 packet 행 수와 별도의 단위입니다.
+
+timeout 검증의 원장은 3개 attempt를 모두 timeout으로 보존했고 missing artifact 9개를 열거했습니다. `network-observations.jsonl`의 끝나지 않은 setup/scenario/cleanup 경계는 `partial-window`와 `:missing` observation ID로 남았습니다. 이 결측을 qdisc 0이나 성공한 경계로 바꾸지 않습니다.
+
+성공한 network attempt의 비교 적격성을 판정하려면 원장의 참조가 `<attempt>:setup:begin/end`, `scenario:begin/end`, `cleanup:begin/end`의 정확히 여섯 개여야 합니다. 각 참조는 같은 attempt·phase·edge의 실제 observation과 일치하고 qdisc 및 요청한 trace 근거를 가져야 합니다. host network unchanged와 owned helper/FD cleanup도 별도로 확인합니다. 중복·누락·다른 attempt 참조는 fail closed입니다.
+
+`attempts.jsonl`이 존재하지만 JSON 행이 손상됐거나 schema·분모가 잘못됐으면 과거 `director.txt` fallback으로 덮어 성공시키지 않습니다. 보고를 오류로 끝냅니다. fallback은 새 원장이 아예 없는 과거 TLS 자료에만 적용합니다.
 
 입출력의 `requested`, `transferred`, `stream_begin`, `stream_end`는 요청 길이, 성공 길이, 반열린 바이트 구간입니다. `result`, `system_error`를 그대로 보관합니다. 순번과 구간은 호출자가 부여한 값을 보존합니다.
 

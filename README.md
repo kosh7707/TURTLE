@@ -33,6 +33,31 @@ scripts/make-pki.sh pki/default
 
 표본 안에서 준비 연결과 여러 측정 연결을 차례로 실행하려면 `--warmups 1 --connections 2`처럼 지정합니다. 측정 연결 수의 기본값은 1이며, 여러 연결의 결과는 순서별로 분리해 요약합니다. TCP 버퍼 요청값과 실제 적용값도 원자료에서 구별합니다.
 
+## 격리 네트워크에서 조회 또는 순수 TLS 실행
+
+작업 트리에는 `synthetic-lookup-plus-standard-tls` 시나리오가 있습니다. 클라이언트가 별도 모의 CA 엔드포인트에서 공개 인증서 PEM 객체를 조회하거나 고정 저장본에서 찾고, 반환 바이트를 미리 보유한 기준 객체와 대조해 캐시에 넣은 뒤에만 표준 TLS 실행을 시작합니다. 조회 결과는 실제로 검사·저장·사용 가능 상태 판정에 소비되지만, stock OpenSSL·wolfSSL·Mbed TLS의 인증서 입력을 대체하지는 않습니다. TLS 어댑터는 계속 정상 인증서 체인을 보내고 검증합니다. 따라서 이 시나리오는 인증서 생략·압축·경량화 구현이나 그 성능 결과가 아닙니다.
+
+같은 runner는 프로필의 `lookup.enabled=false`인 정상 TLS도 실행합니다. 이때 client/server/router 세 network namespace와 두 veth 링크만 만들고, `tls_c2s`·`tls_s2c` 두 방향에만 정책을 적용합니다. C++ 실행에는 client/server namespace만 전달하며 CA namespace, CA 소켓, 조회 원자료를 만들지 않습니다. `lookup.enabled=true`의 기존 네 namespace·네 링크·네 방향 계약은 바뀌지 않았습니다.
+
+격리 실행 도구의 공개 명령은 다음과 같습니다.
+
+```sh
+python3 scripts/netem-study.py snapshot --object FILE --output SNAPSHOT.json
+python3 scripts/netem-study.py probe --output RESULTS
+python3 scripts/netem-study.py run --build build --profile PROFILE.json \
+  --net-profile NET.json --samples 8 --output RESULTS
+python3 scripts/netem-study.py verify --build build --pki PKI_DIR \
+  --output RESULTS --require-supported
+```
+
+`run`의 `--samples`는 선택 사항이며 생략하면 프로필의 `measurement.samples`를 씁니다. 별도 `--attempts`나 `--lookup` 옵션은 없습니다. runner는 프로필의 `lookup.enabled`로 두 topology를 고릅니다. `verify`는 기존 합성 조회 고정 묶음만 실행하며 순수 TLS 검증의 별칭이 아닙니다. 프로필·netem 설정 형식, 권한 실패와 결과 해석은 [모의 CA와 격리 netem 실행](docs/mock-ca.md)을 따릅니다.
+
+OpenSSL의 실제 표준 TLS와 netem을 함께 쓴 고정 검증 묶음은 2026년 10월 15일 한 번 실행해 통과했습니다. CA→client 5ms·20% loss의 사전 고정 64 attempts가 모두 성공했고, qdisc skb drop 94와 CA 소켓 `TCP_INFO.total_retrans` 차이 58을 별도로 관측했습니다. 이 수치는 기능 gate 증거이지 성능 표본이나 현실망 모델이 아닙니다. 손실 설정값, 실제 skb drop, TCP 재전송은 서로 다른 값이며 어느 하나로 다른 값을 대신하지 않습니다.
+
+G005의 구현·고정 실행·오프라인 보고를 완료했습니다. 보존한 일곱 조건의 원자료를 최신 보고 도구로 다시 처리한 합계는 requested=started=100, success=97, timeout=3이며 attempt/connection 행도 각각 100개입니다. G006에서는 당시 57개 시험을 각각 20회, 총 1,140회 실행해 실패 없이 통과했습니다. G007의 순수 TLS netem 경로와 엄격한 원장 읽기까지 포함한 최신 58개 시험도 각각 20회, 총 1,160회 통과했고 24개 생산 번역 단위의 정적 검사와 독립 검토를 마쳤습니다. 이전 runner 시작 race 실패와 수정 근거는 [검증 기록](docs/validation.md)에 별도로 보존합니다.
+
+stock TLS의 Certificate 메시지는 그대로이며 실제 인증서 압축·생략·캐싱 연구 기법은 구현하지 않았습니다. 진단 실행에서 얻은 지연값은 기능 경로 확인용 데이터이며 성능 논문 결론이 아닙니다.
+
 ## 세 라이브러리를 함께 빌드하기
 
 ```sh
@@ -92,9 +117,10 @@ python3 scripts/run-study.py --build build --pki pki/default \
 
 ## 지원하지 않는 것과 인계 문서
 
-스택 최고 사용량, 커널 송신·NIC 시각, eBPF·패킷 캡처, 독립 두 어댑터 간 계측 영향 검증은 아직 제공하지 않습니다. 기본 해독기는 AES-128-GCM/SHA-256을 지원합니다. 원자료 없이 성능 수치를 추정하지 않습니다. 컨텍스트 전달 계약은 있지만 현재 세 TLS 어댑터의 저장 결과는 비어 있습니다. 다른 기법의 구현이나 모의 CA가 이미 완성됐다는 뜻도 아닙니다.
+스택 최고 사용량, 커널 송신·NIC 시각, eBPF, 독립 두 어댑터 간 계측 영향 검증은 아직 제공하지 않습니다. 격리 netem runner의 AF_PACKET trace는 router veth의 skb 관측이며 일반 패킷 캡처나 물리 wire 관측을 대체하지 않습니다. 기본 해독기는 AES-128-GCM/SHA-256을 지원합니다. 원자료 없이 성능 수치를 추정하지 않습니다. 컨텍스트 전달 계약은 있지만 현재 세 TLS 어댑터의 저장 결과는 비어 있습니다. 합성 조회·모의 CA 기반이 실제 인증서 압축이나 캐싱 기법까지 구현했다는 뜻은 아닙니다.
 
 - [구조와 소유권](docs/architecture.md), [어댑터 작성 안내](docs/adapter-guide.md)
+- [모의 CA와 격리 netem 실행](docs/mock-ca.md)
 - [원자료 형식](docs/record-format.md), [실행과 계측 경계](docs/runtime.md)
 - [대체 측정 구간과 같은 상대 구현의 비교](docs/reporting.md)
 - [진행 상태와 남은 범위](docs/PROGRESS.md), [검증 기록](docs/validation.md)

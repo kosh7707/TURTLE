@@ -40,7 +40,7 @@ target_include_directories(turtle_model PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/gen
 add_library(turtle_config src/config/config.cpp)
 target_link_libraries(turtle_config PUBLIC turtle_model)
 target_include_directories(turtle_config SYSTEM PRIVATE third_party)
-foreach(module control transport measure capability record lifecycle report)
+foreach(module control transport measure capability record lookup lifecycle report)
   add_subdirectory(src/${module})
 endforeach()
 if(TURTLE_WITH_INTERPRETER)

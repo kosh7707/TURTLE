@@ -56,6 +56,23 @@ model::Mode mode(const std::string& value) {
     throw std::invalid_argument("mode must be timing, memory, or trace");
 }
 
+model::CacheMode cache_mode(const std::string& value) {
+    if (value == "empty")
+        return model::CacheMode::Empty;
+    if (value == "fixed-snapshot")
+        return model::CacheMode::FixedSnapshot;
+    throw std::invalid_argument("lookup.cache_mode must be empty or fixed-snapshot");
+}
+
+model::FailurePolicy failure_policy(const std::string& value) {
+    if (value == "fail-fast")
+        return model::FailurePolicy::FailFast;
+    if (value == "fixed-attempts")
+        return model::FailurePolicy::FixedAttempts;
+    throw std::invalid_argument(
+        "measurement.failure_policy must be fail-fast or fixed-attempts");
+}
+
 void keys(const Json& object, std::initializer_list<std::string_view> allowed,
           const char* section) {
     if (!object.is_object())
@@ -79,7 +96,8 @@ void profile(model::RunConfig& run, const std::string& filename) {
     Json document;
     stream >> document;
     keys(document,
-         {"name", "tls", "socket", "measurement", "technique", "pki", "certificate_inputs"},
+         {"name", "tls", "socket", "measurement", "lookup", "technique", "pki",
+          "certificate_inputs"},
          "profile");
     assign(document, "name", run.profile_name);
     const auto base = fs::path(resolve_path(filename)).parent_path();
@@ -125,6 +143,7 @@ void profile(model::RunConfig& run, const std::string& filename) {
         const auto& m = document.at("measurement");
         keys(m,
              {"samples", "connections", "warmups", "batch", "seed", "timeout_ms",
+              "failure_policy", "flush_grace_ms", "ca_cpu",
               "event_capacity", "stream_capacity", "keylog_capacity", "calibration_samples",
               "mode", "perf", "kernel_timestamps", "isolate", "pin_cores", "director_cpu",
               "client_cpu", "server_cpu"},
@@ -135,6 +154,7 @@ void profile(model::RunConfig& run, const std::string& filename) {
         assign(m, "batch", run.batch);
         assign(m, "seed", run.seed);
         assign(m, "timeout_ms", run.timeout_ms);
+        assign(m, "flush_grace_ms", run.flush_grace_ms);
         assign(m, "event_capacity", run.event_capacity);
         assign(m, "stream_capacity", run.stream_capacity);
         assign(m, "keylog_capacity", run.keylog_capacity);
@@ -146,10 +166,158 @@ void profile(model::RunConfig& run, const std::string& filename) {
         assign(m, "director_cpu", run.director_cpu);
         assign(m, "client_cpu", run.client_cpu);
         assign(m, "server_cpu", run.server_cpu);
+        assign(m, "ca_cpu", run.ca_cpu);
         if (m.contains("mode"))
             run.mode = mode(m.at("mode").get<std::string>());
+        if (m.contains("failure_policy"))
+            run.failure_policy = failure_policy(m.at("failure_policy").get<std::string>());
+    }
+    if (document.contains("lookup")) {
+        const auto& lookup = document.at("lookup");
+        keys(lookup, {"enabled", "object_file", "cache_mode", "snapshot_file"}, "lookup");
+        assign(lookup, "enabled", run.lookup.enabled);
+        if (lookup.contains("object_file")) {
+            const auto value = lookup.at("object_file").get<std::string>();
+            if (value.empty())
+                throw std::invalid_argument("lookup.object_file must not be empty");
+            run.lookup.object_file = resolve_path(value, base);
+        }
+        if (lookup.contains("cache_mode"))
+            run.lookup.cache_mode = cache_mode(lookup.at("cache_mode").get<std::string>());
+        if (lookup.contains("snapshot_file") && !lookup.at("snapshot_file").is_null()) {
+            const auto value = lookup.at("snapshot_file").get<std::string>();
+            if (value.empty())
+                throw std::invalid_argument("lookup.snapshot_file must not be empty");
+            run.lookup.snapshot_file = resolve_path(value, base);
+        }
     }
     run.profile_document = document.dump();
+}
+
+bool below(const fs::path& file, const fs::path& directory) {
+    if (!file.is_absolute())
+        return false;
+    const auto relative = file.lexically_normal().lexically_relative(directory.lexically_normal());
+    return !relative.empty() && *relative.begin() != "..";
+}
+
+void network_manifest(model::RunConfig& run) {
+    std::ifstream stream(run.network_manifest);
+    if (!stream)
+        throw std::invalid_argument("cannot read network manifest: " + run.network_manifest);
+    Json document;
+    try {
+        stream >> document;
+        keys(document,
+             {"type", "schema", "namespace_fds", "addresses", "interfaces", "net_profile",
+              "provenance_file", "observations_file", "phase_control_fd"},
+             "network manifest");
+        if (document.at("type").get<std::string>() != "turtle-network-manifest" ||
+            document.at("schema").get<unsigned>() != 1)
+            throw std::invalid_argument("unsupported network manifest type or schema");
+
+        model::NetworkHandoff handoff;
+        const auto& fds = document.at("namespace_fds");
+        keys(fds, {"client", "server", "ca"}, "network manifest namespace_fds");
+        handoff.client_namespace_fd = fds.at("client").get<int>();
+        handoff.server_namespace_fd = fds.at("server").get<int>();
+        if (fds.contains("ca"))
+            handoff.ca_namespace_fd = fds.at("ca").get<int>();
+        else if (run.lookup.enabled)
+            throw std::invalid_argument(
+                "lookup-enabled network manifest requires the CA namespace fd");
+        handoff.phase_control_fd = document.at("phase_control_fd").get<int>();
+        if (handoff.client_namespace_fd < 0 || handoff.server_namespace_fd < 0 ||
+            handoff.phase_control_fd < 0 ||
+            (fds.contains("ca") && handoff.ca_namespace_fd < 0))
+            throw std::invalid_argument("network manifest file descriptors must be non-negative");
+        std::vector<int> inherited_fds = {handoff.client_namespace_fd,
+                                          handoff.server_namespace_fd,
+                                          handoff.phase_control_fd};
+        if (fds.contains("ca"))
+            inherited_fds.push_back(handoff.ca_namespace_fd);
+        std::sort(inherited_fds.begin(), inherited_fds.end());
+        if (std::adjacent_find(inherited_fds.begin(), inherited_fds.end()) !=
+            inherited_fds.end())
+            throw std::invalid_argument("network manifest file descriptors must be distinct");
+
+        const auto& addresses = document.at("addresses");
+        keys(addresses, {"client_tls", "server", "client_ca", "ca"},
+             "network manifest addresses");
+        handoff.client_tls_address = addresses.at("client_tls").get<std::string>();
+        handoff.server_address = addresses.at("server").get<std::string>();
+        if (addresses.contains("client_ca"))
+            handoff.client_ca_address = addresses.at("client_ca").get<std::string>();
+        if (addresses.contains("ca"))
+            handoff.ca_address = addresses.at("ca").get<std::string>();
+        if (run.lookup.enabled &&
+            (!addresses.contains("client_ca") || !addresses.contains("ca")))
+            throw std::invalid_argument(
+                "lookup-enabled network manifest requires the CA addresses");
+        if (handoff.client_tls_address != "10.203.1.2" ||
+            handoff.server_address != "10.203.2.2" ||
+            (addresses.contains("client_ca") &&
+             handoff.client_ca_address != "10.203.3.2") ||
+            (addresses.contains("ca") && handoff.ca_address != "10.203.4.2"))
+            throw std::invalid_argument(
+                "network manifest addresses do not match the fixed topology");
+
+        const auto& interfaces = document.at("interfaces");
+        keys(interfaces,
+             {"client_tls", "server", "client_ca", "ca", "router_client_tls",
+              "router_server", "router_client_ca", "router_ca"},
+             "network manifest interfaces");
+        handoff.client_tls_interface = interfaces.at("client_tls").get<std::string>();
+        handoff.server_interface = interfaces.at("server").get<std::string>();
+        if (interfaces.contains("client_ca"))
+            handoff.client_ca_interface = interfaces.at("client_ca").get<std::string>();
+        if (interfaces.contains("ca"))
+            handoff.ca_interface = interfaces.at("ca").get<std::string>();
+        handoff.router_client_tls_interface =
+            interfaces.at("router_client_tls").get<std::string>();
+        handoff.router_server_interface = interfaces.at("router_server").get<std::string>();
+        if (interfaces.contains("router_client_ca"))
+            handoff.router_client_ca_interface =
+                interfaces.at("router_client_ca").get<std::string>();
+        if (interfaces.contains("router_ca"))
+            handoff.router_ca_interface = interfaces.at("router_ca").get<std::string>();
+        if (run.lookup.enabled &&
+            (!interfaces.contains("client_ca") || !interfaces.contains("ca") ||
+             !interfaces.contains("router_client_ca") || !interfaces.contains("router_ca")))
+            throw std::invalid_argument(
+                "lookup-enabled network manifest requires the CA interfaces");
+        if (handoff.client_tls_interface != "ctls" || handoff.server_interface != "stls" ||
+            handoff.router_client_tls_interface != "rctls" ||
+            handoff.router_server_interface != "rstls" ||
+            (interfaces.contains("client_ca") && handoff.client_ca_interface != "cca") ||
+            (interfaces.contains("ca") && handoff.ca_interface != "ca0") ||
+            (interfaces.contains("router_client_ca") &&
+             handoff.router_client_ca_interface != "rcca") ||
+            (interfaces.contains("router_ca") && handoff.router_ca_interface != "rca0"))
+            throw std::invalid_argument(
+                "network manifest interfaces do not match the fixed topology");
+
+        const auto& net_profile = document.at("net_profile");
+        if (!net_profile.is_object())
+            throw std::invalid_argument("network manifest net_profile must be an object");
+        handoff.net_profile_document = net_profile.dump();
+        handoff.provenance_file = document.at("provenance_file").get<std::string>();
+        handoff.observations_file = document.at("observations_file").get<std::string>();
+        const fs::path output = resolve_path(run.output_directory);
+        if (!below(handoff.provenance_file, output) || !below(handoff.observations_file, output))
+            throw std::invalid_argument(
+                "network manifest provenance and observations files must be absolute paths "
+                "under output");
+        if (fs::path(handoff.provenance_file).lexically_normal() ==
+            fs::path(handoff.observations_file).lexically_normal())
+            throw std::invalid_argument(
+                "network manifest provenance and observations files must be distinct");
+        run.network_handoff = std::move(handoff);
+    } catch (const std::invalid_argument&) {
+        throw;
+    } catch (const std::exception& error) {
+        throw std::invalid_argument(std::string("invalid network manifest: ") + error.what());
+    }
 }
 
 void validate(const model::RunConfig& run) {
@@ -166,6 +334,17 @@ void validate(const model::RunConfig& run) {
         run.socket_receive_buffer <= 0)
         throw std::invalid_argument(
             "timeout, application length, and buffer capacities must be positive");
+    if (run.flush_grace_ms == 0 || run.flush_grace_ms > 5000)
+        throw std::invalid_argument("flush_grace_ms must be 1..5000");
+    if (run.ca_cpu < -1)
+        throw std::invalid_argument("ca_cpu must be -1 or a non-negative CPU index");
+    if (run.lookup.enabled && run.lookup.object_file.empty())
+        throw std::invalid_argument("lookup object_file could not be resolved");
+    if (run.lookup.cache_mode == model::CacheMode::FixedSnapshot &&
+        run.lookup.snapshot_file.empty())
+        throw std::invalid_argument("fixed-snapshot lookup requires snapshot_file");
+    if (run.lookup.cache_mode == model::CacheMode::Empty && !run.lookup.snapshot_file.empty())
+        throw std::invalid_argument("empty lookup cache must not specify snapshot_file");
     for (const auto& name : {run.client_adapter, run.server_adapter})
         if (name.empty() ||
             name.find_first_not_of(
@@ -204,6 +383,12 @@ void identify(model::RunConfig& run) {
     effective["socket"] = {{"tcp_nodelay", run.tcp_nodelay},
                            {"send_buffer", run.socket_send_buffer},
                            {"receive_buffer", run.socket_receive_buffer}};
+    effective["lookup"] = {
+        {"enabled", run.lookup.enabled},
+        {"object_file", run.lookup.object_file},
+        {"cache_mode", model::name(run.lookup.cache_mode)},
+        {"snapshot_file",
+         run.lookup.snapshot_file.empty() ? Json(nullptr) : Json(run.lookup.snapshot_file)}};
     // Retain certificate content identity as well as paths. Do not put private
     // key contents into JSON. These fingerprints are not cryptographic hashes.
     effective["certificate_inputs"] = Json::object();
@@ -280,6 +465,11 @@ Command parse(int argc, char** argv) {
             run.output_directory = resolve_path(value);
         else if (name == "--context")
             run.context_directory = resolve_path(value);
+        else if (name == "--network-manifest") {
+            if (!run.network_manifest.empty())
+                throw std::invalid_argument("only one network manifest may be supplied");
+            run.network_manifest = resolve_path(value);
+        }
         else if (name == "--pki")
             pki(run, resolve_path(value));
         else if (name == "--mode")
@@ -339,6 +529,10 @@ Command parse(int argc, char** argv) {
         else
             throw std::invalid_argument("unknown option: " + name);
     }
+    if (run.lookup.object_file.empty())
+        run.lookup.object_file = run.tls.server_certificate;
+    if (!run.network_manifest.empty())
+        network_manifest(run);
     validate(run);
     identify(run);
     return command;
@@ -355,6 +549,7 @@ std::string usage() {
            "  --warmups N                  Warm-up connections before measured connections\n"
            "  --mode timing|memory|trace   Separate instrumentation modes\n"
            "  --output DIR --context DIR   Raw output and optional saved setup context\n"
+           "  --network-manifest FILE     Inherited namespace/phase-control handoff\n"
            "  --batch N --seed N --timeout-ms N\n"
            "  --mutual-auth | --server-auth; --tickets N; --no-ccs\n"
            "  --cipher NAME --group NAME --signature NAME --application-bytes N\n"

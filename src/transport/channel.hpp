@@ -12,8 +12,10 @@ struct Observation {
 };
 struct Channel {
     int fd = -1;
-    void* observer = nullptr;
+    void* observer = nullptr; // borrowed; must outlive this Channel and its Io
     void (*observe)(void*, const Observation&) noexcept = nullptr;
+    // The returned Io borrows this Channel and fd. A retry keeps the same
+    // buffer and operation until progress is reported.
     Io io() noexcept;
 };
 // Return observed settings, not requested buffer sizes. Linux may adjust them.

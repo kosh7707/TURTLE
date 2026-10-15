@@ -14,6 +14,12 @@
 
 지휘 프로세스는 역할 프로세스를 만든 뒤에만 자기 CPU를 고정합니다. 다음 표본을 만들기 전에 원래 허용 CPU 집합을 복원하므로 자식이 지휘 프로세스의 한 코어 제한을 물려받지 않습니다. 역할 프로세스는 자기 CPU를 별도로 고정합니다.
 
+조회 시나리오에서는 표본마다 TLS 서버, TLS 클라이언트, 모의 CA 세 자식을 소유합니다. 클라이언트의 조회 TCP와 TLS TCP는 서로 다른 준비 연결이며, 모의 CA는 TLS `Role`에 포함되지 않습니다. 기준 PEM 객체는 지휘 프로세스가 실행 시작 때 한 번 읽어 불변 snapshot으로 보유합니다. 클라이언트는 연결마다 캐시를 같은 empty/fixed snapshot으로 직접 복원한 뒤 조회하고, `USABLE_OBJECT`가 된 뒤에만 TLS를 시작합니다. 이 객체는 stock TLS 인증서 입력을 대체하지 않습니다.
+
+`lookup.enabled=false`이면 조회 객체나 CA 입력을 요구하지 않고 TLS 서버와 클라이언트 두 자식만 만듭니다. attempt 원장 참여자와 필수 결과 파일도 이 두 역할뿐이며 CA·lookup 결과를 빈 파일이나 가짜 성공으로 만들지 않습니다. `lookup.enabled=true`의 기존 세 자식 계약은 그대로 유지합니다.
+
+클라이언트의 TLS `Meter`, 조회 heap tracker, 모의 CA의 `Meter`와 heap tracker는 소유권을 나눕니다. 조회 사건의 시계·perf는 클라이언트 TLS `Meter`를 한 번 읽고 heap 필드만 조회 도메인 값으로 바꿉니다. 조회용 perf 그룹을 따로 열지 않습니다. 모의 CA process·입출력·대기·heap은 CA 프로세스의 원자료에 독립적으로 남깁니다.
+
 TCP 준비에서는 `ESTABLISHED`와 읽지 않은 바이트 0뿐 아니라 설정 후 조회한 비차단 플래그·`TCP_NODELAY`·송수신 버퍼·수신 시각 옵션도 확인합니다. 실제 버퍼 크기를 요청값과 혼동하지 않고 각 연결의 원자료에 남깁니다. 격리 시험은 제한값 조회에 더해 실제 새 `socket()` 호출이 `EMFILE`로 실패하는지도 확인합니다.
 
 컨텍스트 입력 폴더를 지정하면 지휘 프로세스가 역할별 파일을 첫 자식 생성 전에 한 번만 읽습니다. 매 표본의 셋업은 이 고정 입력을 받으며, 앞 표본의 출력으로 초기 상태를 누적 갱신하지 않습니다. 입력 파일은 다시 실행할 때 필요하므로 결과와 함께 보존해야 합니다. 역할 원자료에는 실제 입력 크기와 지문을 남깁니다.
@@ -34,6 +40,29 @@ TCP 준비에서는 `ESTABLISHED`와 읽지 않은 바이트 0뿐 아니라 설�
 
 역할 프로세스는 처리할 수 있는 실행 오류를 `valid=false`와 이유로 기록합니다. 지휘 프로세스는 전체 표본에 제한 시간을 두고 자식을 회수합니다. 자식이 종료되거나 시간 초과로 기록을 끝내지 못하면 역할 파일이 비어 있을 수 있습니다. 이 경우에도 `director.txt`에 무효 상태를 남깁니다. 무효 표본은 다시 채우지 않고 실행을 끝냅니다. 기존 표본 폴더를 덮어쓰지 않습니다.
 
+### attempt deadline과 bounded cleanup
+
+조회 실행의 `timeout_ms`는 setup, listener, TCP 준비, phase acknowledgement, 조회, TLS와 정상 flush 전에 공유하는 하나의 absolute steady-clock deadline입니다. 단계가 바뀔 때 시간을 새로 주지 않습니다. 최초 terminal 원인을 다음 규칙으로 고정합니다.
+
+- deadline을 먼저 넘기면 `timeout`입니다.
+- deadline 전에 실행 오류를 먼저 확인하면 `error`이며, 뒤의 flush 중 deadline이 지나도 timeout으로 덮지 않습니다.
+- 실행은 끝났지만 필수 기록만 완전하지 않으면 `incomplete`입니다.
+- 뒤따른 flush 오류, kill과 누락은 `secondary_reasons`와 artifact 상태로 남깁니다.
+
+abort를 처음 감지한 시각에 `abort_time + flush_grace_ms`를 한 번 계산합니다. 기본값은 500ms이고 허용 범위는 1~5,000ms입니다. 이 유예 동안 새 연결·조회·TLS 측정을 시작하지 않고 가능한 partial 기록과 최종 소켓 관측만 flush합니다. 유예를 재시작하거나 정리 오류 때문에 연장하지 않습니다. 유예가 끝나면 소유 자식에 SIGKILL을 보내며, 운영체제 wait/reap에는 별도의 고정 250ms 복구 상한을 둡니다. 모든 소유 자식 회수를 증명하지 못하면 다음 attempt를 시작하지 않고 fatal로 남깁니다.
+
+`samples`는 attempt 분모입니다. `fail-fast`는 첫 실패 뒤 남은 attempt를 `not_attempted`로 기록합니다. `fixed-attempts`도 회수를 확인한 attempt 오류 뒤에만 계속하며, 치명적인 환경·셋업 실패는 남은 수를 `not_attempted`로 끝냅니다. 원장은 `requested = started + not_attempted`와 `started = success + timeout + error + incomplete`를 지켜야 합니다.
+
+### 전달받은 네트워크 namespace
+
+`scripts/netem-study.py`는 host 밖이 아니라 새 user/network namespace 안에서 data namespace와 링크를 소유합니다. `lookup.enabled=true`이면 client/server/ca/router 네 namespace·네 veth 링크를 만들고 C++는 client/server/ca FD를 빌립니다. `lookup.enabled=false`이면 client/server/router 세 namespace·두 veth 링크만 만들고 C++는 client/server FD만 빌립니다. 각 자식은 `setns`한 뒤 listener와 socket을 만듭니다. router FD와 생성·삭제 권한은 C++에 전달하지 않습니다. host route·interface·qdisc와 `/run/netns`도 바꾸지 않습니다.
+
+namespace helper를 만든 parent는 고정 시간만 기다리지 않습니다. helper가 `unshare`와 자기 namespace 진입을 마친 뒤 전용 readiness pipe에 신호를 쓴 다음에만 parent가 `/proc/<pid>/ns/net` FD를 엽니다. 신호에는 유한 timeout을 두며, EOF·timeout·자식 조기 종료는 setup 실패입니다. 이는 빠른 동시 실행에서 아직 이전 namespace인 PID의 FD를 여는 시작 race를 막기 위한 제어 통로입니다.
+
+Python과 지휘 프로세스는 setup/scenario/cleanup begin/end를 JSON 한 줄로 교환합니다. 각 ack의 `<attempt>:<phase>:<edge>` observation ID가 원장과 network observation을 연결합니다. attempt마다 qdisc를 삭제·재생성하므로 이전 큐와 카운터를 다음 attempt의 결과로 넘기지 않습니다. runner의 observer/helper 정리 500ms와 C++ 자식 flush grace 및 250ms OS reap 상한은 서로 다른 소유 자원에 적용합니다.
+
+고정 timeout 검증에서는 세 attempt가 모두 timeout으로 남았고, 각 attempt의 missing artifact와 partial phase window도 보존됐습니다. 세 attempt 모두 cleanup grace 뒤 살아 있던 소유 자식에 실제 SIGKILL을 보내고 reap했습니다. 250ms는 SIGKILL 뒤 운영체제 회수를 기다리는 최대 상한이지 측정된 정리 시간이 아닙니다. N05 loss 64 attempts에서는 이 강제 종료 경로가 필요하지 않았습니다. 합성 EIO 때문에 회수 완료를 증명할 수 없는 분기와 소유 PID 제한은 테스트 전용 시스템 호출 wrapper로 확인합니다. 프로덕션 오류 주입 옵션은 추가하지 않았습니다.
+
 ## 검증과 빌드 연결
 
 리더의 최상위 빌드는 `src/control`, `src/transport`, `src/lifecycle`, `implementations/mock`를 연결합니다. 테스트 프로젝트에는 `tests/control`, `tests/transport`, `tests/lifecycle`를 연결합니다. 이전 정적 mock 전용 시험은 새 모듈 시험으로 대체했습니다.
@@ -42,8 +71,9 @@ TCP 준비에서는 `ESTABLISHED`와 읽지 않은 바이트 0뿐 아니라 설�
 - `turtle_transport_test`: 실제 loopback TCP, 준비 상태, 비차단 읽기, 실제 성공 바이트와 관측 횟수를 확인합니다.
 - `turtle_lifecycle_test <모듈 폴더>`: 새 프로세스 4개, 표본마다 준비 연결과 측정 연결, 셋업의 제한 이전 실행, 연결 열기의 제한 이후 실행, TLS 이전의 빈 TCP, 검증 실패 후 다음 표본 중단을 확인합니다. 모의 실행이며 실제 TLS 성공 증거로 쓰지 않습니다.
 - `turtle_runtime_tls_test <모듈 폴더> <인증서 폴더> [클라이언트 모듈] [서버 모듈]`: 서버 인증과 상호 인증을 시간·메모리 모드에서 각각 두 표본과 준비 연결로 실행합니다. 실제 TLS 1.3 결과와 응용 데이터 확인을 검사합니다. 인증서는 `scripts/make-pki.sh`로 별도 준비합니다.
+- `pure_tls_netem.py`: 조회가 꺼진 OpenSSL TLS를 0ms·20ms 양방향 netem 조건에서 각 2 attempts 실행하도록 구성되어 있습니다. 세 namespace·두 링크·두 qdisc, CA/lookup 결과 부재, TLS 해독, 소유 자원 정리, 역할별 경과·스레드 CPU가 든 네 보고 그룹을 검사합니다.
 
-작업자 검증에서는 엄격한 C++20 경고 검사, 정적 분석, 독립 통신·제어 시험, 모의 런타임 20회 반복, OpenSSL의 위 네 가지 실제 TLS 시나리오가 통과했습니다. 작업자 시험은 다른 작업자의 계측·기록 소스를 명시적으로 링크했습니다. 최상위 CMake와 명령행 설정을 포함한 전체 검증은 리더 통합 단계에서 다시 실행해야 합니다. wolfSSL·Mbed TLS와 라이브러리 교차 연결은 이 문서 작성 시점의 런타임 검증에는 포함하지 않았습니다.
+G006 당시 통합 작업 트리에서는 경고를 오류로 처리한 소스·시험 빌드와 57개 시험을 각각 20회 실행해 총 1,140회 모두 통과했습니다. 이후 첫 58개 전체 실행은 `netem_runner_contracts` 시작 race 때문에 57/58이었으며 이 실패 기록도 보존합니다. readiness pipe와 strict ledger reader 수리 뒤 동결한 소스에서 경고를 오류로 처리한 빌드와 최신 58개 시험을 각각 20회, 총 1,160회 실행해 모두 통과했습니다. 11개 부품 include 경계 검사와 생산 번역 단위 24개의 cppcheck·clang-tidy도 통과했고, 수명주기 분리와 원장 읽기의 독립 검토는 지적 없이 승인됐습니다.
 
 ## 통합 검토 후 추가 확인
 

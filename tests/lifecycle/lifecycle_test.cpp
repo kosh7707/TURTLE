@@ -65,6 +65,11 @@ int main(int argc, char** argv) {
                             "application not verified");
             }
         require(pids.size() == 4, "role processes were reused");
+        for (const char* directory : {"sample-000001", "sample-000002"}) {
+            require(!std::filesystem::exists(root / "normal" / directory / "lookup.jsonl") &&
+                        !std::filesystem::exists(root / "normal" / directory / "ca.jsonl"),
+                    "lookup-disabled run emitted service artifacts");
+        }
         config.output_directory = (root / "invalid").string();
         config.warmups = 0;
         ::setenv("TURTLE_MOCK_VERIFY_FAIL", "1", 1);

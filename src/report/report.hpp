@@ -20,5 +20,7 @@ struct Comparison {
 Comparison compare(std::span<const double> a, std::span<const double> b, std::uint64_t seed = 1,
                    std::size_t repetitions = 2000);
 nlohmann::json partition(const nlohmann::json& header, const std::vector<nlohmann::json>& events);
+nlohmann::json summarize_lookup(const std::filesystem::path& input,
+                                const std::filesystem::path& output);
 nlohmann::json summarize(const std::filesystem::path& input, const std::filesystem::path& output);
 } // namespace turtle::report
