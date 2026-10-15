@@ -4,6 +4,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace turtle::report::detail {
 
@@ -58,25 +59,28 @@ inline bool complete_perf_condition(const Json& controls, const Json& support) {
             (status == "unsupported" && enabled.get<bool>()));
 }
 
-inline PerfCondition perf_condition(const Json& header) {
-    const auto config = header.value("config", Json::object());
-    const auto capabilities = header.value("capabilities", Json::object());
-    PerfCondition result{
-        {{"perf", value_or_null(config, "perf")},
-         {"perf_scope", value_or_null(config, "perf_scope")}},
-        {{"perf_requested_scope", value_or_null(capabilities, "perf_requested_scope")},
-         {"perf_status", value_or_null(capabilities, "perf_status")},
-         {"perf_effective_scope", value_or_null(capabilities, "perf_effective_scope")}},
-        false};
-    result.complete = complete_perf_condition(result.controls, result.support);
-    return result;
-}
-
 inline bool has_explicit_perf_condition(const Json& header) {
     const auto config = header.value("config", Json::object());
     const auto capabilities = header.value("capabilities", Json::object());
     return config.contains("perf_scope") || capabilities.contains("perf_requested_scope") ||
            capabilities.contains("perf_status") || capabilities.contains("perf_effective_scope");
+}
+
+inline PerfCondition perf_condition(const Json& header) {
+    const auto config = header.value("config", Json::object());
+    const auto capabilities = header.value("capabilities", Json::object());
+    Json support = {{"perf_requested_scope", value_or_null(capabilities, "perf_requested_scope")},
+                    {"perf_status", value_or_null(capabilities, "perf_status")}};
+    // Keep the historical all-missing lookup shape byte-compatible, but do not turn a
+    // partially declared contract's missing effective scope into an explicit null.
+    if (capabilities.contains("perf_effective_scope") || !has_explicit_perf_condition(header))
+        support["perf_effective_scope"] = value_or_null(capabilities, "perf_effective_scope");
+    PerfCondition result{
+        {{"perf", value_or_null(config, "perf")},
+         {"perf_scope", value_or_null(config, "perf_scope")}},
+        std::move(support), false};
+    result.complete = complete_perf_condition(result.controls, result.support);
+    return result;
 }
 
 inline Json stable_capabilities(const Json& header) {

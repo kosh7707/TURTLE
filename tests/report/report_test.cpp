@@ -614,8 +614,20 @@ int main() {
         metadata["capabilities"].erase("perf_status");
         metadata["capabilities"].erase("perf_effective_scope");
     });
+    write_candidate(contract_dir, "missing-effective-own", "missing-effective-own",
+                    "fixed-peer", "same-profile", "missing-effective-own");
+    rewrite_first_header(contract_dir / "missing-effective-own" / "client.jsonl",
+                         [](J& metadata) {
+                             metadata["capabilities"].erase("perf_effective_scope");
+                         });
+    write_candidate(contract_dir, "missing-effective-peer", "missing-effective-peer",
+                    "fixed-peer", "same-profile", "missing-effective-peer");
+    rewrite_first_header(contract_dir / "missing-effective-peer" / "server.jsonl",
+                         [](J& metadata) {
+                             metadata["capabilities"].erase("perf_effective_scope");
+                         });
     const auto contracts = summarize(contract_dir, dir / "measurement-contract-report");
-    assert(contracts["groups"].size() == 7);
+    assert(contracts["groups"].size() == 9);
     assert(contracts["comparisons"].size() == 1);
     for (const auto& group : contracts["groups"]) {
         const auto adapter = group["dimensions"]["client_adapter"].get<std::string>();
@@ -641,6 +653,23 @@ int main() {
                              group["comparison_exclusion_reasons"].end(),
                              "perf_condition_unknown") !=
                    group["comparison_exclusion_reasons"].end());
+        } else if (adapter == "missing-effective-own") {
+            assert(!group["dimensions"]["perf_support"].contains("perf_effective_scope"));
+            assert(group["metrics"]["elapsed_ns"]["count"] == 1);
+            assert(group["automatic_comparison_eligible"] == false);
+            assert(std::find(group["comparison_exclusion_reasons"].begin(),
+                             group["comparison_exclusion_reasons"].end(),
+                             "perf_condition_unknown") !=
+                   group["comparison_exclusion_reasons"].end());
+        } else if (adapter == "missing-effective-peer") {
+            assert(!group["dimensions"]["peer_perf_support"].contains(
+                "perf_effective_scope"));
+            assert(group["metrics"]["elapsed_ns"]["count"] == 1);
+            assert(group["automatic_comparison_eligible"] == false);
+            assert(std::find(group["comparison_exclusion_reasons"].begin(),
+                             group["comparison_exclusion_reasons"].end(),
+                             "peer_perf_condition_unknown") !=
+                   group["comparison_exclusion_reasons"].end());
         }
     }
 
@@ -663,6 +692,81 @@ int main() {
     }
     const auto unsupported = summarize(unsupported_dir, dir / "unsupported-perf-report");
     assert(unsupported["comparisons"].size() == 1);
+    rewrite_first_header(unsupported_dir / "first" / "client.jsonl", [](J& metadata) {
+        metadata["capabilities"].erase("perf_effective_scope");
+    });
+    const auto unsupported_missing_own =
+        summarize(unsupported_dir, dir / "unsupported-missing-own-report");
+    assert(unsupported_missing_own["comparisons"].empty());
+    for (const auto& group : unsupported_missing_own["groups"])
+        if (group["dimensions"]["client_adapter"] == "adapter-first") {
+            assert(!group["dimensions"]["perf_support"].contains("perf_effective_scope"));
+            assert(group["metrics"]["elapsed_ns"]["count"] == 1);
+            assert(group["automatic_comparison_eligible"] == false);
+        }
+    rewrite_first_header(unsupported_dir / "first" / "client.jsonl", [](J& metadata) {
+        metadata["capabilities"]["perf_effective_scope"] = nullptr;
+    });
+    rewrite_first_header(unsupported_dir / "second" / "server.jsonl", [](J& metadata) {
+        metadata["capabilities"].erase("perf_effective_scope");
+    });
+    const auto unsupported_missing_peer =
+        summarize(unsupported_dir, dir / "unsupported-missing-peer-report");
+    assert(unsupported_missing_peer["comparisons"].empty());
+    for (const auto& group : unsupported_missing_peer["groups"])
+        if (group["dimensions"]["client_adapter"] == "adapter-second") {
+            assert(!group["dimensions"]["peer_perf_support"].contains(
+                "perf_effective_scope"));
+            assert(group["metrics"]["elapsed_ns"]["count"] == 1);
+            assert(group["automatic_comparison_eligible"] == false);
+        }
+
+    for (const auto* status : {"disabled", "unsupported"})
+        for (const auto* missing_side : {"own", "peer"}) {
+            const auto pair_dir =
+                dir / (std::string("perf-presence-") + status + "-" + missing_side);
+            std::filesystem::create_directory(pair_dir);
+            for (const auto* name : {"known", "missing"}) {
+                write_candidate(pair_dir, name, "same-adapter", "fixed-peer", "same-profile",
+                                "same-library");
+                if (std::string(status) == "unsupported")
+                    for (const auto* role : {"client", "server"})
+                        rewrite_first_header(pair_dir / name /
+                                                 (std::string(role) + ".jsonl"),
+                                             [](J& metadata) {
+                                                 metadata["config"]["perf"] = true;
+                                                 metadata["capabilities"]["perf_status"] =
+                                                     "unsupported";
+                                             });
+            }
+            rewrite_first_header(
+                pair_dir / "missing" /
+                    (std::string(missing_side) == "own" ? "client.jsonl" : "server.jsonl"),
+                [](J& metadata) {
+                    metadata["capabilities"].erase("perf_effective_scope");
+                });
+            const auto pair_report = summarize(
+                pair_dir,
+                dir / (std::string("perf-presence-report-") + status + "-" + missing_side));
+            assert(pair_report["groups"].size() == 2);
+            assert(pair_report["comparisons"].empty());
+            bool known_group = false;
+            bool missing_group = false;
+            const char* support_name = std::string(missing_side) == "own"
+                                           ? "perf_support"
+                                           : "peer_perf_support";
+            for (const auto& group : pair_report["groups"]) {
+                const auto& support = group["dimensions"][support_name];
+                assert(group["metrics"]["elapsed_ns"]["count"] == 1);
+                assert(group["metrics"]["thread_cpu_ns"]["count"] == 1);
+                if (support.contains("perf_effective_scope")) {
+                    known_group = group["automatic_comparison_eligible"] == true;
+                } else {
+                    missing_group = group["automatic_comparison_eligible"] == false;
+                }
+            }
+            assert(known_group && missing_group);
+        }
 
     const auto scope_dir = dir / "perf-scope-candidates";
     std::filesystem::create_directory(scope_dir);

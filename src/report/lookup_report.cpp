@@ -289,13 +289,10 @@ Json endpoint_identity(const std::optional<Json>& header, std::string_view role)
     const auto& declaration = header->at("declaration");
     const char* adapter = role == "client" ? "client_adapter" : "server_adapter";
     const auto perf = detail::perf_condition(*header);
-    Json support = Json::object();
+    Json support = perf.support;
     const auto capabilities = header->value("capabilities", Json::object());
     for (const char* field : {"monotonic_clock", "thread_cpu_clock", "perf", "heap_tracking",
                               "affinity", "kernel_timestamp_configured"})
-        support[field] = capabilities.contains(field) ? capabilities.at(field) : Json(nullptr);
-    for (const char* field :
-         {"perf_requested_scope", "perf_status", "perf_effective_scope"})
         support[field] = capabilities.contains(field) ? capabilities.at(field) : Json(nullptr);
     return {{"role", role}, {"adapter", config.value(adapter, Json(nullptr))},
             {"library", declaration.value("library", Json(nullptr))},

@@ -403,6 +403,50 @@ int main() {
                      cold["comparison_exclusion_reasons"].end(),
                      "missing_identity:server_perf_condition_unknown") ==
            cold["comparison_exclusion_reasons"].end());
+    auto require_retained_lookup_distributions = [](const Json& summary, const Json& row) {
+        bool retained = false;
+        for (const auto& group : summary["condition_groups"])
+            if (group["condition_identity"] == row["condition_identity"])
+                retained = group["distributions"]["tls_elapsed_ns"]["count"] > 0 &&
+                           group["distributions"]["ca_cpu_ns"]["count"] > 0;
+        assert(retained);
+    };
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["capabilities"].erase("perf_effective_scope");
+    });
+    const auto disabled_missing_client =
+        turtle::report::summarize_lookup(root, root / "disabled-missing-client-effective-report");
+    const auto& disabled_missing_client_row = disabled_missing_client["joined_rows"][3];
+    assert(!disabled_missing_client_row["condition_identity"]["client_endpoint"]["support"]
+                                        .contains("perf_effective_scope"));
+    assert(disabled_missing_client_row["descriptive_distribution_eligible"] == true);
+    assert(std::find(disabled_missing_client_row["comparison_exclusion_reasons"].begin(),
+                     disabled_missing_client_row["comparison_exclusion_reasons"].end(),
+                     "missing_identity:client_perf_condition_unknown") !=
+           disabled_missing_client_row["comparison_exclusion_reasons"].end());
+    require_retained_lookup_distributions(disabled_missing_client,
+                                          disabled_missing_client_row);
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["capabilities"]["perf_effective_scope"] = nullptr;
+    });
+    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
+        header["capabilities"].erase("perf_effective_scope");
+    });
+    const auto disabled_missing_server =
+        turtle::report::summarize_lookup(root, root / "disabled-missing-server-effective-report");
+    const auto& disabled_missing_server_row = disabled_missing_server["joined_rows"][3];
+    assert(!disabled_missing_server_row["condition_identity"]["server_endpoint"]["support"]
+                                        .contains("perf_effective_scope"));
+    assert(disabled_missing_server_row["descriptive_distribution_eligible"] == true);
+    assert(std::find(disabled_missing_server_row["comparison_exclusion_reasons"].begin(),
+                     disabled_missing_server_row["comparison_exclusion_reasons"].end(),
+                     "missing_identity:server_perf_condition_unknown") !=
+           disabled_missing_server_row["comparison_exclusion_reasons"].end());
+    require_retained_lookup_distributions(disabled_missing_server,
+                                          disabled_missing_server_row);
+    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
+        header["capabilities"]["perf_effective_scope"] = nullptr;
+    });
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
         header["config"].erase("perf_scope");
         header["capabilities"].erase("perf_requested_scope");
@@ -450,6 +494,24 @@ int main() {
                      "missing_identity:client_perf_condition_unknown") ==
            unsupported_perf["joined_rows"][3]["comparison_exclusion_reasons"].end());
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["capabilities"].erase("perf_effective_scope");
+    });
+    const auto unsupported_missing_client = turtle::report::summarize_lookup(
+        root, root / "unsupported-missing-client-effective-report");
+    const auto& unsupported_missing_client_row = unsupported_missing_client["joined_rows"][3];
+    assert(!unsupported_missing_client_row["condition_identity"]["client_endpoint"]["support"]
+                                           .contains("perf_effective_scope"));
+    assert(unsupported_missing_client_row["descriptive_distribution_eligible"] == true);
+    assert(std::find(unsupported_missing_client_row["comparison_exclusion_reasons"].begin(),
+                     unsupported_missing_client_row["comparison_exclusion_reasons"].end(),
+                     "missing_identity:client_perf_condition_unknown") !=
+           unsupported_missing_client_row["comparison_exclusion_reasons"].end());
+    require_retained_lookup_distributions(unsupported_missing_client,
+                                          unsupported_missing_client_row);
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["capabilities"]["perf_effective_scope"] = nullptr;
+    });
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
         header["capabilities"]["perf_failure_stage"] = "initial_read";
         header["capabilities"]["perf_error_number"] = 95;
         header["capabilities"]["perf_note"] = "different diagnostic";
@@ -458,6 +520,30 @@ int main() {
         turtle::report::summarize_lookup(root, root / "changed-perf-diagnostic-report");
     assert(changed_diagnostic["joined_rows"][3]["condition_identity"] ==
            unsupported_identity);
+    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
+        header["config"]["perf"] = true;
+        header["capabilities"]["perf"] = false;
+        header["capabilities"]["perf_status"] = "unsupported";
+        header["capabilities"].erase("perf_effective_scope");
+    });
+    const auto unsupported_missing_server = turtle::report::summarize_lookup(
+        root, root / "unsupported-missing-server-effective-report");
+    const auto& unsupported_missing_server_row = unsupported_missing_server["joined_rows"][3];
+    assert(!unsupported_missing_server_row["condition_identity"]["server_endpoint"]["support"]
+                                           .contains("perf_effective_scope"));
+    assert(unsupported_missing_server_row["descriptive_distribution_eligible"] == true);
+    assert(std::find(unsupported_missing_server_row["comparison_exclusion_reasons"].begin(),
+                     unsupported_missing_server_row["comparison_exclusion_reasons"].end(),
+                     "missing_identity:server_perf_condition_unknown") !=
+           unsupported_missing_server_row["comparison_exclusion_reasons"].end());
+    require_retained_lookup_distributions(unsupported_missing_server,
+                                          unsupported_missing_server_row);
+    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
+        header["config"]["perf"] = false;
+        header["capabilities"]["perf"] = false;
+        header["capabilities"]["perf_status"] = "disabled";
+        header["capabilities"]["perf_effective_scope"] = nullptr;
+    });
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
         header["config"]["perf"] = false;
         header["capabilities"]["perf_status"] = "disabled";
@@ -479,23 +565,76 @@ int main() {
             header["capabilities"]["perf_note"] = "fixture counter group available";
         });
     };
-    const auto perf_scope_runs = root / "perf-scope-runs";
-    auto copy_scope_run = [&](const char* name) {
-        const auto destination = perf_scope_runs / name;
+    auto copy_fixture_run = [&](const std::filesystem::path& collection,
+                                const std::string& name) {
+        const auto destination = collection / name;
         std::filesystem::create_directories(destination);
         std::filesystem::copy_file(root / "attempts.jsonl", destination / "attempts.jsonl");
         for (const auto* sample : {"sample-1", "sample-4"})
             std::filesystem::copy(root / sample, destination / sample,
                                   std::filesystem::copy_options::recursive);
     };
+    const auto perf_presence_runs = root / "perf-presence-runs";
+    for (const auto* status : {"disabled", "unsupported"})
+        for (const auto* missing_role : {"client", "server"}) {
+            for (const auto* role : {"client", "server"})
+                rewrite_header(sample4 / (std::string(role) + ".jsonl"),
+                               [status](Json& header) {
+                                   const bool enabled = std::string(status) == "unsupported";
+                                   header["config"]["perf"] = enabled;
+                                   header["config"]["perf_scope"] = "user";
+                                   header["capabilities"]["perf"] = false;
+                                   header["capabilities"]["perf_requested_scope"] = "user";
+                                   header["capabilities"]["perf_status"] = status;
+                                   header["capabilities"]["perf_effective_scope"] = nullptr;
+                               });
+            const auto prefix = std::string(status) + "-" + missing_role;
+            copy_fixture_run(perf_presence_runs, prefix + "-known");
+            rewrite_header(sample4 / (std::string(missing_role) + ".jsonl"), [](Json& header) {
+                header["capabilities"].erase("perf_effective_scope");
+            });
+            copy_fixture_run(perf_presence_runs, prefix + "-missing");
+        }
+    const auto perf_presence = turtle::report::summarize_lookup(
+        perf_presence_runs, root / "perf-presence-matrix-report");
+    std::map<std::string, Json> successful_presence_rows;
+    for (const auto& row : perf_presence["joined_rows"])
+        if (row.value("attempt_status", "") == "success" &&
+            row.value("connection", std::size_t(-1)) == 0)
+            successful_presence_rows.emplace(row.at("run_id").get<std::string>(), row);
+    assert(successful_presence_rows.size() == 8);
+    for (const auto* status : {"disabled", "unsupported"})
+        for (const auto* missing_role : {"client", "server"}) {
+            const auto prefix = std::string(status) + "-" + missing_role;
+            const auto& known = successful_presence_rows.at(prefix + "-known");
+            const auto& missing = successful_presence_rows.at(prefix + "-missing");
+            assert(known["condition_identity"] != missing["condition_identity"]);
+            const auto endpoint = std::string(missing_role) + "_endpoint";
+            assert(known["condition_identity"][endpoint]["support"].contains(
+                "perf_effective_scope"));
+            assert(!missing["condition_identity"][endpoint]["support"].contains(
+                "perf_effective_scope"));
+            const auto reason = std::string("missing_identity:") + missing_role +
+                                "_perf_condition_unknown";
+            assert(std::find(known["comparison_exclusion_reasons"].begin(),
+                             known["comparison_exclusion_reasons"].end(), reason) ==
+                   known["comparison_exclusion_reasons"].end());
+            assert(std::find(missing["comparison_exclusion_reasons"].begin(),
+                             missing["comparison_exclusion_reasons"].end(), reason) !=
+                   missing["comparison_exclusion_reasons"].end());
+            require_retained_lookup_distributions(perf_presence, known);
+            require_retained_lookup_distributions(perf_presence, missing);
+        }
+
+    const auto perf_scope_runs = root / "perf-scope-runs";
     set_available_perf("client", "user");
     set_available_perf("server", "user");
-    copy_scope_run("available-user");
+    copy_fixture_run(perf_scope_runs, "available-user");
     set_available_perf("client", "user+kernel");
-    copy_scope_run("client-kernel");
+    copy_fixture_run(perf_scope_runs, "client-kernel");
     set_available_perf("client", "user");
     set_available_perf("server", "user+kernel");
-    copy_scope_run("server-kernel");
+    copy_fixture_run(perf_scope_runs, "server-kernel");
 
     const auto perf_scopes = turtle::report::summarize_lookup(
         perf_scope_runs, root / "perf-scope-matrix-report");
