@@ -12,6 +12,15 @@ import statistics
 import subprocess
 import time
 
+from report_attribution import (
+    SERVER_WINDOW,
+    validate_available_attribution,
+    validate_no_attribution_metrics,
+    validate_server_window,
+    validate_unavailable_attribution,
+    validate_unavailable_server_window,
+)
+
 
 SAMPLES = 2
 BATCH_ORDER = ((True, False), (False, True), (True, False), (False, True))
@@ -345,18 +354,28 @@ def report_common(summary: dict[str, object], raw_values: dict[tuple[str, bool],
         for key in ("start_event_sequence", "end_event_sequence", "elapsed_ns", "thread_cpu_ns"):
             check(common.get(key) == match[key], f"{path}: report {COMMON}.{key} was not raw-recomputed")
         connection = sample["connections"][0]
+        rows = read_jsonl(path)
+        decoded_connection = json.loads(path.with_suffix(".decoded.json").read_text())["connections"][0]
         if observer:
             check(connection.get("io_breakdown") == {"available": True, "reason": None},
                   f"{path}: observer-on report lost its I/O breakdown")
+            validate_available_attribution(
+                connection, rows, decoded_connection, role, str(path)
+            )
             if role == "server":
                 check(connection.get("primary_window") == {"available": True, "reason": None},
                       f"{path}: observer-on server lost its first-receive primary window")
+                validate_server_window(connection, rows, decoded_connection, str(path))
+            else:
+                check(SERVER_WINDOW not in connection,
+                      f"{path}: client fabricated a server-only window")
         else:
             check(connection.get("io_breakdown") == {
                       "available": False, "reason": "io_events_not_observed",
                   } and all(connection.get(field) is None for field in
                             ("computation_ns", "io_ns", "wait_ns", "gap_ns")),
                   f"{path}: observer-off I/O decomposition was fabricated")
+            validate_unavailable_attribution(connection, OFF_REASON, str(path))
             if role == "server":
                 check(connection.get("primary_window") == {
                           "available": False,
@@ -364,8 +383,13 @@ def report_common(summary: dict[str, object], raw_values: dict[tuple[str, bool],
                       } and connection.get("elapsed_ns") is None and
                       connection.get("thread_cpu_ns") is None,
                       f"{path}: observer-off server primary values were fabricated")
+                validate_unavailable_server_window(connection, OFF_REASON, str(path))
+            else:
+                check(SERVER_WINDOW not in connection,
+                      f"{path}: client fabricated a server-only window")
 
     groups = summary.get("groups", [])
+    validate_no_attribution_metrics(groups)
     selected: dict[tuple[str, bool], dict[str, object]] = {}
     for group in groups:
         dimensions = group.get("dimensions", {})

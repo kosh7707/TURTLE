@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -147,20 +148,36 @@ bool channel_observer_disabled(const Json& header) {
            (header.contains("config") && header.at("config").is_object() &&
             !header.at("config").value("channel_observer", true));
 }
-bool io_events_observed(const Json& header) {
-    const bool has_availability =
-        header.contains("availability") && header.at("availability").is_object() &&
-        header.at("availability").contains("io_events") &&
-        header.at("availability").at("io_events").is_object();
-    return has_availability
-               ? header.at("availability").at("io_events").value("available", false)
-               : !native_stream_unobserved(header) && !channel_observer_disabled(header);
-}
 } // namespace
 
 bool channel_observer_enabled(const Json& header) {
     return !channel_observer_disabled(header);
 }
+
+std::optional<std::string> io_events_unavailable_reason(const Json& header) {
+    if (header.contains("availability") && header.at("availability").is_object() &&
+        header.at("availability").contains("io_events") &&
+        header.at("availability").at("io_events").is_object()) {
+        const auto& availability = header.at("availability").at("io_events");
+        if (availability.value("available", false))
+            return std::nullopt;
+        if (availability.contains("reason") && availability.at("reason").is_string() &&
+            !availability.at("reason").get<std::string>().empty())
+            return availability.at("reason").get<std::string>();
+        return "io_events_not_observed";
+    }
+    if (native_stream_unobserved(header))
+        return "native_socket_io_not_observed";
+    if (channel_observer_disabled(header))
+        return "channel_observer_disabled";
+    return std::nullopt;
+}
+
+namespace {
+bool io_events_observed(const Json& header) {
+    return !io_events_unavailable_reason(header);
+}
+} // namespace
 
 namespace {
 std::optional<std::uint64_t> nonnegative_integer(const Json& value) {
@@ -292,7 +309,365 @@ Json common_window(const Json& header, const Json& connection,
     }
     return result;
 }
+
+const Json* decoded_direction(const Json& decoded_connection, std::string_view key) {
+    if (!decoded_connection.contains(key) || !decoded_connection.at(key).is_object())
+        return nullptr;
+    const auto& direction = decoded_connection.at(key);
+    if (!direction.value("decryption_complete", false) || !direction.contains("records") ||
+        !direction.at("records").is_array() || !direction.contains("messages") ||
+        !direction.at("messages").is_array())
+        return nullptr;
+    return &direction;
+}
+
+std::vector<std::uint64_t> completed_records(const Json& direction, const Json& event) {
+    std::vector<std::uint64_t> indices;
+    if (event.value("kind", "") != "IO_RECV_RETURN" ||
+        event.value("result", std::int64_t{-1}) != 0 ||
+        event.value("transferred", std::uint64_t{0}) == 0)
+        return indices;
+    const auto begin = event.value("stream_begin", std::uint64_t{0});
+    const auto end = event.value("stream_end", std::uint64_t{0});
+    if (end <= begin)
+        return indices;
+    for (const auto& record : direction.at("records")) {
+        if (!record.contains("index") || !record.contains("stream_end"))
+            continue;
+        const auto index = nonnegative_integer(record.at("index"));
+        const auto record_end = nonnegative_integer(record.at("stream_end"));
+        if (index && record_end && *record_end > begin && *record_end <= end)
+            indices.push_back(*index);
+    }
+    return indices;
+}
+
+std::vector<std::uint64_t> overlapping_records(const Json& direction, const Json& event) {
+    std::vector<std::uint64_t> indices;
+    if (event.value("kind", "") != "IO_SEND_RETURN" ||
+        event.value("result", std::int64_t{-1}) != 0 ||
+        event.value("transferred", std::uint64_t{0}) == 0)
+        return indices;
+    const auto begin = event.value("stream_begin", std::uint64_t{0});
+    const auto end = event.value("stream_end", std::uint64_t{0});
+    if (end <= begin)
+        return indices;
+    for (const auto& record : direction.at("records")) {
+        if (!record.contains("index") || !record.contains("stream_begin") ||
+            !record.contains("stream_end"))
+            continue;
+        const auto index = nonnegative_integer(record.at("index"));
+        const auto record_begin = nonnegative_integer(record.at("stream_begin"));
+        const auto record_end = nonnegative_integer(record.at("stream_end"));
+        if (index && record_begin && record_end && *record_begin < end && *record_end > begin)
+            indices.push_back(*index);
+    }
+    return indices;
+}
+
+bool contains_record(const Json& message, std::uint64_t index) {
+    if (!message.contains("records") || !message.at("records").is_array())
+        return false;
+    for (const auto& value : message.at("records")) {
+        const auto candidate = nonnegative_integer(value);
+        if (candidate && *candidate == index)
+            return true;
+    }
+    return false;
+}
+
+Json record_boundary(std::string_view boundary_kind, const Json& boundary_event,
+                     const Json& io_return, const Json& direction,
+                     const std::vector<std::uint64_t>& record_indices) {
+    Json names = Json::array();
+    for (const auto& message : direction.at("messages")) {
+        bool selected = false;
+        for (const auto index : record_indices)
+            selected = selected || contains_record(message, index);
+        if (!selected || !message.contains("name") || !message.at("name").is_string())
+            continue;
+        names.push_back(message.at("name"));
+    }
+    return {{"kind", boundary_kind},
+            {"boundary_event_sequence", boundary_event.at("sequence")},
+            {"io_return_event_sequence", io_return.at("sequence")},
+            {"record_indices", record_indices},
+            {"names", names},
+            {"bundled", names.size() > 1},
+            {"mapping", "record_envelope"}};
+}
+
+Json call_boundary(std::string_view boundary_kind, const Json& event) {
+    return {{"kind", boundary_kind},
+            {"boundary_event_sequence", event.at("sequence")},
+            {"io_return_event_sequence", nullptr},
+            {"record_indices", Json::array()},
+            {"names", Json::array()},
+            {"bundled", false},
+            {"mapping", "boundary_event"}};
+}
+
+const Json* matching_send_return(const std::vector<const Json*>& events, std::size_t enter_index) {
+    const auto& enter = *events.at(enter_index);
+    if (!enter.contains("connection") || !enter.contains("call_id") ||
+        !enter.contains("sequence"))
+        return nullptr;
+    for (std::size_t i = enter_index + 1; i < events.size(); ++i) {
+        const auto& candidate = *events[i];
+        if (candidate.value("kind", "") == "IO_SEND_ENTER")
+            return nullptr;
+        if (candidate.value("kind", "") != "IO_SEND_RETURN")
+            continue;
+        if (candidate.contains("connection") && candidate.contains("call_id") &&
+            candidate.contains("sequence") &&
+            candidate.at("connection") == enter.at("connection") &&
+            candidate.at("call_id") == enter.at("call_id") &&
+            candidate.at("sequence") > enter.at("sequence")) {
+            if (candidate.value("result", std::int64_t{-1}) == 0 &&
+                candidate.value("transferred", std::uint64_t{0}) > 0 &&
+                candidate.value("stream_end", std::uint64_t{0}) >
+                    candidate.value("stream_begin", std::uint64_t{0}))
+                return &candidate;
+            return nullptr;
+        }
+    }
+    return nullptr;
+}
+
+void segment_cpu(Json& segment, const Json& begin, const Json& end) {
+    segment["thread_cpu_ns"] = nullptr;
+    segment["thread_cpu_reason"] = nullptr;
+    if (!begin.contains("thread_cpu_ns") || !end.contains("thread_cpu_ns") ||
+        begin.at("thread_cpu_ns").is_null() || end.at("thread_cpu_ns").is_null()) {
+        segment["thread_cpu_reason"] = "thread_cpu_snapshot_missing";
+        return;
+    }
+    const auto first = nonnegative_integer(begin.at("thread_cpu_ns"));
+    const auto last = nonnegative_integer(end.at("thread_cpu_ns"));
+    if (!first || !last)
+        segment["thread_cpu_reason"] = "thread_cpu_snapshot_invalid";
+    else if (*last < *first)
+        segment["thread_cpu_reason"] = "thread_cpu_regression";
+    else
+        segment["thread_cpu_ns"] = *last - *first;
+}
 } // namespace
+
+Json unavailable_server_client_hello_to_finished_send_window(std::string_view reason) {
+    return {{"definition", server_window_definition},
+            {"available", false},
+            {"reason", reason},
+            {"start_event_sequence", nullptr},
+            {"end_event_sequence", nullptr},
+            {"elapsed_ns", nullptr},
+            {"thread_cpu_ns", nullptr},
+            {"thread_cpu_reason", reason},
+            {"cycles", nullptr},
+            {"mapping", "record_envelope_overlap"},
+            {"client_hello_bundled", nullptr},
+            {"finished_bundled", nullptr},
+            {"limitation",
+             "This server window ends when the server Finished record is sent; it does not "
+             "mean that the client Finished or a mutual-authentication client certificate has "
+             "been verified."}};
+}
+
+Json unavailable_record_computation_attribution(std::string_view reason) {
+    return {{"available", false},
+            {"reason", reason},
+            {"scope", "primary_window_computation_segments"},
+            {"segments", nullptr}};
+}
+
+Json record_computation_attribution(const Json& header, const std::vector<Json>& input,
+                                    const Json& decoded_connection,
+                                    const Json& partitioned_connection) {
+    Json result = unavailable_record_computation_attribution("");
+    if (const auto reason = io_events_unavailable_reason(header)) {
+        result["reason"] = *reason;
+        return result;
+    }
+    if (!decoded_connection.value("decryption_complete", false)) {
+        result["reason"] = "decoded_sidecar_decryption_incomplete";
+        return result;
+    }
+    const bool client = header.at("role") == "client";
+    const auto* received = decoded_direction(decoded_connection,
+                                             client ? "server_sent" : "client_sent");
+    const auto* sent = decoded_direction(decoded_connection,
+                                         client ? "client_sent" : "server_sent");
+    if (received == nullptr || sent == nullptr) {
+        result["reason"] = "decoded_record_mapping_unavailable";
+        return result;
+    }
+    if (!partitioned_connection.contains("segments") ||
+        !partitioned_connection.at("segments").is_array()) {
+        result["reason"] = "primary_partition_unavailable";
+        return result;
+    }
+
+    const auto connection = decoded_connection.at("connection").get<std::size_t>();
+    std::vector<const Json*> events;
+    for (const auto& event : input)
+        if (event.value("connection", std::size_t(-1)) == connection && boundary(event))
+            events.push_back(&event);
+
+    Json attributed = Json::array();
+    const auto& primary_segments = partitioned_connection.at("segments");
+    for (std::size_t segment_index = 0; segment_index < primary_segments.size(); ++segment_index) {
+        const auto& primary = primary_segments.at(segment_index);
+        if (primary.value("kind", "") != "computation")
+            continue;
+        const Json* begin_event = nullptr;
+        const Json* end_event = nullptr;
+        std::size_t end_event_index = 0;
+        for (std::size_t i = 1; i < events.size(); ++i) {
+            if (time(*events[i - 1]) == primary.at("begin_ns").get<std::uint64_t>() &&
+                time(*events[i]) == primary.at("end_ns").get<std::uint64_t>()) {
+                begin_event = events[i - 1];
+                end_event = events[i];
+                end_event_index = i;
+                break;
+            }
+        }
+        if (begin_event == nullptr || end_event == nullptr) {
+            result["reason"] = "primary_segment_event_mapping_unavailable";
+            return result;
+        }
+        if (!begin_event->contains("sequence") || !end_event->contains("sequence")) {
+            result["reason"] = "primary_segment_event_mapping_unavailable";
+            return result;
+        }
+
+        Json segment = {{"segment_index", segment_index},
+                        {"begin_event_sequence", begin_event->at("sequence")},
+                        {"end_event_sequence", end_event->at("sequence")},
+                        {"elapsed_ns", primary.at("elapsed_ns")},
+                        {"thread_cpu_ns", nullptr},
+                        {"thread_cpu_reason", nullptr},
+                        {"start", nullptr},
+                        {"end", nullptr}};
+        segment_cpu(segment, *begin_event, *end_event);
+
+        if (begin_event->value("kind", "") == "CALL_BEGIN") {
+            segment["start"] = call_boundary("call_begin", *begin_event);
+        } else if (begin_event->value("kind", "") == "IO_RECV_RETURN") {
+            const auto indices = completed_records(*received, *begin_event);
+            if (!indices.empty())
+                segment["start"] = record_boundary("after_receive", *begin_event,
+                                                    *begin_event, *received, indices);
+        }
+
+        if (end_event->value("kind", "") == "CALL_END") {
+            segment["end"] = call_boundary("call_end", *end_event);
+        } else if (end_event->value("kind", "") == "IO_SEND_ENTER") {
+            if (const auto* returned = matching_send_return(events, end_event_index)) {
+                const auto indices = overlapping_records(*sent, *returned);
+                if (!indices.empty())
+                    segment["end"] = record_boundary("before_send", *end_event, *returned,
+                                                      *sent, indices);
+            }
+        }
+        attributed.push_back(std::move(segment));
+    }
+    result["available"] = true;
+    result["reason"] = nullptr;
+    result["segments"] = std::move(attributed);
+    return result;
+}
+
+Json server_client_hello_to_finished_send_window(const Json& header,
+                                                 const std::vector<Json>& events,
+                                                 const Json& decoded_connection) {
+    if (header.value("role", "") != "server")
+        return unavailable_server_client_hello_to_finished_send_window(
+            "server_role_required");
+    if (const auto reason = io_events_unavailable_reason(header))
+        return unavailable_server_client_hello_to_finished_send_window(*reason);
+    if (!decoded_connection.value("decryption_complete", false))
+        return unavailable_server_client_hello_to_finished_send_window(
+            "decoded_sidecar_decryption_incomplete");
+    const auto* received = decoded_direction(decoded_connection, "client_sent");
+    const auto* sent = decoded_direction(decoded_connection, "server_sent");
+    if (received == nullptr || sent == nullptr)
+        return unavailable_server_client_hello_to_finished_send_window(
+            "server_window_record_mapping_unavailable");
+    const auto* client_hello = one_message(*received, "ClientHello");
+    const auto* finished = one_message(*sent, "Finished");
+    if (client_hello == nullptr || finished == nullptr ||
+        !client_hello->contains("record_stream_ranges") ||
+        client_hello->at("record_stream_ranges").empty() ||
+        !finished->contains("record_stream_ranges") ||
+        finished->at("record_stream_ranges").empty())
+        return unavailable_server_client_hello_to_finished_send_window(
+            "server_window_record_mapping_unavailable");
+
+    std::uint64_t client_hello_begin = std::numeric_limits<std::uint64_t>::max();
+    for (const auto& range : client_hello->at("record_stream_ranges"))
+        client_hello_begin =
+            std::min(client_hello_begin, range.at("begin").get<std::uint64_t>());
+    std::uint64_t finished_end = 0;
+    for (const auto& range : finished->at("record_stream_ranges"))
+        finished_end = std::max(finished_end, range.at("end").get<std::uint64_t>());
+
+    const auto connection = decoded_connection.at("connection").get<std::size_t>();
+    const Json* start = nullptr;
+    const Json* end = nullptr;
+    for (const auto& event : events) {
+        if (event.value("connection", std::size_t(-1)) != connection || !boundary(event) ||
+            !event.contains("sequence") ||
+            event.value("result", std::int64_t{-1}) != 0 ||
+            event.value("transferred", std::uint64_t{0}) == 0 ||
+            event.value("stream_end", std::uint64_t{0}) <=
+                event.value("stream_begin", std::uint64_t{0}))
+            continue;
+        const auto begin = event.at("stream_begin").get<std::uint64_t>();
+        const auto finish = event.at("stream_end").get<std::uint64_t>();
+        if (start == nullptr && event.value("kind", "") == "IO_RECV_RETURN" &&
+            begin <= client_hello_begin && client_hello_begin < finish)
+            start = &event;
+        if (event.value("kind", "") == "IO_SEND_RETURN" && begin < finished_end &&
+            finish >= finished_end) {
+            end = &event;
+            break;
+        }
+    }
+    if (start == nullptr || end == nullptr || time(*end) < time(*start))
+        return unavailable_server_client_hello_to_finished_send_window(
+            "server_window_io_boundary_unavailable");
+
+    auto result = unavailable_server_client_hello_to_finished_send_window("");
+    result.update({{"available", true},
+                   {"reason", nullptr},
+                   {"start_event_sequence", start->at("sequence")},
+                   {"end_event_sequence", end->at("sequence")},
+                   {"elapsed_ns", time(*end) - time(*start)},
+                   {"thread_cpu_reason", nullptr},
+                   {"client_hello_bundled", client_hello->value("bundled", false)},
+                   {"finished_bundled", finished->value("bundled", false)}});
+    if (!start->contains("thread_cpu_ns") || !end->contains("thread_cpu_ns") ||
+        start->at("thread_cpu_ns").is_null() || end->at("thread_cpu_ns").is_null()) {
+        result["thread_cpu_reason"] = "thread_cpu_snapshot_missing";
+    } else {
+        const auto first = nonnegative_integer(start->at("thread_cpu_ns"));
+        const auto last = nonnegative_integer(end->at("thread_cpu_ns"));
+        if (!first || !last)
+            result["thread_cpu_reason"] = "thread_cpu_snapshot_invalid";
+        else if (*last < *first)
+            result["thread_cpu_reason"] = "thread_cpu_regression";
+        else
+            result["thread_cpu_ns"] = *last - *first;
+    }
+    if (header.value("perf_complete", false) && start->contains("cycles") &&
+        end->contains("cycles") && !start->at("cycles").is_null() &&
+        !end->at("cycles").is_null()) {
+        const auto first = nonnegative_integer(start->at("cycles"));
+        const auto last = nonnegative_integer(end->at("cycles"));
+        if (first && last && *last >= *first)
+            result["cycles"] = *last - *first;
+    }
+    return result;
+}
 
 Json partition(const Json& header, const std::vector<Json>& input) {
     Json results = Json::array();

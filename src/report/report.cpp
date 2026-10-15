@@ -42,6 +42,12 @@ std::optional<Json> read_json(const std::filesystem::path& path, std::string& re
     }
 }
 
+std::string decoded_attribution_reason(std::string reason) {
+    if (reason.starts_with("sidecar_"))
+        reason.erase(0, std::string("sidecar_").size());
+    return "decoded_sidecar_" + reason;
+}
+
 std::optional<std::map<std::size_t, Json>>
 decoded_connections(const Json& header, const Json& decoded, std::string& reason) {
     if (decoded.value("schema", 0) != 1) {
@@ -313,6 +319,15 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             if (!line.empty())
                 events.push_back(Json::parse(line));
         auto parts = partition(header, events);
+        const auto io_unavailable = io_events_unavailable_reason(header);
+        for (auto& part : parts) {
+            const auto reason = io_unavailable.value_or("decoded_sidecar_absent");
+            part["record_computation_attribution"] =
+                unavailable_record_computation_attribution(reason);
+            if (header.at("role") == "server")
+                part[std::string(server_window_name)] =
+                    unavailable_server_client_hello_to_finished_send_window(reason);
+        }
         std::string sidecar_status = "absent";
         std::string sidecar_reason = "optional_sidecar_not_present";
         auto sidecar_path = path;
@@ -343,6 +358,13 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                                 if (windows.contains(index)) {
                                     part["client_hello_to_finished_send"] = windows.at(index);
                                 }
+                                part["record_computation_attribution"] =
+                                    record_computation_attribution(
+                                        header, events, connections->at(index), part);
+                                if (header.at("role") == "server")
+                                    part[std::string(server_window_name)] =
+                                        server_client_hello_to_finished_send_window(
+                                            header, events, connections->at(index));
                             }
                             sidecar_status = "validated";
                             sidecar_reason = header.at("role") == "client"
@@ -357,6 +379,18 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 sidecar_reason = "sidecar_shape_invalid";
             } catch (const std::out_of_range&) {
                 sidecar_reason = "sidecar_connection_lookup_failed";
+            }
+        }
+        if (sidecar_status != "validated" && sidecar_status != "absent") {
+            const auto attribution_reason =
+                io_unavailable.value_or(decoded_attribution_reason(sidecar_reason));
+            for (auto& part : parts) {
+                part["record_computation_attribution"] =
+                    unavailable_record_computation_attribution(attribution_reason);
+                if (header.at("role") == "server")
+                    part[std::string(server_window_name)] =
+                        unavailable_server_client_hello_to_finished_send_window(
+                            attribution_reason);
             }
         }
         const auto peer = peer_header(path, header);
@@ -543,6 +577,19 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                     group.metrics[std::string(common_thread_cpu)].push_back(
                         window.at("thread_cpu_ns").get<double>());
             }
+            if (p.contains(std::string(server_window_name))) {
+                const auto& window = p.at(std::string(server_window_name));
+                if (window.value("available", false) && !window.at("elapsed_ns").is_null())
+                    group.metrics[std::string(server_window_elapsed)].push_back(
+                        window.at("elapsed_ns").get<double>());
+                if (window.value("available", false) &&
+                    !window.at("thread_cpu_ns").is_null())
+                    group.metrics[std::string(server_window_thread_cpu)].push_back(
+                        window.at("thread_cpu_ns").get<double>());
+                if (window.value("available", false) && !window.at("cycles").is_null())
+                    group.metrics[std::string(server_window_cycles)].push_back(
+                        window.at("cycles").get<double>());
+            }
             if (primary_available)
                 group.batches[header.at("batch").get<std::uint64_t>()].push_back(
                     p.at("elapsed_ns").get<double>());
@@ -576,6 +623,15 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                  "last_successful_full_application_completion_call_end_for_role"},
                 {"client_end_call", "app_recv"},
                 {"server_end_call", "app_send"},
+            };
+        }
+        if (group.metrics.contains(std::string(server_window_elapsed))) {
+            item[std::string(server_window_name)] = {
+                {"definition", server_window_definition},
+                {"start", "successful_receive_return_containing_first_client_hello_byte"},
+                {"end", "successful_send_return_completing_server_finished_record_envelope"},
+                {"includes_client_finished_verification", false},
+                {"includes_mutual_authentication_client_certificate_verification", false},
             };
         }
         std::vector<double> batch_stq;

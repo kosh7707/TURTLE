@@ -32,6 +32,20 @@ TCP 준비에서는 `ESTABLISHED`와 읽지 않은 바이트 0뿐 아니라 설�
 
 클라이언트 구간은 첫 핸드셰이크 호출부터 마지막 퐁 수신 호출 완료까지입니다. 서버 구간은 첫 성공한 수신 반환부터 마지막 퐁 송신 호출 완료까지입니다. 호출 완료 사건의 `result`는 `Step` 값이며, 응용 호출에는 `AppResult.step`을 기록합니다. `Done`은 2입니다. 네이티브 소켓 비교에서는 프레임워크 송수신이 보이지 않으므로 `library-only`로 표시하고 바이트와 커널 관측이 없음을 남깁니다.
 
+### 보고서의 TLS 측정 구간
+
+아래 표의 경계는 모두 각 역할 프로세스에서 관측한 사건입니다. 상대 엔드포인트의 연산이 대기 시간에 반영될 수는 있지만, 그 시간을 현재 역할의 CPU 연산으로 해석하지 않습니다.
+
+| 보고 구간 | 역할·시작→끝 | 인증 단계 | ChangeCipherSpec·NewSessionTicket | 응용 데이터 | 그룹 지표 |
+|---|---|---|---|---|---|
+| 기본 `primary_window` | 클라이언트: 첫 `handshake` `CALL_BEGIN`→전체 `app_recv`의 마지막 성공 `CALL_END` | 서버 인증서 검증과, 상호 인증이면 클라이언트 인증서 송신을 포함합니다. 서버의 검증 연산은 클라이언트 CPU가 아닙니다. | 경계 사이에 실제 처리한 ChangeCipherSpec과 티켓만 포함합니다. 티켓을 따로 분리하지 않습니다. | 퐁 수신 완료까지 포함 | `elapsed_ns`, `computation_ns`, `io_ns`, `wait_ns`, `gap_ns`, `thread_cpu_ns`, `cycles`, `instructions`, `heap_peak_bytes` |
+| 기본 `primary_window` | 서버: 첫 성공 `IO_RECV_RETURN`→전체 `app_send`의 마지막 성공 `CALL_END` | 서버 자신의 인증 메시지 묶음 생성, 클라이언트 Finished 검증, 상호 인증이면 클라이언트 인증서 검증을 포함합니다. | 경계 사이에 실제 송수신한 ChangeCipherSpec과 티켓을 포함하되 따로 분리하지 않습니다. | 핑 수신과 퐁 송신 완료까지 포함 | `elapsed_ns`, `computation_ns`, `io_ns`, `wait_ns`, `gap_ns`, `thread_cpu_ns`, `cycles`, `instructions`, `heap_peak_bytes` |
+| `handshake_call_begin_to_application_complete` | 클라이언트: 첫 `handshake` `CALL_BEGIN`→전체 `app_recv` 완료; 서버: 첫 `handshake` `CALL_BEGIN`→전체 `app_send` 완료 | 응용 교환 전에 완료한 해당 역할의 인증 처리를 포함합니다. 서버는 첫 수신 전 대기도 포함할 수 있습니다. | 경계 사이에 처리한 값을 포함하되 따로 분리하지 않습니다. | 클라이언트는 퐁 수신, 서버는 퐁 송신 완료까지 포함 | `handshake_call_begin_to_application_complete_elapsed_ns`, `handshake_call_begin_to_application_complete_thread_cpu_ns` |
+| `client_hello_to_finished_send` | 클라이언트: ClientHello 레코드 성공 송신 반환→클라이언트 Finished 레코드의 마지막 바이트 성공 송신 반환 | 서버 인증서 검증과, 상호 인증이면 클라이언트 인증 메시지 생성·송신을 포함합니다. 서버의 클라이언트 Finished 검증 완료를 뜻하지 않습니다. | 경계 사이의 ChangeCipherSpec은 포함합니다. 클라이언트 Finished 뒤의 티켓은 제외합니다. | 제외 | `client_hello_to_finished_send_elapsed_ns`, `client_hello_to_finished_send_thread_cpu_ns`, `client_hello_to_finished_send_cycles` |
+| `server_client_hello_to_finished_send` | 서버: ClientHello 레코드의 첫 바이트를 포함한 성공 수신 반환→서버 Finished 레코드의 마지막 바이트 성공 송신 반환 | 서버 인증 메시지 묶음 생성을 포함하지만 클라이언트 Finished 검증과 상호 인증의 클라이언트 인증서 수신·검증은 제외합니다. | 경계 사이에 보낸 ChangeCipherSpec은 포함하지만 후속 티켓은 제외합니다. | 제외 | `server_client_hello_to_finished_send_elapsed_ns`, `server_client_hello_to_finished_send_thread_cpu_ns`, `server_client_hello_to_finished_send_cycles` |
+
+여기서 “포함”은 경계 사이의 경과 시간에 든다는 뜻입니다. 각 작업의 순수 CPU 비용을 분리했다는 뜻이 아닙니다. `record_computation_attribution`은 기본 주 구간의 연산 구간에 레코드 근거를 붙이는 연결별 보기이며 추가 그룹 지표나 자동 비교를 만들지 않습니다.
+
 ### callback과 native 경로의 관측 가능성
 
 OpenSSL 어댑터는 `framework_io=true`인 callback 경로와 `false`인 native socket 경로를 지원합니다. wolfSSL과 Mbed TLS는 native 경로를 지원하지 않으며 설정을 거절합니다. native 지원을 추정하거나 이 두 어댑터에 가짜 결과를 만들지 않습니다.

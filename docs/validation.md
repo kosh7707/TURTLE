@@ -366,3 +366,28 @@ wolfSSL 어댑터 소스에서 `open()`의 `wolfSSL_UseKeyShare`가 사라졌고
 | `offline/audit.json` | 다섯 보존 원자료를 같은 후보 보고기로 각각 두 번 재생했고 각 `summary.json`이 바이트 단위로 같았습니다. 원자료 해시와 기존 표본·지표·분포·연결·시도·미계측 상태는 보존되고, 계약 필드와 자동 비교 제외만 의도대로 달라졌습니다. SHA-256은 `24eb6a3ce17ecd7ad1b7d74dbef5afd114dadd3140fb2800053354c0917d38cb`입니다. |
 
 N05는 보존 원자료를 오프라인으로 읽었을 뿐 네트워크·손실·`netem` 실험을 다시 실행하지 않았습니다. 반환 스트림 복사 비용의 귀속은 이 D1의 변경 대상이 아니며, 후속 D2 개정 전까지 현재 한계로 남습니다.
+
+## G004 레코드 연산 귀속과 서버 구간 검증
+
+`ff27f615fbfb08d585b0065a9c0503de796ed4a0`을 기준으로 기존 원자료에서 레코드 귀속과 서버 ClientHello→Finished 구간을 만드는 보고 기능을 확인했습니다. 원자료 생성자와 `measurement_contract_revision=1`은 바꾸지 않았습니다. `record_computation_attribution`은 연결별 보기로만 남고 그룹 지표·자동 비교를 만들지 않았으며, 서버 구간의 경과·CPU·사이클만 새 그룹 지표 후보입니다.
+
+첫 통합 후보는 74개 시험 20회와 정적 검사를 통과했지만, 독립 검토에서 이전 레코드에서만 다른 메시지와 묶인 상태가 현재 I/O 경계의 `bundled=true`로 전파되는 문제를 찾았습니다. 이 시점의 `validation/`과 `offline/`은 수리 전 증거로 보존하되 최종 통과 근거로 쓰지 않습니다. 수리는 현재 경계의 선택 레코드가 참조하는 메시지 인스턴스만으로 묶임을 판정합니다. 독립 오프라인 검증기도 해독 결과의 전역 묶임 표시를 답습하지 않고, 원시 I/O 범위와 선택 레코드에서 메시지 인스턴스를 다시 계산하도록 고쳤습니다. 동명 메시지 두 개, 단일 메시지의 다중 레코드, 이전 레코드만 공유한 사례, 비성공 반환 뒤 재시도 성공, 성공 0바이트, CPU 시각 역전을 합성 회귀 시험으로 고정했습니다.
+
+고정 기본 프로필의 세 라이브러리 자기 연결은 `integration/repair-three-library-structure.txt`에 다음 구조를 남겼습니다.
+
+- OpenSSL 서버는 하나의 `before_send`에 ServerHello, ChangeCipherSpec, EncryptedExtensions, Certificate, CertificateVerify, Finished 여섯 인스턴스를 남겼고 `bundled=true`였습니다.
+- wolfSSL과 Mbed TLS 서버는 여섯 이름을 각각 별도의 `before_send`에 남겼고 모두 `bundled=false`였습니다.
+- 세 클라이언트는 모두 같은 여섯 메시지를 레코드 본문을 완성한 각각의 `after_receive`에 남겼습니다.
+- 서버 추가 구간은 OpenSSL의 사건 순번 14→20, wolfSSL과 Mbed TLS의 14→30에서 생성됐습니다.
+
+이는 고정한 실행에서 연산이 배치된 위치를 보여 주는 구조 근거입니다. 메시지의 내재적 비용, 라이브러리 순위, 일반적인 송수신 횟수를 주장하지 않습니다. 티켓 2개 시험은 ChangeCipherSpec이 서버 Finished 경계 전에, 두 NewSessionTicket과 응용 레코드가 경계 뒤에 있음을 확인했습니다. 상호 인증 실제 연결도 통과했지만, 서버 Finished 송신에서 끝나는 추가 구간은 클라이언트 인증서·Finished의 서버 검증 완료를 증명하지 않습니다.
+
+수리 뒤의 최종 근거는 `results/review-20261015/G004/validation-r2/validation-summary.json`에 모았으며 SHA-256은 `463204683b481cf05b7ecd32e622ceb00d6dfb59b5dd900ff4634f55cc378695`입니다. 고정한 후보 보고기의 SHA-256은 `02882275241969565acb0bbd8d0a2a3cf56869ad02fb7771790d75e659e55fd8`입니다.
+
+| 근거 | 직접 확인한 내용 |
+|---|---|
+| `validation-r2/logs/check-repeat20.log` | 세 어댑터를 켠 생산 Release·시험 Debug `-UNDEBUG` 빌드에서 74개 시험을 각각 20회, 총 1,480회 실행해 실패·건너뜀 없이 통과했습니다. 통합 시험 32개와 11개 부품 포함 경계 검사를 포함하며 SHA-256은 `6bef05b74b3879637e5389a7b8b0c8a9bc7f202cb7873e8176490ccdc3cc912e`입니다. |
+| `validation-r2/logs/static-all.log` | 외부 소스를 제외한 생산 번역 단위 25개의 cppcheck·clang-tidy가 통과했습니다. SHA-256은 `0104e61d08142e68036fcf9ee0137b33df79e00e9b87728847da6cd4b1a2c954`입니다. |
+| `offline-r2/audit.json` | 여섯 보존 원자료를 각각 두 번 재생했습니다. 원자료가 변하지 않았고 승인한 네 추가 경로를 제외한 기존 값·지표·조건·순서·비교 적격성이 직전 G003 결과와 같았습니다. 232개 연결의 귀속은 사용 가능, 24개는 이유 있는 미계측이었고, 기존 연산 구간 4,660개를 한 번씩 보존했습니다. 서버 추가 구간은 116개 사용 가능, 12개 미계측이었습니다. 사이클 표본은 없었으며 이를 측정값 0으로 해석하지 않습니다. SHA-256은 `5feda6fb0494ab091ba53119ddffa8e6329010dc7baab58a40bbb42db5aa2304`입니다. |
+
+N05의 조회 보고서는 바이트 단위로 같았고 네트워크·손실·`netem` 실험은 다시 실행하지 않았습니다. 별도로 시도한 비정규 Release 시험 트리 전체 빌드는 G004와 무관한 `tests/control/control_test.cpp`의 반환값 미사용 경고로 실패했습니다. 이 실패를 숨기거나 제품 수정으로 넓히지 않았고, 규정한 Debug 전체 시험 관문을 별도로 통과했습니다. 반환 스트림 복사 비용의 현재 귀속 한계는 후속 G005/D2에서 다룹니다.

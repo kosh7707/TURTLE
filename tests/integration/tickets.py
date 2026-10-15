@@ -8,6 +8,7 @@ import sys
 import tempfile
 
 from pipeline import check, run, validate_role
+from report_attribution import record_range, validate_server_window
 
 
 def main():
@@ -43,8 +44,28 @@ def main():
                 window = sample["connections"][0]["client_hello_to_finished_send"]
                 check(window["elapsed_ns"] < sample["connections"][0]["elapsed_ns"],
                       "alternate handshake window does not end before pingpong completion")
+            else:
+                raw = Path(sample["path"])
+                rows = [json.loads(line) for line in raw.read_text().splitlines()]
+                decoded = json.loads(raw.with_suffix(".decoded.json").read_text())["connections"][0]
+                connection = sample["connections"][0]
+                window = validate_server_window(
+                    connection, rows, decoded, f"ticket profile {raw}"
+                )
+                _, finished_end = record_range(decoded["server_sent"], "Finished")
+                messages = decoded["server_sent"]["messages"]
+                later = [message for message in messages
+                         if message["name"] in ("NewSessionTicket", "ApplicationData")]
+                check(later and all(
+                    min(item["begin"] for item in message["record_stream_ranges"]) >= finished_end
+                    for message in later
+                ), "ticket/application records did not follow the server Finished envelope")
+                ccs_begin, ccs_end = record_range(decoded["server_sent"], "ChangeCipherSpec")
+                check(ccs_begin < ccs_end <= finished_end and
+                      window["elapsed_ns"] < connection["elapsed_ns"],
+                      "server window does not include CCS or exclude later completion")
         shutil.rmtree(root)
-        print("PASS same-TCP-run message oracle, two tickets and alternate boundary")
+        print("PASS message oracle, two tickets, and client/server handshake boundaries")
     except Exception:
         print(f"Artifacts retained: {root}", file=sys.stderr)
         raise

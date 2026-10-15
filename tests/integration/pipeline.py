@@ -9,6 +9,13 @@ import sys
 import tempfile
 
 from tls_transcript import validate_wire_hellos
+from report_attribution import (
+    SERVER_WINDOW,
+    SERVER_WINDOW_DEFINITION,
+    validate_available_attribution,
+    validate_no_attribution_metrics,
+    validate_server_window,
+)
 
 
 def run(*args):
@@ -78,6 +85,44 @@ def validate_role(raw, mode, interpret):
     return header["pid"]
 
 
+def validate_report_evidence(data):
+    for sample in data["samples"]:
+        raw = Path(sample["path"])
+        rows = [json.loads(line) for line in raw.read_text().splitlines()]
+        decoded = json.loads(raw.with_suffix(".decoded.json").read_text())
+        decoded_by_index = {
+            connection["connection"]: connection
+            for connection in decoded["connections"]
+        }
+        for connection in sample["connections"]:
+            index = connection["connection"]
+            context = f"{raw} connection {index}"
+            decoded_connection = decoded_by_index[index]
+            validate_available_attribution(
+                connection, rows, decoded_connection, sample["role"], context
+            )
+            if sample["role"] == "server":
+                validate_server_window(connection, rows, decoded_connection, context)
+            else:
+                check(SERVER_WINDOW not in connection,
+                      f"{context}: client fabricated a server-only window")
+
+    validate_no_attribution_metrics(data["groups"])
+    for group in data["groups"]:
+        metrics = group["metrics"]
+        if group["dimensions"]["role"] == "server":
+            metadata = group.get(SERVER_WINDOW, {})
+            check(metadata.get("definition") == SERVER_WINDOW_DEFINITION,
+                  "server group lacks the new window definition")
+            for suffix in ("elapsed_ns", "thread_cpu_ns"):
+                metric = metrics.get(f"{SERVER_WINDOW}_{suffix}", {})
+                check(metric.get("count") == 2,
+                      f"server group lost {SERVER_WINDOW}_{suffix} samples")
+        else:
+            check(not any(name.startswith(f"{SERVER_WINDOW}_") for name in metrics),
+                  "client group contains server-only window metrics")
+
+
 def main():
     turtle, report, interpret, adapters, pki, client, server = sys.argv[1:8]
     connections = int(sys.argv[8]) if len(sys.argv) > 8 else 1
@@ -117,6 +162,7 @@ def main():
                     window = conn["client_hello_to_finished_send"]
                     check(window["start_event_sequence"] <= window["end_event_sequence"], "alternate window event order")
                     check(window["elapsed_ns"] <= conn["elapsed_ns"], "alternate window is outside main window")
+        validate_report_evidence(data)
         run(report, root, root / "report")
         check((root / "report/summary.json").read_text() == summary, "raw replay changed statistics")
         shutil.rmtree(root)

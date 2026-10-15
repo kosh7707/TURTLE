@@ -324,6 +324,12 @@ int main() {
     assert(unavailable_report["invalid_samples"] == 0);
     assert(unavailable_report["groups"].size() == 2);
     assert(unavailable_report["comparisons"].empty());
+    for (const auto& sample : unavailable_report["samples"]) {
+        const auto& attribution =
+            sample["connections"][0]["record_computation_attribution"];
+        assert(attribution["available"] == false && attribution["segments"].is_null());
+        assert(attribution["reason"] == "native_socket_io_not_observed");
+    }
     for (const auto& group : unavailable_report["groups"]) {
         assert(group["metrics"]["handshake_call_begin_to_application_complete_elapsed_ns"]
                            ["count"] == 1);
@@ -395,6 +401,12 @@ int main() {
                          ["stq2"] == 70);
     assert(decoded_report["groups"][0]["client_hello_to_finished_send"]
                          ["separate_plaintext_message_cpu_time_available"] == false);
+    const auto& fixture_attribution =
+        decoded_report["samples"][0]["connections"][0]
+                      ["record_computation_attribution"];
+    assert(fixture_attribution["available"] == false &&
+           fixture_attribution["reason"] == "decoded_record_mapping_unavailable" &&
+           fixture_attribution["segments"].is_null());
 
     const auto raw_only_dir = dir / "raw-only-fixture";
     std::filesystem::create_directory(raw_only_dir);
@@ -403,6 +415,11 @@ int main() {
     assert(raw_only["samples"][0]["decoded_sidecar_status"] == "absent");
     assert(raw_only["samples"][0]["decoded_sidecar_reason"] == "optional_sidecar_not_present");
     assert(!raw_only["samples"][0]["connections"][0].contains("client_hello_to_finished_send"));
+    const auto& raw_only_attribution =
+        raw_only["samples"][0]["connections"][0]["record_computation_attribution"];
+    assert(raw_only_attribution["available"] == false &&
+           raw_only_attribution["reason"] == "decoded_sidecar_absent" &&
+           raw_only_attribution["segments"].is_null());
     assert(raw_only["groups"][0]["metrics"]["elapsed_ns"] ==
            decoded_report["groups"][0]["metrics"]["elapsed_ns"]);
 
@@ -418,6 +435,10 @@ int main() {
         assert(report["samples"][0]["decoded_sidecar_status"] == "ignored");
         assert(report["samples"][0]["decoded_sidecar_reason"] == reason);
         assert(!report["samples"][0]["connections"][0].contains("client_hello_to_finished_send"));
+        const auto& attribution =
+            report["samples"][0]["connections"][0]["record_computation_attribution"];
+        assert(attribution["available"] == false && attribution["segments"].is_null());
+        assert(attribution["reason"] == "decoded_sidecar_" + reason);
     };
     rejected_sidecar("mismatched-sample", "sample_mismatch",
                      [](J& decoded) { decoded["sample"] = 999; });
@@ -434,6 +455,9 @@ int main() {
     const auto malformed = summarize(malformed_dir, dir / "malformed-report");
     assert(malformed["samples"][0]["decoded_sidecar_status"] == "ignored");
     assert(malformed["samples"][0]["decoded_sidecar_reason"] == "malformed_json");
+    assert(malformed["samples"][0]["connections"][0]
+                    ["record_computation_attribution"]["reason"] ==
+           "decoded_sidecar_malformed_json");
     for (int i = 0; i < 4; ++i) {
         auto alternate = header;
         if (i == 0)

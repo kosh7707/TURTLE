@@ -38,6 +38,43 @@ ClientHello와 Finished 경계의 묶임 여부를 각각 표시합니다. 이 �
 무시했는지와 그 이유를 따로 남깁니다. 이때도 원자료만으로 만든 기본 보고서는 그대로
 남습니다.
 
+## 서버의 ClientHello→Finished 구간
+
+`server_client_hello_to_finished_send`는 서버가 ClientHello를 받기 시작한 반환에서
+자기 Finished를 보내기 끝낸 반환까지의 추가 구간입니다. 정의 문자열은
+`server_client_hello_receive_return_to_server_finished_send_return`입니다.
+
+- 시작은 ClientHello가 든 TLS 레코드 외피의 첫 바이트를 포함해 성공한 `IO_RECV_RETURN`입니다. 네트워크 도착 시각이 아니며, 이 반환이 레코드 본문 전체를 받았다는 뜻도 아닙니다.
+- 끝은 서버 Finished가 든 레코드 외피의 마지막 바이트까지 실제로 보낸 성공한 `IO_SEND_RETURN`입니다. 부분 송신이면 마지막 바이트까지 모두 보낸 반환을 기다립니다. 하나의 반환에 여러 레코드가 묶이면 그 실제 반환 경계를 씁니다.
+
+연결 결과에는 경과 시간과 스레드 CPU 시간, 사용 가능할 때 사이클, `start_event_sequence`, `end_event_sequence`, `client_hello_bundled`, `finished_bundled`를 남깁니다. `mapping`은 `record_envelope_overlap`입니다. 스레드 CPU 스냅샷이 없거나 역전되어도 경과 시간을 만들 수 있으면 유지하고, CPU 값만 `null`과 `thread_cpu_reason`으로 남깁니다. 그룹 지표 이름은 다음과 같습니다.
+
+- `server_client_hello_to_finished_send_elapsed_ns`
+- `server_client_hello_to_finished_send_thread_cpu_ns`
+- `server_client_hello_to_finished_send_cycles`
+
+이 구간은 서버의 호환용 ChangeCipherSpec과 서버 인증서·CertificateVerify·Finished 생성을 경계 안에서 실제 처리한 배치대로 포함합니다. 응용 핑퐁과 Finished 뒤의 NewSessionTicket은 포함하지 않습니다. TLS 1.3에서 서버 Finished 송신은 클라이언트 Finished 검증보다 앞입니다. 상호 인증에서도 클라이언트 Certificate·CertificateVerify 수신과 검증보다 앞이므로, 이 구간을 서버의 전체 상대 인증 완료 시간이라고 부르지 않습니다.
+
+I/O 사건이나 완전한 해독 레코드 대응이 없으면 값을 만들지 않고 `available=false`와 이유를 남깁니다. 이 구간은 기존 서버 주 구간을 대체하지 않습니다.
+
+## 레코드 경계와 연산 구간의 귀속
+
+각 연결의 `record_computation_attribution`은 주 구간 안의 `computation` 구간을 다시 측정하지 않고 시작과 끝에 레코드 근거를 붙입니다. `scope` 값은 `primary_window_computation_segments`입니다.
+
+- `after_receive`는 TLS 레코드 외피의 마지막 바이트까지 실제로 받은 성공 `IO_RECV_RETURN` 뒤에 시작한 연산 구간에 붙습니다. 레코드 머리만 받은 반환에는 붙이지 않습니다.
+- `before_send`는 같은 연결·호출의 `IO_SEND_ENTER`와 `IO_SEND_RETURN`을 순서대로 짝지은 뒤, 성공 반환이 실제로 보낸 바이트 범위의 레코드만 전송 앞 연산 구간에 붙습니다. 요청한 길이나 성공 0바이트를 완료 근거로 쓰지 않습니다.
+- 연산 구간이 `CALL_BEGIN`에서 시작하면 `call_begin`, `CALL_END`에서 끝나면 `call_end`를 남깁니다. 레코드 대응이 없거나 양끝 중 하나에 귀속이 없는 연산 구간도 삭제하지 않습니다.
+
+각 `segments` 항목은 `segment_index`, `begin_event_sequence`, `end_event_sequence`, `elapsed_ns`, `thread_cpu_ns`, `thread_cpu_reason`, `start`, `end`를 가집니다. `start`와 `end`는 각각 `null`이거나 `kind`, `boundary_event_sequence`, `io_return_event_sequence`, `record_indices`, `names`, `bundled`, `mapping`을 담은 객체입니다. 레코드 귀속의 `mapping`은 `record_envelope`, 호출 경계의 `mapping`은 `boundary_event`입니다. 호출 경계의 I/O 반환 순번은 `null`이고 레코드·이름 목록은 비어 있습니다. 한 연산 구간의 양끝에 모두 귀속이 있어도 구간과 시간은 한 번만 저장합니다.
+
+해독기의 메시지 이름은 해당 레코드를 사용한 평문 메시지입니다. `names`는 이름 문자열이 아닌 메시지 인스턴스를 기준으로 만듭니다. 예를 들어 NewSessionTicket 두 개가 같은 경계에 묶이면 `names`에 같은 이름을 두 번 남기고 `bundled=true`입니다. 문자열을 중복 제거하지 않습니다.
+
+하나의 메시지가 여러 레코드에 걸치면 먼저 받은 레코드의 외피가 완성된 시점과 메시지 전체가 완성된 시점은 다릅니다. 이 한 메시지만 여러 레코드에 걸친 사실은 묶임이 아닙니다. `bundled`는 현재 I/O 경계의 `record_indices`에서 같이 선택된 메시지 인스턴스만으로 판정합니다. 다른 레코드에서만 다른 메시지와 공유한 상태를 현재 경계의 묶임으로 전파하지 않습니다. 반대로 한 레코드에 여러 메시지가 들면 인스턴스별 이름을 모두 남기고 `bundled=true`로 표시합니다. 하나의 암호화 레코드를 여러 번에 나눠 보내면 같은 레코드·메시지 이름이 여러 `before_send`에 나타날 수 있습니다. 이때 `names`는 해독한 레코드 외피가 겹친 후보이며, 그 반환 바이트에 각 메시지 전체가 독립적으로 들었다는 뜻이 아닙니다. 어느 경우에도 구간 시간을 이름 수로 나누거나 같은 이름으로 다시 합산하지 않습니다.
+
+이 보기는 라이브러리가 언제 작업을 배치했는지를 보는 구조 진단입니다. 특정 메시지의 내재적 비용이나 순수한 라이브러리 연산 시간이 아니며, 반환 스트림 복사와 계측 비용이 현재 구간에 들 수 있습니다. 특히 묶인 이름의 시간을 메시지별로 비교하지 않습니다. 비교가 필요하면 개별 이름이 아니라 `client_hello_to_finished_send`나 `server_client_hello_to_finished_send`같이 같은 이름·같은 경계로 정의한 전체 구간의 합계를 씁니다. `record_computation_attribution`은 그룹 통계나 자동 비교를 만들지 않습니다.
+
+I/O가 관측되지 않았으면 원자료의 이유, 예를 들어 `channel_observer_disabled`나 `native_socket_io_not_observed`를 그대로 남기고 `segments=null`입니다. 이유가 없는 구 자료는 `io_events_not_observed`로 남깁니다. 해독 파일이 없으면 `decoded_sidecar_absent`, 손상·불완전하면 `decoded_sidecar_<기존 이유>`, 레코드 대응을 만들 수 없으면 `decoded_record_mapping_unavailable`입니다. 경과 시간이 있어도 CPU 스냅샷이 없거나 역전되면 해당 `thread_cpu_ns`만 `null`이고 이유를 따로 남깁니다.
+
 ## 기능 유효성과 metric availability
 
 `connections[*].valid`는 인증과 응용 교환을 포함한 기능 결과입니다. `primary_window`와

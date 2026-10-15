@@ -12,6 +12,15 @@ import subprocess
 import sys
 import time
 
+from report_attribution import (
+    SERVER_WINDOW,
+    validate_available_attribution,
+    validate_no_attribution_metrics,
+    validate_server_window,
+    validate_unavailable_attribution,
+    validate_unavailable_server_window,
+)
+
 
 SAMPLES = 2
 TLS_PATHS = {"tls_c2s", "tls_s2c"}
@@ -348,6 +357,9 @@ def validate_report_availability(summary: dict[str, object], samples_per_conditi
         check(sample.get("valid") is True and len(sample.get("connections", [])) == 1,
               "report lost a functionally valid TLS connection")
         connection = sample["connections"][0]
+        raw = Path(sample["path"])
+        rows = read_jsonl(raw)
+        decoded_connection = json.loads(raw.with_suffix(".decoded.json").read_text())["connections"][0]
         native = any(part == "native" or part.startswith("native-")
                      for part in Path(sample.get("path", "")).parts)
         role = sample.get("role")
@@ -355,27 +367,40 @@ def validate_report_availability(summary: dict[str, object], samples_per_conditi
             check(connection.get("primary_window") == {"available": True, "reason": None} and
                   connection.get("io_breakdown") == {"available": True, "reason": None},
                   "callback report lost its observed primary/I/O breakdown")
+            validate_available_attribution(
+                connection, rows, decoded_connection, role, str(raw)
+            )
+            if role == "server":
+                validate_server_window(connection, rows, decoded_connection, str(raw))
+            else:
+                check(SERVER_WINDOW not in connection,
+                      f"{raw}: client fabricated a server-only window")
             continue
         check(connection.get("io_breakdown") == {
                   "available": False, "reason": "io_events_not_observed",
               } and all(connection.get(name) is None
                         for name in ("computation_ns", "io_ns", "wait_ns", "gap_ns")),
               "native unobserved I/O decomposition was reported as numeric data")
+        validate_unavailable_attribution(connection, NATIVE_REASON, str(raw))
         if role == "client":
             check(connection.get("primary_window") == {"available": True, "reason": None} and
                   isinstance(connection.get("elapsed_ns"), int) and
                   isinstance(connection.get("thread_cpu_ns"), int),
                   "native client call boundary was not retained")
+            check(SERVER_WINDOW not in connection,
+                  f"{raw}: client fabricated a server-only window")
         else:
             check(connection.get("primary_window") == {
                       "available": False, "reason": "server_first_receive_not_observed",
                   } and connection.get("elapsed_ns") is None and
                   connection.get("thread_cpu_ns") is None,
                   "native server primary values were fabricated")
+            validate_unavailable_server_window(connection, NATIVE_REASON, str(raw))
 
     native_groups = [group for group in summary.get("groups", [])
                      if group.get("dimensions", {}).get("observation_level") == "library-only"]
     check(bool(native_groups), "report did not preserve native observation-level groups")
+    validate_no_attribution_metrics(summary.get("groups", []))
     for group in native_groups:
         role = group["dimensions"].get("role")
         metrics = group.get("metrics", {})
