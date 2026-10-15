@@ -54,7 +54,7 @@ python3 scripts/netem-study.py verify --build build --pki PKI_DIR \
 
 OpenSSL의 실제 표준 TLS와 netem을 함께 쓴 고정 검증 묶음은 2026년 10월 15일 한 번 실행해 통과했습니다. CA→client 5ms·20% loss의 사전 고정 64 attempts가 모두 성공했고, qdisc skb drop 94와 CA 소켓 `TCP_INFO.total_retrans` 차이 58을 별도로 관측했습니다. 이 수치는 기능 gate 증거이지 성능 표본이나 현실망 모델이 아닙니다. 손실 설정값, 실제 skb drop, TCP 재전송은 서로 다른 값이며 어느 하나로 다른 값을 대신하지 않습니다.
 
-G005의 구현·고정 실행·오프라인 보고를 완료했습니다. 보존한 일곱 조건의 원자료를 최신 보고 도구로 다시 처리한 합계는 requested=started=100, success=97, timeout=3이며 attempt/connection 행도 각각 100개입니다. G006에서는 당시 57개 시험을 각각 20회, 총 1,140회 실행해 실패 없이 통과했습니다. G007의 순수 TLS netem 경로와 엄격한 원장 읽기까지 포함한 최신 58개 시험도 각각 20회, 총 1,160회 통과했고 24개 생산 번역 단위의 정적 검사와 독립 검토를 마쳤습니다. 이전 runner 시작 race 실패와 수정 근거는 [검증 기록](docs/validation.md)에 별도로 보존합니다.
+G005의 구현·고정 실행·오프라인 보고를 완료했습니다. 보존한 일곱 조건의 원자료를 최신 보고 도구로 다시 처리한 합계는 requested=started=100, success=97, timeout=3이며 attempt/connection 행도 각각 100개입니다. G006에서는 당시 57개 시험을 각각 20회, 총 1,140회 실행해 실패 없이 통과했습니다. G007의 순수 TLS netem 경로와 엄격한 원장 읽기까지 포함한 동결 트리도 58×20=1,160회 통과했습니다. M5 CLI 상호운용 시험을 더한 현재 트리는 70×20=1,400회 통과했고 24개 생산 번역 단위와 새 CLI 구동기의 정적 검사를 마쳤습니다. 이전 실패와 수정 근거는 [검증 기록](docs/validation.md)에 별도로 보존합니다.
 
 stock TLS의 Certificate 메시지는 그대로이며 실제 인증서 압축·생략·캐싱 연구 기법은 구현하지 않았습니다. 진단 실행에서 얻은 지연값은 기능 경로 확인용 데이터이며 성능 논문 결론이 아닙니다.
 
@@ -114,6 +114,8 @@ python3 scripts/run-study.py --build build --pki pki/default \
 ```
 
 자동 시험의 실제 연결은 로컬 TCP입니다. 모의 구현 시험과 실제 TLS 시험을 분리하고, 서버 인증·상호 인증, 시간·메모리 실행, 방향별 바이트 일치, 해독, 구간 합과 원자료 재계산을 확인합니다. 테스트 반복은 기능 검증이며 논문용 성능 표본이 아닙니다. WSL에서 개발 중 다른 작업과 함께 얻은 수치를 최종 성능 결론으로 쓰지 않습니다.
+
+수정하지 않은 `/usr/bin/openssl` 3.0.13의 `s_client`·`s_server`와도 공개 어댑터 API만으로 상호운용 시험을 수행했습니다. OpenSSL·wolfSSL·Mbed TLS 각각의 client/server와 서버 인증/상호 인증, 모두 12조건에서 TLS 1.3 인증과 암호화된 양방향 응용 바이트를 확인했습니다. 이 시험은 callback I/O 정상 경로의 기능 근거입니다. 공개 API에 `close_notify` 구동 함수가 없어 EOF 허용 옵션을 명시하므로 TLS shutdown alert의 완전성, native 경로 동등성이나 성능은 증명하지 않습니다.
 
 ## 지원하지 않는 것과 인계 문서
 

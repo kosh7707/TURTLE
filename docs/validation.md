@@ -88,7 +88,7 @@ python3 scripts/run-study.py --build build --pki pki/default \
 
 `results/validation-20261015-resume/`에 새 checkout 검사(`m0-clean-check.log`, `current-clean-check.log`), 단회 검사(`check-45.log`), 실패를 포함한 반복 검사(`check-45-repeat20.log`), 정적 검사(`static.log`), 실제 교차 다중 연결 원자료(`cross-multiple/`)를 보존했습니다.
 
-이번 환경에는 clang-format 실행 파일이 없어 자동 형식 검사는 다시 수행하지 못했습니다. sanitizer, 물리 리눅스 perf 정확도, M5의 외부 OpenSSL 명령과의 연결, M6의 패킷 캡처 비교도 이번 완료 범위가 아닙니다.
+이번 환경에는 clang-format 실행 파일이 없어 자동 형식 검사는 다시 수행하지 못했습니다. sanitizer와 물리 리눅스 perf 정확도는 이 초기 완료 범위가 아니었습니다. 당시 아직 하지 않았던 M5의 외부 OpenSSL 명령 연결은 뒤의 G009 절에서 별도로 완료했으며, M6 비교는 여전히 미완료입니다.
 
 ## 같은 날 추가 결정 — 암호군 고정
 
@@ -205,4 +205,46 @@ G001~G006의 요구 증거를 모두 확인해 검증 완료로 표시합니다.
 
 이 증거로 G007의 현재 범위를 검증 완료로 표시합니다. G006의 57×20=1,140회 성공과 G007의 58×20=1,160회 성공은 서로 다른 시점의 증거이며 합치거나 대체하지 않습니다.
 
-M13·M14의 N05는 이 후속 검증 때문에 다시 실행하지 않습니다. 기존 64/64 성공, qdisc drop 94, CA 재전송 58은 정확히 한 번 실행한 고정 증거이며 loss 조건 확대도 하지 않습니다. M5의 수정하지 않은 OpenSSL 명령행 양방향 연결, M6, M7 관측자 비교는 여전히 다음 단계입니다.
+M13·M14의 N05는 이 후속 검증 때문에 다시 실행하지 않습니다. 기존 64/64 성공, qdisc drop 94, CA 재전송 58은 정확히 한 번 실행한 고정 증거이며 loss 조건 확대도 하지 않습니다. G007 종료 시점에는 M5의 수정하지 않은 OpenSSL 명령행 양방향 연결, M6, M7 관측자 비교가 다음 단계였습니다.
+
+## G008 두 커밋 cutover
+
+G007 동결 뒤 작업 트리의 139개 경로를 책임과 검증 경계에 따라 두 커밋으로 나눴습니다. cutover 시점에는 추적할 제품·시험·문서 변경이 모두 두 커밋에 들어갔고 Git 작업 트리가 깨끗했습니다. 현재 보이는 시험 CMake 변경은 그 뒤 시작한 M5 작업이며 G008 누락이 아닙니다.
+
+| 커밋 | 범위와 독립 증거 |
+|---|---|
+| `cd2a5fa` | M0~M4 기반 계약을 고정했습니다. 격리한 후보에서 45개 시험을 각각 20회, 총 900회 통과했고 10개 부품 경계 검사를 통과했습니다. 이 커밋에는 정적 검사를 다시 실행하지 않았다는 `Not-tested` trailer를 그대로 남겼습니다. |
+| `3723056` | lookup·Mock CA·attempt 원장·netem·G007을 추가했습니다. 새로 동결한 최종 트리에서 58개 시험을 각각 20회, 총 1,160회 통과했고 11개 부품 경계 검사와 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했습니다. N05는 다시 실행하지 않았습니다. |
+
+두 커밋은 이유를 첫 줄에 쓰고 `Constraint`, `Rejected`, `Confidence`, `Scope-risk`, `Reversibility`, `Directive`, `Tested`, `Not-tested`를 필요한 범위에서 기록한 Lore 형식을 따릅니다. `/build*`, `/results/`, `/.deps/`, `/pki/`, `/.omx/` 같은 기존 실행 산출물에 더해 `/.omc/`, `/.omx-state-locks/`, `/.omx-state-locks.identity.json`을 무시해 런타임 상태를 제품 이력과 분리했습니다. 이 규칙은 증거를 삭제한다는 뜻이 아니라 결과 폴더와 커밋의 `Tested` trailer에서 검증 근거를 보존한다는 뜻입니다.
+
+G008을 완료로 표시합니다. 이 cutover 자체는 M5 외부 CLI 상호운용성, M6 native/callback 비교, M7 관측자 영향 검증의 성공 증거가 아닙니다. G008 cutover 시점에는 M5의 12조건을 아직 구현 중이었으며, 그 뒤의 완료 증거는 다음 절에 따로 기록합니다. M6·M7 계획은 승인됐지만 실행은 미뤘습니다.
+
+## G009/M5 수정하지 않은 OpenSSL CLI 최종 검증
+
+첫 구현은 활성 세 어댑터×client/server×서버 인증/상호 인증의 12개 CTest를 등록했고 실제 TLS 연결과 양방향 응용 바이트 교환까지 실행했습니다. 그러나 전체 70개 시험의 첫 반복 뒤 증거 감사를 하면서 Mbed TLS의 `api.name()` 값 `Mbed TLS`를 내부 분류 문자열 `mbedtls`와 대응하지 못한 문제를 찾았습니다. 그 결과 Mbed TLS의 group·signature·resumed·HelloRetryRequest 근거가 `unobserved`로 잘못 기록되고, 추론값의 선언 일관성 assertion도 실행되지 않았습니다.
+
+이 중간 원자료는 `results/m5-cli/preserved/`에 보존했습니다. `complete-runs/`의 12조건 모두 실제 TLS 1.3·AES-128-GCM, 기대한 서버/상호 인증, 양방향 응용 바이트, 실제 `/usr/bin/openssl`의 version/help/argv, 양쪽 프로세스 exit 0과 reap, timeout 없음과 빈 cleanup을 확인합니다. `selection.json`과 세 hash manifest는 선택한 36개 파일의 복사 전후 동일성을, `validation-summary.json`과 `validation.log`는 감사 결과를 남깁니다. 다만 Mbed TLS 네 조건의 잘못된 근거 분류 때문에 `all_negotiation_metadata_criteria_pass=false`입니다.
+
+이 첫 반복과 당시 정적 검사 결과는 최종 M5 증거가 아닙니다. 어댑터 표시 이름을 명시적인 근거 category에 대응시키고 각 category의 expected source를 회귀 시험하도록 수리했습니다. 수정하지 않은 CLI와 실제 TLS 교환이 성공했다는 사실만으로 metadata 계약의 누락을 덮지 않았으며, 아래의 새 12조건 원자료·전체 반복·정적 검사·독립 검토를 모두 완료 기준으로 사용했습니다. N05·netem·lookup은 이 작업에서 실행하지 않았습니다.
+
+수리한 구동기의 새 12조건 원자료 감사는 통과했습니다. `results/m5-cli/preserved/final-complete-runs/`에 조건별 세 파일, 모두 36개를 보존했고 `final-selection.json`, `final-selected-source-paths.txt`, 세 `final-*.sha256` manifest가 복사 전후 동일성을 확인합니다. `final-validation-summary.json`과 `final-validation.log`는 앞서 확인한 실행·인증·응용 바이트·프로세스·CLI provenance와 함께 협상 근거 표도 검사합니다. Mbed TLS 네 조건의 group·signature·resumed·HelloRetryRequest는 이제 모두 `inferred`이며 근거는 고정 configuration에 따른 추론이고 runtime query가 없다는 설명입니다. 이전 partial 원자료를 새 증거로 바꾸지 않고 별도 보존합니다.
+
+이 12조건 감사 자체의 `overall_g009_completion_claimed`는 의도대로 false입니다. 원자료 감사 한 가지가 전체 회귀·정적 검사와 독립 검토를 대신하지 않기 때문입니다.
+
+동결한 수리 코드의 최종 증거는 다음과 같습니다.
+
+| 증거 | 결과 |
+|---|---|
+| `results/m5-cli/check-final-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 70개 시험을 각각 20회, 총 **1,400회** 실행해 실패 0건으로 통과했습니다. 12개 CLI 조건도 각각 20회여서 모두 240회이며, 11개 부품 include 경계·순환 검사도 통과했습니다. |
+| `results/m5-cli/static-final.log` | 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했고 새 `tests/adapters/cli_endpoint.cpp`의 별도 clang-tidy도 exit 0이었습니다. |
+| `results/m5-cli/preserved/final-validation-summary.json` | 세 어댑터×두 역할×두 인증 방식의 12조건에서 실행·인증·응용 바이트·프로세스·CLI provenance와 협상 근거 표를 모두 통과했습니다. 36개 보존 파일의 hash도 일치했습니다. |
+| 독립 검토 | metadata/assertion 수리 뒤 코드를 승인했고, 최종 12조건 원자료를 다시 읽은 검토도 지적 없이 승인했습니다. |
+
+시험에 사용한 수정하지 않은 CLI는 `/usr/bin/openssl`의 OpenSSL 3.0.13입니다. 상대 어댑터는 OpenSSL 3.5.4, wolfSSL 5.8.2, Mbed TLS 3.6.4이며 모두 callback I/O를 사용했습니다. 각 조건은 TLS 1.3·`TLS_AES_128_GCM_SHA256`, 기대한 peer 인증서와 서버/상호 인증 결과, 두 방향의 고정 응용 문자열, 양쪽 exit 0과 reap, timeout 없음과 cleanup 신호 부재를 확인했습니다.
+
+협상 결과의 출처는 분리해서 기록합니다. 모든 어댑터의 version·cipher·peer certificate는 runtime 관측입니다. OpenSSL의 group·resumed·HelloRetryRequest는 관측하고 signature는 관측하지 못합니다. wolfSSL의 group·signature·resumed는 관측하고 HelloRetryRequest는 단일 허용 group에서 추론합니다. Mbed TLS의 group·signature·resumed·HelloRetryRequest는 고정 configuration에서 추론하며 runtime query라고 부르지 않습니다.
+
+공개 adapter v1에는 TLS `close_notify`를 구동하는 함수가 없습니다. 따라서 시험은 응용 교환 성공 뒤 connection을 닫고 CLI에 `-ignore_unexpected_eof`를 명시합니다. 이는 EOF 계약을 맞춘 것이며 정상 TLS shutdown alert를 검증했다는 뜻이 아닙니다. 이 시험은 WSL의 기능 상호운용성 근거이지 native/callback 동등성, 관측자 비용이나 성능 결론도 아닙니다.
+
+이 결합 증거로 G009/M5의 현재 범위를 완료로 표시합니다. N05·netem·lookup은 실행하지 않았습니다. M6·M7은 승인된 별도 계획만 있으며 아직 실행하지 않았습니다.

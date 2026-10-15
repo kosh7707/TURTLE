@@ -24,6 +24,25 @@ foreach(name openssl wolfssl mbedtls)
     list(APPEND adapters ${name})
   endif()
 endforeach()
+set(openssl_cli_evidence_root "${CMAKE_BINARY_DIR}/test-results/openssl-cli")
+foreach(adapter IN LISTS adapters)
+  foreach(role client server)
+    foreach(auth server mutual)
+      set(test_name openssl_cli_${adapter}_${role}_${auth})
+      add_test(NAME ${test_name} COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/openssl_cli.py"
+        --endpoint "$<TARGET_FILE:turtle_adapter_cli_endpoint>"
+        --openssl "${TURTLE_OPENSSL_PROGRAM}"
+        --adapter "$<TARGET_FILE:turtle_adapter_${adapter}>"
+        --pki "${test_pki}"
+        --role "${role}"
+        --auth "${auth}"
+        --output "${openssl_cli_evidence_root}")
+      set_tests_properties(${test_name} PROPERTIES
+        FIXTURES_REQUIRED local_pki TIMEOUT 30 LABELS integration)
+    endforeach()
+  endforeach()
+endforeach()
 if(TARGET turtle_adapter_openssl AND TARGET turtle-report AND TARGET turtle-interpret)
   add_test(NAME pure_tls_netem_actual COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/pure_tls_netem.py"

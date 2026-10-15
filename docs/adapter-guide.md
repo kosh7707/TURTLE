@@ -56,3 +56,19 @@ TLS나 성능 시험이 아니라 공개 계약의 저장·복원 동작을 확�
 공통 프로필의 모든 항목을 확인합니다. 무시한 옵션을 지원한다고 선언하지 않습니다. 조회하지 못한 협상값은 빈 값으로 남기고, 고정 허용 목록에서 추론한 값은 설명에 그 차이를 밝힙니다. 프로필의 `technique`는 현재 실험 설명용 메타데이터이며 임의 설정을 어댑터에 전달하는 별도 구성 API는 아닙니다. 추가 기법별 설정이 필요하면 공개 계약을 최소한으로 확장하고 버전·테스트·원자료도 함께 갱신합니다.
 
 새 어댑터는 먼저 단독 실제 TCP 핑퐁을 확인하고, 이어서 프레임워크의 기본 자원 제한·새 프로세스·원자료·해독 경로로 시험합니다. 단독 시험 통과만으로 전체 실행의 성공을 주장하지 않습니다.
+
+## 수정하지 않은 OpenSSL CLI와 상호운용 시험
+
+`turtle_adapter_cli_endpoint`는 `include/turtle/adapter.hpp`의 공개 API만 사용해 어댑터 한 역할을 구동합니다. 생산 director나 어댑터 내부 헤더를 사용하지 않습니다. 통합 시험은 이 구동기를 수정하지 않은 `/usr/bin/openssl` 3.0.13의 `s_client` 또는 `s_server`와 실제 loopback TCP로 연결합니다.
+
+```sh
+ctest --test-dir build-tests -N -R '^openssl_cli_'
+ctest --test-dir build-tests --output-on-failure \
+  -R '^openssl_cli_' --repeat until-fail:20 -j 4
+```
+
+활성 OpenSSL·wolfSSL·Mbed TLS 각각에 대해 TURTLE client/server와 서버 인증/상호 인증을 조합하므로 현재 전체는 12조건입니다. 모든 조건은 callback I/O, TLS 1.3, `TLS_AES_128_GCM_SHA256`, P-256 요청, 실제 인증서 검증과 양방향 응용 바이트를 확인합니다. 양 프로세스가 exit 0으로 끝나고 wait/reap됐는지도 별도로 검사합니다. CLI argv·version·help, stdout/stderr, 어댑터 결과와 cleanup 상태는 조건별 JSON에 남깁니다.
+
+협상 필드에는 값과 함께 `observed`, `inferred`, `unobserved` 출처를 기록합니다. OpenSSL 어댑터는 group·resumption·HelloRetryRequest를 동적으로 관측하지만 signature는 관측하지 못합니다. wolfSSL은 group·signature·resumption을 관측하고 HelloRetryRequest를 단일 허용 group에서 추론합니다. Mbed TLS의 group·signature·resumption·HelloRetryRequest는 고정 configuration에 따른 추론입니다. 추론값을 runtime 관측이라고 바꾸지 않습니다.
+
+adapter v1에는 TLS `close_notify` 함수가 없습니다. 응용 교환 뒤 객체와 소켓을 닫고 CLI에는 `-ignore_unexpected_eof`를 사용합니다. 따라서 이 시험은 정상 shutdown alert의 완전성을 검증하지 않습니다. 단독 상호운용 시험은 callback 정상 경로의 기능 증거이며 native 경로와의 동등성, director 계측, 패킷 관측이나 성능 결과를 대신하지 않습니다.
