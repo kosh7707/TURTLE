@@ -1,4 +1,5 @@
 #include "lifecycle/lifecycle.hpp"
+#include "model/run_config.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>

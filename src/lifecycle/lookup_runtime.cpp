@@ -1,7 +1,10 @@
 #include "lifecycle/lookup_runtime.hpp"
+#include "model/run_config.hpp"
+#include "model/sample.hpp"
+#include "model/service.hpp"
+#include "record/service.hpp"
 
 #include "capability/capability.hpp"
-#include "record/record.hpp"
 #include "transport/channel.hpp"
 #include "transport/tcp.hpp"
 

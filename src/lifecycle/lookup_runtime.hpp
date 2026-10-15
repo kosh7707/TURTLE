@@ -3,7 +3,6 @@
 #include "lifecycle/endpoint_protocol.hpp"
 #include "lookup/lookup.hpp"
 #include "measure/measure.hpp"
-#include "model/model.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +10,11 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace turtle::model {
+struct RunConfig;
+struct SampleInfo;
+}
 
 namespace turtle::lifecycle::detail {
 

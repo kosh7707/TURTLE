@@ -1,4 +1,5 @@
 #include "capability/capability.hpp"
+#include "model/run_config.hpp"
 
 #include <algorithm>
 #include <cassert>

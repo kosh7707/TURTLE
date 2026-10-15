@@ -1,4 +1,5 @@
 #include "model/model.hpp"
+#include "model/service.hpp"
 #include "model/build_info.hpp"
 
 #include <iomanip>

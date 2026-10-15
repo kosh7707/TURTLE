@@ -1,7 +1,7 @@
 #pragma once
 
 // Parse CLI/profile input before measurement; no TLS or instrumentation here.
-#include "model/model.hpp"
+#include "model/run_config.hpp"
 
 #include <string>
 

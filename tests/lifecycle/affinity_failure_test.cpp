@@ -1,4 +1,5 @@
 #include "capability/capability.hpp"
+#include "model/run_config.hpp"
 #include "lifecycle/lifecycle.hpp"
 
 #include <cerrno>

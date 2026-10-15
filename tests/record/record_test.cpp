@@ -1,4 +1,5 @@
 #include "record/record.hpp"
+#include "model/sample.hpp"
 #include <cassert>
 #include <cstdlib>
 #include <filesystem>

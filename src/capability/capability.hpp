@@ -7,6 +7,10 @@
 #include <string>
 #include <vector>
 
+namespace turtle::model {
+struct RunConfig;
+}
+
 namespace turtle::capability {
 
 model::Environment inspect_environment();

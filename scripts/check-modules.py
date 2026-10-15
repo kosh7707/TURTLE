@@ -16,12 +16,14 @@ def check(root):
     public = root / "include"
     adapters = root / "implementations"
     graph = {}
+    file_graph = {}
     errors = []
     for directory in (source, public, adapters):
         for path in sorted(directory.rglob("*")):
             if not path.is_file() or path.suffix not in EXTENSIONS:
                 continue
             relative = path.relative_to(root)
+            file_graph.setdefault(relative.as_posix(), set())
             origin = None
             if path.is_relative_to(source):
                 parts = path.relative_to(source).parts
@@ -45,6 +47,9 @@ def check(root):
                     parts = resolved.relative_to(source).parts
                     if len(parts) > 1 and parts[0] != origin:
                         graph[origin].add(parts[0])
+                if resolved is not None and resolved.is_relative_to(root):
+                    file_graph[relative.as_posix()].add(
+                        resolved.relative_to(root).as_posix())
     visited = set()
     active = []
 
@@ -62,6 +67,31 @@ def check(root):
 
     for module in sorted(graph):
         visit(module)
+
+    service_headers = {
+        "src/model/service.hpp",
+        "src/model/run_config.hpp",
+        "src/model/sample.hpp",
+    }
+    core_headers = {
+        "src/model/model.hpp",
+        "src/measure/measure.hpp",
+        "src/transport/channel.hpp",
+        "src/transport/tcp.hpp",
+        "src/record/record.hpp",
+    }
+    for origin in sorted(core_headers & file_graph.keys()):
+        pending = list(file_graph[origin])
+        reached = set()
+        while pending:
+            dependency = pending.pop()
+            if dependency in reached:
+                continue
+            reached.add(dependency)
+            pending.extend(file_graph.get(dependency, ()))
+        for forbidden in sorted(reached & service_headers):
+            errors.append(
+                f"{origin}: 서비스 조합 헤더를 간접 포함할 수 없습니다: {forbidden}")
     return errors, graph
 
 
@@ -76,7 +106,13 @@ def self_test():
 
         write("include/turtle/adapter.hpp", "#pragma once\n")
         write("src/model/model.hpp", '#include "turtle/adapter.hpp"\n')
+        write("src/model/service.hpp", '#include "model/model.hpp"\n')
+        write("src/model/run_config.hpp", '#include "model/service.hpp"\n')
+        write("src/model/sample.hpp", '#include "model/run_config.hpp"\n')
         write("src/measure/measure.hpp", '#include "model/model.hpp"\n')
+        write("src/transport/channel.hpp", '#include "model/model.hpp"\n')
+        write("src/transport/tcp.hpp", '#include "model/model.hpp"\n')
+        write("src/record/record.hpp", '#include "model/model.hpp"\n')
         write("implementations/example/a.cpp", '#include "turtle/adapter.hpp"\n')
         assert not check(root)[0]
         write("implementations/example/a.cpp", '#include "model/model.hpp"\n')
@@ -90,6 +126,10 @@ def self_test():
         write("src/model/model.hpp", '#include "measure/measure.hpp"\n')
         assert any("순환 의존" in error for error in check(root)[0])
         write("src/model/model.hpp", '// #include "measure/measure.hpp"\n')
+        assert not check(root)[0]
+        write("src/measure/measure.hpp", '#include "model/run_config.hpp"\n')
+        assert any("서비스 조합 헤더" in error for error in check(root)[0])
+        write("src/measure/measure.hpp", '#include "model/model.hpp"\n')
         assert not check(root)[0]
     print("PASS: 경계 검사 자체 시험")
 

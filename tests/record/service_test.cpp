@@ -1,4 +1,5 @@
 #include "record/record.hpp"
+#include "record/service.hpp"
 
 #include <cassert>
 #include <cstdlib>
