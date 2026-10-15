@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 
+from tls_transcript import validate_wire_hellos
+
 
 def run(*args):
     subprocess.run([str(arg) for arg in args], check=True, capture_output=True, text=True)
@@ -39,7 +41,12 @@ def validate_role(raw, mode, interpret):
         check(isinstance(socket["kernel_timestamps"], bool),
               "kernel timestamp state was not recorded")
         check(conn["negotiated"]["version"] == "TLS1.3", "wrong TLS version")
+        check(conn["negotiated"]["cipher"] == "TLS_AES_128_GCM_SHA256",
+              "wrong TLS cipher suite")
+        check(conn["negotiated"]["group"] == "secp256r1", "wrong TLS group")
         check(not conn["negotiated"]["resumed"], "full handshake was resumed")
+        check(not conn["negotiated"]["hello_retry_request"],
+              "adapter reported HelloRetryRequest")
         check(conn["application_verified"], "encrypted pingpong not verified")
     check(len(events) > 10, "missing measured boundaries")
     check(all(a["sequence"] < b["sequence"] for a, b in zip(events, events[1:])), "event order")
@@ -58,6 +65,16 @@ def validate_role(raw, mode, interpret):
             names = [message["name"] for message in messages]
             check("Finished" in names, "missing Finished")
             check("ApplicationData" in names, "missing application record")
+        index = connection["connection"]
+        prefix = raw.parent / raw.stem
+        sent = (prefix.parent / f"{prefix.name}.conn-{index}.sent.bin").read_bytes()
+        received = (prefix.parent / f"{prefix.name}.conn-{index}.received.bin").read_bytes()
+        client_stream, server_stream = ((sent, received) if header["role"] == "client"
+                                        else (received, sent))
+        validate_wire_hellos(
+            client_stream, server_stream,
+            f"{header['role']} capture connection {index}",
+        )
     return header["pid"]
 
 

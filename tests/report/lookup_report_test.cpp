@@ -41,6 +41,7 @@ Json ledger_summary(std::size_t requested, std::size_t started, std::size_t succ
 
 Json tls_header(std::uint64_t sample, bool valid = true) {
     return {{"type", "sample"}, {"schema", 1}, {"sample", sample}, {"batch", 1},
+            {"measurement_contract_revision", 1},
             {"role", "client"}, {"valid", valid}, {"profile_hash", "tls-profile"},
             {"environment_hash", "env"}, {"mode", "timing"}, {"pinned_cpu", 2},
             {"loaded_context_size", 0}, {"loaded_context_hash", ""},
@@ -316,10 +317,68 @@ int main() {
     const auto sample4 = root / "sample-4";
     assert(cold["condition_identity"]["client_endpoint"]["loaded_context"] ==
            Json({{"size", 0}, {"hash", ""}}));
+    assert(cold["condition_identity"]["client_endpoint"]
+               ["measurement_contract_revision"] == 1);
+    assert(cold["condition_identity"]["server_endpoint"]
+               ["measurement_contract_revision"] == 1);
     assert(cold["condition_identity"]["client_endpoint"]["measurement_controls"]
                ["channel_observer"] == true);
     assert(cold["condition_identity"]["server_endpoint"]["measurement_controls"]
                ["channel_observer"] == true);
+    std::filesystem::rename(provenance_path, saved_provenance_path);
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header.erase("measurement_contract_revision");
+    });
+    const auto legacy_client_contract =
+        turtle::report::summarize_lookup(root, root / "legacy-client-contract-report");
+    const auto& legacy_client_row = legacy_client_contract["joined_rows"][3];
+    assert(legacy_client_row["condition_identity"]["client_endpoint"]
+                            ["measurement_contract_revision"].is_null());
+    assert(legacy_client_row["automatic_comparison_eligible"] == false);
+    assert(legacy_client_row["descriptive_distribution_eligible"] == true);
+    assert(std::find(legacy_client_row["comparison_exclusion_reasons"].begin(),
+                     legacy_client_row["comparison_exclusion_reasons"].end(),
+                     "missing_identity:client_measurement_contract_revision_unknown") !=
+           legacy_client_row["comparison_exclusion_reasons"].end());
+    bool legacy_client_distribution_retained = false;
+    for (const auto& group : legacy_client_contract["condition_groups"])
+        for (const auto& reference : group["joined_rows"])
+            if (reference == 3)
+                legacy_client_distribution_retained =
+                    group["distributions"]["tls_elapsed_ns"]["count"] == 1;
+    assert(legacy_client_distribution_retained);
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["measurement_contract_revision"] = 1;
+    });
+    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
+        header.erase("measurement_contract_revision");
+    });
+    const auto legacy_server_contract =
+        turtle::report::summarize_lookup(root, root / "legacy-server-contract-report");
+    const auto& legacy_server_row = legacy_server_contract["joined_rows"][3];
+    assert(legacy_server_row["condition_identity"]["server_endpoint"]
+                            ["measurement_contract_revision"].is_null());
+    assert(legacy_server_row["automatic_comparison_eligible"] == false);
+    assert(std::find(legacy_server_row["comparison_exclusion_reasons"].begin(),
+                     legacy_server_row["comparison_exclusion_reasons"].end(),
+                     "missing_identity:server_measurement_contract_revision_unknown") !=
+           legacy_server_row["comparison_exclusion_reasons"].end());
+    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
+        header["measurement_contract_revision"] = 1;
+    });
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["measurement_contract_revision"] = 2;
+    });
+    const auto different_contract =
+        turtle::report::summarize_lookup(root, root / "different-contract-report");
+    assert(different_contract["joined_rows"][3]["condition_identity"] !=
+           cold["condition_identity"]);
+    assert(different_contract["joined_rows"][3]["condition_identity"]
+                             ["client_endpoint"]["measurement_contract_revision"] == 2);
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["measurement_contract_revision"] = 1;
+    });
+    std::filesystem::rename(saved_provenance_path, provenance_path);
     for (const auto* role : {"client", "server"})
         rewrite_header(sample4 / (std::string(role) + ".jsonl"), [](Json& header) {
             header["config"]["channel_observer"] = false;

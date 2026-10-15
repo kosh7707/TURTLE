@@ -92,6 +92,25 @@ keylog/plaintext, perf·시계 읽기가 남으므로 이 차이는 관측자 �
 환경은 같아야 합니다. 이 규칙은 측정하는 쪽의 구현을 바꾸면서 상대 엔드포인트를 고정한
 후보를 찾기 위한 것입니다.
 
+자동 비교하려는 두 그룹은 자기 역할끼리, 상대 역할끼리 측정 경계 계약이 같아야 합니다.
+하나의 연결 안에서 클라이언트와 서버 개정값을 서로 같게 만드는 규칙을 뜻하지 않습니다. 일반 보고서는 자기 역할의 값을
+`dimensions.measurement_contract_revision`, 상대 역할의 값을
+`dimensions.peer_measurement_contract_revision`에 남깁니다. 조회 보고서는
+`condition_identity.client_endpoint.measurement_contract_revision`과
+`condition_identity.server_endpoint.measurement_contract_revision`에 각각 남깁니다. 같은 명시적 개정값은
+다른 조건이 맞으면 기존 자동 비교 후보를 만들 수 있지만, 서로 다른 개정값은 하나의
+계약으로 정규화하지 않습니다.
+
+예전 원자료처럼 개정 필드가 없거나 값이 양의 정수가 아니면 해당 차원은 JSON `null`인 알 수 없음입니다.
+자기 역할이 알 수 없으면 `measurement_contract_revision_unknown`, 상대 역할이 알 수 없으면
+`peer_measurement_contract_revision_unknown`을 `comparison_exclusion_reasons`에 남기고 자동 비교에서만
+제외합니다. 이 판정은 지표 수용 조건이 아니므로 기존 성공 연결, 표본 수, 지표와 분포는
+계속 보고합니다. 조회 보고서에서는 클라이언트 계약을 알 수 없을 때
+`missing_identity:client_measurement_contract_revision_unknown`, 서버 계약을 알 수 없을 때
+`missing_identity:server_measurement_contract_revision_unknown`을 남깁니다. 이 경우
+`missing_identity:endpoint_identity_incomplete`도 함께 남지만 설명용 분포와 분모는 삭제하지
+않습니다.
+
 상대 엔드포인트가 고정되었는지는 같은 표본 폴더의 반대 역할 원자료 머리글로 확인합니다.
 두 머리글의 표본 번호, 묶음 번호, 프로필이 맞아야 합니다. 비교 조건에는 양쪽에 실제로
 고정된 CPU 번호와 상대 어댑터의 라이브러리 이름, 버전, 빌드 옵션, 유효 여부, 계측 지원

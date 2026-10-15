@@ -236,6 +236,7 @@ Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
     }
     return {{"type", "sample"},
             {"schema", model::record_schema},
+            {"measurement_contract_revision", model::measurement_contract_revision},
             {"sample", v.sample},
             {"batch", v.batch},
             {"role", model::name(v.role)},

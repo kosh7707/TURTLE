@@ -22,6 +22,10 @@
 
 `schema`, `sample`, `batch`, `role`, `pid`, `mode`, `valid`, `invalid_reason`, 프로필·환경 해시를 담습니다. `config`, `environment`, `capabilities`, `declaration`, `calibration`, `connections`에는 공통 값 구조의 모든 설정과 관측 결과를 보존합니다. 비밀 키 파일 경로는 설정의 일부이며 키 파일 내용 자체는 JSON에 넣지 않습니다.
 
+`measurement_contract_revision`은 원자료 형식과 별개로 측정 경계의 의미를 식별하는 최상위 선택 필드입니다. 양의 정수만 알려진 값으로 취급합니다. 새 원자료의 값 1은 세 어댑터의 키 공유 생성이 `open()`이 아닌 핸드셰이크 측정 구간에 들어간 계약입니다. 이 필드를 추가해도 `schema` 1은 바뀌지 않습니다.
+
+필드가 없거나 값이 유효하지 않은 예전 원자료도 계속 읽습니다. 이 경우 측정 계약은 `null`인 알 수 없음으로 남기며, 이미 관측한 성공 표본·지표·분포를 삭제하거나 0으로 바꾸지 않습니다. 다만 상대 엔드포인트를 포함해 같은 계약임을 확인할 수 없으므로 자동 비교에서는 제외합니다.
+
 `clock_start`, `clock_end`는 실제 시각과 단조 시각의 대응 관측입니다. `observation_level`, `incomplete`, `perf_complete`, 저장·복원한 상태 크기, 고정한 CPU도 남깁니다. 버퍼 공간이 부족하면 `capture_dropped`가 증가하고 표본은 무효로 저장됩니다. 넘친 데이터를 일부만 잘라 성공으로 표시하지 않습니다.
 
 `availability`는 `tls_stream`, `io_events`, `kernel_receive_events` 각각에 대해 `available` boolean과 `reason`을 가집니다. callback 경로의 stream·I/O는 available이며, native socket 경로는 세 항목 모두 `native_socket_io_not_observed` 이유로 unavailable입니다. callback에서도 kernel timestamp 설정을 준비하지 못했으면 `kernel_timestamps_not_configured`입니다. availability는 수집 통로의 지원·설정 상태이며 사건 발생 횟수가 아닙니다. 특히 `kernel_receive_events.available=true`만으로 실제 수신 timestamp가 있었다고 말하지 않습니다. `raw_timestamp_ns`가 있는 사건이 발생 증거입니다.

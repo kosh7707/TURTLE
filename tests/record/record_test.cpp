@@ -109,6 +109,9 @@ int main() {
     nlohmann::json sample, event;
     input >> sample >> event;
     assert(sample["sample"] == 7 && sample["valid"] == false);
+    assert(sample["schema"] == model::record_schema);
+    assert(sample["measurement_contract_revision"] ==
+           model::measurement_contract_revision);
     assert(sample["capture_dropped"] == 4);
     assert(sample["connections"][0].contains("socket"));
     assert(sample["connections"][0]["socket"].is_null());

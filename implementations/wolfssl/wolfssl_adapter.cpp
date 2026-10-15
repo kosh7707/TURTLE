@@ -220,7 +220,7 @@ Declaration declaration(const Context* base) {
         "SESSION_TICKET,TLS13_MIDDLEBOX_COMPAT,WOLFSSL_GETRANDOM; "
         "key log is sink-only (no file); "
         "version/cipher/group/signature/resumption are queried from wolfSSL; "
-        "hello_retry_request=false is inferred from the forced single P-256 key share";
+        "hello_retry_request=false is inferred from the forced single P-256 group";
     value.context_description =
         "full handshake only; session tickets disabled; HRR has no wolfSSL observation hook";
     value.callback_io = true;
@@ -292,9 +292,9 @@ Context* setup(Role role, const TlsConfig& config, const HostServices& services,
         set_setup_error(*context, "wolfSSL_CTX_set_cipher_list");
         return context;
     }
-    if (wolfSSL_CTX_UseSupportedCurve(context->ssl_context, WOLFSSL_ECC_SECP256R1) !=
-        WOLFSSL_SUCCESS) {
-        set_setup_error(*context, "wolfSSL_CTX_UseSupportedCurve");
+    int group = WOLFSSL_ECC_SECP256R1;
+    if (wolfSSL_CTX_set_groups(context->ssl_context, &group, 1) != WOLFSSL_SUCCESS) {
+        set_setup_error(*context, "wolfSSL_CTX_set_groups");
         return context;
     }
     if (wolfSSL_CTX_load_verify_locations(context->ssl_context, config.ca_file.c_str(), nullptr) !=
@@ -349,10 +349,6 @@ Connection* open(Context* base, const Io& io) {
     }
     wolfSSL_SetIOReadCtx(connection->ssl, connection);
     wolfSSL_SetIOWriteCtx(connection->ssl, connection);
-    if (wolfSSL_UseKeyShare(connection->ssl, WOLFSSL_ECC_SECP256R1) != WOLFSSL_SUCCESS) {
-        connection->last_error = "wolfSSL_UseKeyShare(secp256r1) failed";
-        return connection;
-    }
     if (context->role == Role::Client) {
         if (wolfSSL_check_domain_name(connection->ssl, context->config.server_name.c_str()) !=
             WOLFSSL_SUCCESS) {

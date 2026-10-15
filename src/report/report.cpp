@@ -7,6 +7,7 @@
 #include <numeric>
 #include <optional>
 #include <random>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -23,6 +24,17 @@ constexpr std::string_view common_elapsed =
     "handshake_call_begin_to_application_complete_elapsed_ns";
 constexpr std::string_view common_thread_cpu =
     "handshake_call_begin_to_application_complete_thread_cpu_ns";
+
+Json measurement_contract_revision(const Json& header) {
+    if (!header.contains("measurement_contract_revision"))
+        return nullptr;
+    const auto& value = header.at("measurement_contract_revision");
+    if (value.is_number_unsigned() && value.get<std::uint64_t>() > 0)
+        return value;
+    if (value.is_number_integer() && value.get<std::int64_t>() > 0)
+        return value;
+    return nullptr;
+}
 
 std::uint64_t time(const Json& event) {
     return event.at("monotonic_ns").get<std::uint64_t>();
@@ -748,6 +760,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         Json dimensions;
         std::map<std::string, std::vector<double>> metrics;
         std::map<std::uint64_t, std::vector<double>> batches;
+        std::set<std::string> comparison_exclusion_reasons;
         bool automatic_comparison_eligible = true;
     };
     std::map<std::string, Group> collected;
@@ -885,6 +898,9 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             continue;
         }
         const auto own_context = context_identity(header);
+        const auto own_measurement_contract = measurement_contract_revision(header);
+        const auto peer_measurement_contract =
+            peer.verified ? measurement_contract_revision(peer.header) : Json(nullptr);
         Json dimensions = {
             {"role", header.at("role")},
             {"profile_hash", header.at("profile_hash")},
@@ -902,6 +918,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             {"library", header.at("declaration").value("library", "")},
             {"library_version", header.at("declaration").value("version", "")},
             {"build_options", header.at("declaration").value("build_options", "")},
+            {"measurement_contract_revision", own_measurement_contract},
             {"run_controls", Json::object()},
             {"client_adapter", header.at("config").value("client_adapter", "")},
             {"server_adapter", header.at("config").value("server_adapter", "")},
@@ -920,6 +937,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
              peer.verified ? peer.header.at("declaration").value("version", "") : ""},
             {"peer_build_options",
              peer.verified ? peer.header.at("declaration").value("build_options", "") : ""},
+            {"peer_measurement_contract_revision", peer_measurement_contract},
             {"peer_capabilities",
              peer.verified ? peer.header.value("capabilities", Json::object()) : Json::object()},
             {"is_mock", header.at("declaration").value("is_mock", false)},
@@ -937,7 +955,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         // Lookup-specific cache/object identity remains in lookup-summary.json. Generic TLS
         // comparisons additionally require complete network evidence when a runner was used.
         dimensions["automatic_comparison_identity_complete"] =
-            !lookup_scenario && (!network_required || network.condition_identity.is_object());
+            !lookup_scenario && (!network_required || network.condition_identity.is_object()) &&
+            !own_measurement_contract.is_null() && !peer_measurement_contract.is_null();
         dimensions["run_controls"]["channel_observer"] = channel_observer_enabled(header);
         for (const char* control :
              {"perf", "kernel_timestamps", "isolate", "pin_cores", "tcp_nodelay",
@@ -950,10 +969,17 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             dimensions["connection"] = p.at("connection");
             auto& group = collected[dimensions.dump()];
             group.dimensions = dimensions;
+            if (own_measurement_contract.is_null())
+                group.comparison_exclusion_reasons.insert(
+                    "measurement_contract_revision_unknown");
+            if (peer_measurement_contract.is_null())
+                group.comparison_exclusion_reasons.insert(
+                    "peer_measurement_contract_revision_unknown");
             const bool metrics_admitted =
                 !network_required || network.integrity.value("eligible", false);
             group.automatic_comparison_eligible =
-                group.automatic_comparison_eligible && metrics_admitted;
+                group.automatic_comparison_eligible && metrics_admitted &&
+                !own_measurement_contract.is_null() && !peer_measurement_contract.is_null();
             const bool primary_available =
                 p.contains("primary_window") && p.at("primary_window").is_object() &&
                 p.at("primary_window").value("available", false) && p.contains("elapsed_ns") &&
@@ -1003,6 +1029,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         Json item = {{"dimensions", group.dimensions},
                      {"metrics", Json::object()},
                      {"batches", Json::array()},
+                     {"comparison_exclusion_reasons", group.comparison_exclusion_reasons},
                      {"automatic_comparison_eligible",
                       group.automatic_comparison_eligible}};
         for (const auto& [name, values] : group.metrics)

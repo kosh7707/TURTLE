@@ -269,6 +269,17 @@ bool tls_context_identity_complete(const Json& context) {
                      : !context.at("hash").get<std::string>().empty();
 }
 
+Json measurement_contract_revision(const Json& header) {
+    if (!header.contains("measurement_contract_revision"))
+        return nullptr;
+    const auto& value = header.at("measurement_contract_revision");
+    if (value.is_number_unsigned() && value.get<std::uint64_t>() > 0)
+        return value;
+    if (value.is_number_integer() && value.get<std::int64_t>() > 0)
+        return value;
+    return nullptr;
+}
+
 Json endpoint_identity(const std::optional<Json>& header, std::string_view role) {
     if (!header || !header->contains("config") || !header->at("config").is_object() ||
         !header->contains("declaration") || !header->at("declaration").is_object())
@@ -285,6 +296,7 @@ Json endpoint_identity(const std::optional<Json>& header, std::string_view role)
             {"library", declaration.value("library", Json(nullptr))},
             {"library_version", declaration.value("version", Json(nullptr))},
             {"build_options", declaration.value("build_options", Json(nullptr))},
+            {"measurement_contract_revision", measurement_contract_revision(*header)},
             {"environment_hash", header->value("environment_hash", Json(nullptr))},
             {"loaded_context", tls_context_identity(*header)},
             {"mode", header->value("mode", Json(nullptr))},
@@ -304,12 +316,18 @@ bool endpoint_identity_complete(const Json& endpoint) {
     if (!endpoint.is_object())
         return false;
     for (const char* field : {"adapter", "library", "library_version", "build_options",
-                              "environment_hash", "loaded_context", "mode",
+                              "measurement_contract_revision", "environment_hash",
+                              "loaded_context", "mode",
                               "measurement_controls", "support"})
         if (!endpoint.contains(field) || endpoint.at(field).is_null() ||
             (endpoint.at(field).is_string() && endpoint.at(field).get<std::string>().empty()))
             return false;
     if (!tls_context_identity_complete(endpoint.at("loaded_context")))
+        return false;
+    const auto& contract = endpoint.at("measurement_contract_revision");
+    if ((!contract.is_number_unsigned() && !contract.is_number_integer()) ||
+        (contract.is_number_unsigned() && contract.get<std::uint64_t>() == 0) ||
+        (contract.is_number_integer() && contract.get<std::int64_t>() <= 0))
         return false;
     for (const auto* object_name : {"measurement_controls", "support"})
         for (auto it = endpoint.at(object_name).begin(); it != endpoint.at(object_name).end(); ++it)
@@ -928,6 +946,14 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                 missing_identity.push_back("connection_policy_incomplete");
             if (!tcp_preparation_complete(identity.at("tcp_preparation")))
                 missing_identity.push_back("tcp_start_mss_missing");
+            if (identity.at("client_endpoint").is_object() &&
+                identity.at("client_endpoint").value("measurement_contract_revision",
+                                                       Json(nullptr)).is_null())
+                missing_identity.push_back("client_measurement_contract_revision_unknown");
+            if (identity.at("server_endpoint").is_object() &&
+                identity.at("server_endpoint").value("measurement_contract_revision",
+                                                       Json(nullptr)).is_null())
+                missing_identity.push_back("server_measurement_contract_revision_unknown");
             if (!endpoint_identity_complete(identity.at("client_endpoint")) ||
                 !endpoint_identity_complete(identity.at("server_endpoint")))
                 missing_identity.push_back("endpoint_identity_incomplete");

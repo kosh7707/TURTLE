@@ -13,6 +13,10 @@
 namespace turtle::model {
 
 inline constexpr unsigned record_schema = 1;
+// Identifies the measurement boundary semantics independently of the additive
+// raw record schema. Revision 1 includes TLS key-share generation in the
+// handshake measurement window for every adapter.
+inline constexpr unsigned measurement_contract_revision = 1;
 inline constexpr unsigned lookup_record_schema = 1;
 inline constexpr unsigned attempt_ledger_schema = 1;
 inline constexpr const char* framework_version = "0.1.0";

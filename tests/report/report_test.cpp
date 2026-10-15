@@ -284,6 +284,7 @@ int main() {
     events.insert(events.begin() + 2, kernel);
     assert(partition(header, events)[0]["elapsed_ns"] == 30);
     header.update({{"schema", 1},
+                   {"measurement_contract_revision", 1},
                    {"type", "sample"},
                    {"sample", 1},
                    {"batch", 1},
@@ -463,8 +464,13 @@ int main() {
                                const std::string& profile, const std::string& library,
                                std::uint64_t batch = 1, int peer_cpu = 8,
                                const std::string& peer_version = "peer-version",
-                               bool include_peer = true) {
+                               bool include_peer = true, int own_contract_revision = 1,
+                               int peer_contract_revision = 1) {
         auto candidate = header;
+        if (own_contract_revision > 0)
+            candidate["measurement_contract_revision"] = own_contract_revision;
+        else
+            candidate.erase("measurement_contract_revision");
         candidate["batch"] = batch;
         candidate["config"]["client_adapter"] = own_adapter;
         candidate["config"]["server_adapter"] = peer_adapter;
@@ -492,6 +498,10 @@ int main() {
             peer["declaration"]["library"] = "peer-library";
             peer["declaration"]["version"] = peer_version;
             peer["declaration"]["build_options"] = "peer-build";
+            if (peer_contract_revision > 0)
+                peer["measurement_contract_revision"] = peer_contract_revision;
+            else
+                peer.erase("measurement_contract_revision");
             std::ofstream(folder / "server.jsonl") << peer.dump() << '\n';
         }
     };
@@ -527,6 +537,43 @@ int main() {
            "exploratory_adapter_candidate_not_equivalence");
     assert(candidates["comparisons"][0]["eligibility"] ==
            "same_conditions_verified_fixed_peer_and_batch_ids_except_measured_adapter_identity");
+
+    const auto contract_dir = dir / "measurement-contract-candidates";
+    std::filesystem::create_directory(contract_dir);
+    write_candidate(contract_dir, "current-a", "current-a", "fixed-peer", "same-profile",
+                    "current-a");
+    write_candidate(contract_dir, "current-b", "current-b", "fixed-peer", "same-profile",
+                    "current-b");
+    write_candidate(contract_dir, "revision-two", "revision-two", "fixed-peer",
+                    "same-profile", "revision-two", 1, 8, "peer-version", true, 2, 1);
+    write_candidate(contract_dir, "peer-revision-two", "peer-revision-two", "fixed-peer",
+                    "same-profile", "peer-revision-two", 1, 8, "peer-version", true, 1, 2);
+    write_candidate(contract_dir, "legacy-own", "legacy-own", "fixed-peer", "same-profile",
+                    "legacy-own", 1, 8, "peer-version", true, 0, 1);
+    write_candidate(contract_dir, "legacy-peer", "legacy-peer", "fixed-peer", "same-profile",
+                    "legacy-peer", 1, 8, "peer-version", true, 1, 0);
+    const auto contracts = summarize(contract_dir, dir / "measurement-contract-report");
+    assert(contracts["groups"].size() == 6);
+    assert(contracts["comparisons"].size() == 1);
+    for (const auto& group : contracts["groups"]) {
+        const auto adapter = group["dimensions"]["client_adapter"].get<std::string>();
+        assert(group["metrics"]["elapsed_ns"]["count"] == 1);
+        if (adapter == "legacy-own") {
+            assert(group["dimensions"]["measurement_contract_revision"].is_null());
+            assert(group["automatic_comparison_eligible"] == false);
+            assert(std::find(group["comparison_exclusion_reasons"].begin(),
+                             group["comparison_exclusion_reasons"].end(),
+                             "measurement_contract_revision_unknown") !=
+                   group["comparison_exclusion_reasons"].end());
+        } else if (adapter == "legacy-peer") {
+            assert(group["dimensions"]["peer_measurement_contract_revision"].is_null());
+            assert(group["automatic_comparison_eligible"] == false);
+            assert(std::find(group["comparison_exclusion_reasons"].begin(),
+                             group["comparison_exclusion_reasons"].end(),
+                             "peer_measurement_contract_revision_unknown") !=
+                   group["comparison_exclusion_reasons"].end());
+        }
+    }
 
     const auto disjoint_dir = dir / "disjoint-batches";
     std::filesystem::create_directory(disjoint_dir);

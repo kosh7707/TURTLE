@@ -335,3 +335,34 @@ offline 최종 감사는 pure TLS 8개 역할·4그룹, M6 native availability, 
 수리 전 전체 반복·정적 검사 로그는 `check-before-phase-completeness-repeat20.log`, `static-before-phase-completeness.log`, `check-before-noqueue-compat-repeat20.log`, `static-before-noqueue-compat.log`로 이름을 바꿔 최종 증거와 구별했습니다. G008의 두 독립 커밋 증거도 `results/final-followup/commit-proof/`에 복사해 45×20 기반과 58×20 후속 경계를 보존했습니다. 사용자 제공 PDF와 `Zone.Identifier`는 읽거나 수정하지 않았고 계속 untracked 상태입니다.
 
 이 결합 증거로 bounded G012/G013 최종 검증과 현재 사용자 후속 요구, M5·M6·M7 범위를 완료로 표시합니다. 문서 동결 뒤 milestone commit과 goal metadata 정리는 리더가 수행합니다. M10의 eBPF/완전한 계측 정확도 대조와 M12의 실제 인증서 압축·생략·캐싱 기법·원 논문 재현은 구현하지 않은 미래 범위이며 이번 완료 주장에 포함하지 않습니다.
+
+## D1 키 공유 경계의 수정 전후 검증
+
+D1을 바꾸기 전 `ab7099b8382a2bd237f856a9bbeb8f601e6a870b`에서 세 라이브러리의 자기 연결을 각각 한 번 실행했습니다. 모두 `examples/profiles/server-auth.json`, `pki/default`, 고정하지 않은 CPU, 측정 연결 하나, 준비 연결 0개였으며 조회·모의 인증 기관·격리 네트워크는 사용하지 않았습니다.
+
+`results/review-20261015/G002/before/timeline.json`과 `README.md`는 열기, 첫 핸드셰이크 호출에서 첫 전송 시작, 서버의 첫 성공 수신에서 첫 전송 시작 경계를 보존합니다. 열기 경과 시간은 클라이언트/서버 순으로 OpenSSL 25,748/20,791나노초, wolfSSL 315,261/296,166나노초, Mbed TLS 13,025/17,506나노초였습니다. 이 값은 WSL의 단일 표본 구조 진단이며 라이브러리 성능 비교가 아닙니다. 시간 크기만으로 wolfSSL의 열기 작업이 키 생성임을 판정하지 않습니다.
+
+복호화한 바이트를 직접 해석한 결과, 세 연결 모두 ClientHello와 ServerHello가 각각 하나였습니다. ServerHello의 임의값은 HelloRetryRequest 고정값이 아니었고, 양쪽 `key_share`는 P-256 그룹 `0x0017`의 65바이트 비압축 점이었습니다. 이 근거는 어댑터의 HelloRetryRequest 선언값에만 의존하지 않습니다.
+
+수정 전 캡처 자체의 검증은 `results/review-20261015/G002/before/validation/validation.json`에서 통과했습니다. 단회 `scripts/check.sh`는 73/73 시험과 11개 부품 포함 경계 검사를 통과했고, 전체 산출물 대응표 `artifact-manifest.sha256`의 SHA-256은 `df070afae31b62ab309c384d9b2cfb2e68328ccbf652feee1bc9d2651a681189`입니다. 개별 CTest 실행 파일의 해시는 구현 인계 전에 따로 보존하지 못했습니다.
+
+
+### 수정 뒤 직접 확인
+
+수정 뒤에도 같은 프로필·자격 증명·표본 수·사건 정의로 세 라이브러리의 자기 연결을 다시 실행했습니다. `results/review-20261015/G002/after/provenance.json`의 클라이언트와 서버 여섯 역할은 모두 TLS 1.3 전체 핸드셰이크, 서버 인증, 응용 데이터 왕복을 마쳤습니다. 여섯 원자료의 `measurement_contract_revision`은 모두 1이고, 보고서의 여섯 그룹은 자기·상대 개정값 1을 보존했으며 무효 표본은 없었습니다.
+
+`after/wire-validation.json`은 세 연결의 실제 Hello 바이트에서 ClientHello·ServerHello 각각 하나, P-256 키 공유 하나, HelloRetryRequest 고정 임의값 부재, 양쪽 `pre_shared_key` 확장 부재를 확인했습니다. 어댑터 상태 선언은 보조 근거로만 사용했습니다. 같은 검사를 적용한 세 어댑터의 3×3 실제 연결도 `transcript-tests/full-handshake-matrix.log`에서 통과했습니다.
+
+wolfSSL 어댑터 소스에서 `open()`의 `wolfSSL_UseKeyShare`가 사라졌고, 설정은 `wolfSSL_CTX_set_groups`로 P-256 그룹 목록만 고정합니다. 고정한 wolfSSL 5.8.2 소스의 정상 비-PSK 서버 경로는 `tls13.c:7124-7132` 의 `MatchSuite`에서 `internal.c:37661-37666` 의 `TLSX_KeyShare_Setup`을 거쳐 `tls.c:11211-11224` 의 `TLSX_KeyShare_GenKey`로 이어집니다. 이 경로는 ClientHello 처리 안에 있으므로 서버 키 생성은 첫 성공 수신 뒤입니다. PSK 분기인 `Establish`만을 정상 경로의 근거로 삼지 않았습니다. 이 근거는 호출 경로의 위치를 확인하지만 스칼라 생성의 개별 명령 위치나 내부 비용을 계측한 것은 아닙니다.
+
+수정 전·후에 동일한 추출기를 사용한 `after/before-after-diagnostic.json`에서 wolfSSL 열기 경과 시간은 클라이언트 315,261→19,406나노초, 서버 296,166→12,721나노초였습니다. 클라이언트의 첫 핸드셰이크 호출→첫 전송은 13,621→328,403나노초, 서버의 첫 성공 수신→첫 전송은 17,706→306,513나노초였습니다. 이 한 번의 WSL 값은 작업 형태가 열기에서 핸드셰이크 쪽으로 옮겨갔다는 구조 진단일 뿐입니다. 시간 임계값을 통과 조건으로 쓰지 않았고, 성능 향상이나 라이브러리 순위를 주장하지 않습니다.
+
+최종 검증 근거는 `results/review-20261015/G002/validation/validation-summary.json`에 모았습니다. 이 파일의 SHA-256은 `0bd57cf1d610335623d8b849ae8ee1762c324872b8f5bd6b76315db8e95976d4`이고, 별도 기계 판독 결과 `validation-verdict.json`은 모든 항목을 통과했습니다.
+
+| 근거 | 직접 확인한 내용 |
+|---|---|
+| `validation/logs/check-repeat20-final.log` | 세 실제 어댑터를 포함한 73개 시험을 각각 20회, 총 1,460회 실행해 실패·건너뜀 없이 통과했고 11개 부품 포함 경계 검사도 통과했습니다. SHA-256은 `5116a3d20d04bceb0231fd18313ebfd0016f7572c39e8e174108c2161a0268fd`입니다. |
+| `validation/logs/static-all.log` | 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했습니다. SHA-256은 `05755ff03df06db5e7d6b98e2957d05eda5d55a07ec1504640964c3f2e39d9ea`입니다. |
+| `offline/audit.json` | 다섯 보존 원자료를 같은 후보 보고기로 각각 두 번 재생했고 각 `summary.json`이 바이트 단위로 같았습니다. 원자료 해시와 기존 표본·지표·분포·연결·시도·미계측 상태는 보존되고, 계약 필드와 자동 비교 제외만 의도대로 달라졌습니다. SHA-256은 `24eb6a3ce17ecd7ad1b7d74dbef5afd114dadd3140fb2800053354c0917d38cb`입니다. |
+
+N05는 보존 원자료를 오프라인으로 읽었을 뿐 네트워크·손실·`netem` 실험을 다시 실행하지 않았습니다. 반환 스트림 복사 비용의 귀속은 이 D1의 변경 대상이 아니며, 후속 D2 개정 전까지 현재 한계로 남습니다.
