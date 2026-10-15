@@ -149,6 +149,7 @@ struct RunConfig {
     int socket_send_buffer = 65536;
     int socket_receive_buffer = 65536;
     bool kernel_timestamps = true;
+    bool channel_observer = true;
     bool perf = true;
     bool isolate = true;
     bool pin_cores = true;

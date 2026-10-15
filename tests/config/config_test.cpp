@@ -61,6 +61,16 @@ int main() {
                 "capabilities action");
         require(parse({"turtle", "run"}).run.connections == 1,
                 "default connection count changed");
+        require(parse({"turtle", "run"}).run.channel_observer,
+                "channel observer default must remain enabled");
+        const auto observer_path = (dir / "observer-profile.json").string();
+        std::ofstream(observer_path)
+            << R"({"measurement":{"channel_observer":false}})";
+        const auto observer_off = parse({"turtle", "run", "--profile", observer_path}).run;
+        require(!observer_off.channel_observer,
+                "measurement.channel_observer=false was not applied");
+        require(observer_off.profile_hash == parse({"turtle", "run"}).run.profile_hash,
+                "observer execution setting must not fragment TLS profile identity");
         require(parse({"turtle", "run", "--warmups", "1024", "--connections", "1"})
                         .run.connections == 1,
                 "maximum combined connection count was rejected");

@@ -153,10 +153,26 @@ int main() {
         {"availability", {{"tls_stream", {{"available", false},
                                              {"reason", "native_socket_io_not_observed"}}}}}};
     check_unavailable("client", native, "native_socket_io_not_observed");
+    auto observer_off = native;
+    observer_off["availability"]["tls_stream"]["reason"] =
+        "channel_observer_disabled";
+    observer_off["observation_level"] = "observer-disabled";
+    observer_off["config"] = { {"channel_observer", false},
+                                {"tls", {{"framework_io", true}}} };
+    check_unavailable("observer-off", observer_off, "channel_observer_disabled");
+    observer_off.erase("availability");
+    check_unavailable("observer-off-without-availability", observer_off,
+                      "channel_observer_disabled");
+    observer_off.erase("config");
+    check_unavailable("observer-off-marker-only", observer_off,
+                      "channel_observer_disabled");
     native.erase("availability");
     native["observation_level"] = "library-only";
     native["config"] = {{"tls", {{"framework_io", false}}}};
     check_unavailable("legacy", native, "legacy_native_socket_io_not_observed");
+    native["config"]["channel_observer"] = false;
+    check_unavailable("legacy-native-observer-off", native,
+                      "legacy_native_socket_io_not_observed");
     std::filesystem::remove_all(dir);
     std::cout << "real TLS 1.3 decryption and callback comparison passed\n";
 }

@@ -130,6 +130,23 @@ int main() {
         auto got = receiver.recv(receiver.context, received.data(), received.size());
         require(got.status == turtle::IoStatus::Ok && got.bytes == 4 && data == received);
         require(state.entered == 2 && state.returned == 2 && state.bytes == 4);
+        Observation reverse_state;
+        turtle::transport::Channel observed_send{server, &reverse_state, observe},
+            unobserved_recv{client};
+        auto reverse_sender = observed_send.io();
+        auto reverse_receiver = unobserved_recv.io();
+        received.fill(0);
+        empty = reverse_receiver.recv(reverse_receiver.context, received.data(), received.size());
+        require(empty.status == turtle::IoStatus::WantRead && empty.bytes == 0);
+        sent = reverse_sender.send(reverse_sender.context, data.data(), data.size());
+        require(sent.status == turtle::IoStatus::Ok && sent.bytes == data.size());
+        turtle::control::wait(client, false,
+                              std::chrono::steady_clock::now() + std::chrono::seconds(1));
+        got = reverse_receiver.recv(reverse_receiver.context, received.data(), received.size());
+        require(got.status == turtle::IoStatus::Ok && got.bytes == data.size() &&
+                received == data);
+        require(reverse_state.entered == 1 && reverse_state.returned == 1 &&
+                reverse_state.bytes == data.size());
         const auto tcp_end = turtle::tcp::read_tcp_info(server);
         require(tcp_end.structure_bytes > 0 && tcp_end.state.has_value());
         const auto client_end = turtle::tcp::read_tcp_info(client);

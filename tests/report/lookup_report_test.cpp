@@ -316,6 +316,25 @@ int main() {
     const auto sample4 = root / "sample-4";
     assert(cold["condition_identity"]["client_endpoint"]["loaded_context"] ==
            Json({{"size", 0}, {"hash", ""}}));
+    assert(cold["condition_identity"]["client_endpoint"]["measurement_controls"]
+               ["channel_observer"] == true);
+    assert(cold["condition_identity"]["server_endpoint"]["measurement_controls"]
+               ["channel_observer"] == true);
+    for (const auto* role : {"client", "server"})
+        rewrite_header(sample4 / (std::string(role) + ".jsonl"), [](Json& header) {
+            header["config"]["channel_observer"] = false;
+        });
+    const auto observer_off =
+        turtle::report::summarize_lookup(root, root / "observer-off-report");
+    assert(observer_off["joined_rows"][3]["condition_identity"] != cold["condition_identity"]);
+    assert(observer_off["joined_rows"][3]["condition_identity"]["client_endpoint"]
+                       ["measurement_controls"]["channel_observer"] == false);
+    assert(observer_off["joined_rows"][3]["condition_identity"]["server_endpoint"]
+                       ["measurement_controls"]["channel_observer"] == false);
+    for (const auto* role : {"client", "server"})
+        rewrite_header(sample4 / (std::string(role) + ".jsonl"), [](Json& header) {
+            header["config"].erase("channel_observer");
+        });
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
         header["loaded_context_size"] = 8;
         header["loaded_context_hash"] = "context-a";

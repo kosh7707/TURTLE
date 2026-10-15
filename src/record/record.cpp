@@ -119,6 +119,7 @@ Json config_json(const model::RunConfig& v) {
             {"socket_send_buffer", v.socket_send_buffer},
             {"socket_receive_buffer", v.socket_receive_buffer},
             {"kernel_timestamps", v.kernel_timestamps},
+            {"channel_observer", v.channel_observer},
             {"perf", v.perf},
             {"isolate", v.isolate},
             {"pin_cores", v.pin_cores},

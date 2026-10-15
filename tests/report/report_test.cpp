@@ -95,6 +95,174 @@ int main() {
     assert(unverified_part["valid"] == false);
     unverified_application["connections"][0].erase("application_verified");
     assert(partition(unverified_application, events)[0]["valid"] == false);
+
+    auto common_header = header;
+    common_header["config"] = {{"tls", {{"application_bytes", 4}}},
+                               {"channel_observer", true}};
+    auto common_events = [](std::string role, bool observer) {
+        J rows = J::array({
+            {{"kind", "CALL_BEGIN"}, {"call", "handshake"}, {"sequence", 1},
+             {"monotonic_ns", 100}, {"thread_cpu_ns", 10},
+             {"location", "implementation_boundary"}, {"connection", 0}},
+        });
+        if (observer) {
+            rows.push_back({{"kind", "IO_RECV_ENTER"}, {"call", "handshake"},
+                            {"sequence", 2}, {"monotonic_ns", 120},
+                            {"thread_cpu_ns", 20}, {"location", "framework"},
+                            {"connection", 0}});
+            rows.push_back({{"kind", "IO_RECV_RETURN"}, {"call", "handshake"},
+                            {"sequence", 3}, {"monotonic_ns", 130},
+                            {"thread_cpu_ns", 25}, {"transferred", 1},
+                            {"location", "framework"}, {"connection", 0}});
+        }
+        rows.push_back({{"kind", "CALL_END"}, {"call", "handshake"}, {"sequence", 4},
+                        {"monotonic_ns", 140}, {"thread_cpu_ns", 30}, {"result", 2},
+                        {"location", "implementation_boundary"}, {"connection", 0}});
+        const auto target = role == "client" ? "app_recv" : "app_send";
+        rows.push_back({{"kind", "CALL_BEGIN"}, {"call", target}, {"sequence", 5},
+                        {"monotonic_ns", role == "client" ? 350 : 450},
+                        {"thread_cpu_ns", 40}, {"location", "implementation_boundary"},
+                        {"connection", 0}});
+        rows.push_back({{"kind", "CALL_END"}, {"call", target}, {"sequence", 6},
+                        {"monotonic_ns", role == "client" ? 400 : 500},
+                        {"thread_cpu_ns", role == "client" ? 70 : 90}, {"result", 2},
+                        {"transferred", 4}, {"location", "implementation_boundary"},
+                        {"connection", 0}});
+        return rows.get<std::vector<J>>();
+    };
+    for (bool observer : {true, false}) {
+        common_header["config"]["channel_observer"] = observer;
+        if (observer)
+            common_header.erase("availability");
+        else
+            common_header["availability"] = {
+                {"io_events", {{"available", false},
+                               {"reason", "channel_observer_disabled"}}}};
+        const auto common_part = partition(common_header, common_events("client", observer))[0];
+        const auto common_client =
+            common_part["handshake_call_begin_to_application_complete"];
+        assert(common_client["available"] == true && common_client["elapsed_ns"] == 300);
+        assert(common_client["thread_cpu_ns"] == 60 &&
+               common_client["thread_cpu_reason"].is_null());
+        assert(common_client["start_event_sequence"] == 1 &&
+               common_client["end_event_sequence"] == 6);
+        if (!observer)
+            assert(common_part["io_ns"].is_null() && common_part["computation_ns"].is_null());
+    }
+    common_header.erase("availability");
+    const auto stripped_off_client =
+        partition(common_header, common_events("client", false))[0];
+    assert(stripped_off_client["valid"] == true && stripped_off_client["elapsed_ns"] == 300);
+    assert(stripped_off_client["io_breakdown"]["available"] == false &&
+           stripped_off_client["io_breakdown"]["reason"] == "io_events_not_observed");
+    assert(stripped_off_client["io_ns"].is_null() &&
+           stripped_off_client["computation_ns"].is_null());
+    assert(stripped_off_client["handshake_call_begin_to_application_complete"]["available"] ==
+           true);
+    auto common_server_header = common_header;
+    common_server_header["role"] = "server";
+    common_server_header["config"]["channel_observer"] = true;
+    auto common_server_on = partition(common_server_header, common_events("server", true))[0];
+    assert(common_server_on["elapsed_ns"] == 370);
+    assert(common_server_on["handshake_call_begin_to_application_complete"]["elapsed_ns"] ==
+           400);
+    common_server_header["config"]["channel_observer"] = false;
+    common_server_header["availability"] = {
+        {"io_events", {{"available", false}, {"reason", "channel_observer_disabled"}}}};
+    common_server_header["connections"][0]["primary_window"] = {
+        {"available", false}, {"reason", "server_first_receive_not_observed"}};
+    auto common_server_off = partition(common_server_header, common_events("server", false))[0];
+    assert(!common_server_off.contains("elapsed_ns"));
+    assert(common_server_off["handshake_call_begin_to_application_complete"]["available"] == true);
+    assert(common_server_off["handshake_call_begin_to_application_complete"]["elapsed_ns"] ==
+           400);
+    auto stripped_off_server = common_server_header;
+    stripped_off_server.erase("availability");
+    stripped_off_server["connections"][0].erase("primary_window");
+    stripped_off_server["config"].erase("channel_observer");
+    stripped_off_server["observation_level"] = "observer-disabled";
+    const auto stripped_server_part =
+        partition(stripped_off_server, common_events("server", false))[0];
+    assert(stripped_server_part["valid"] == true);
+    assert(stripped_server_part["primary_window"]["available"] == false &&
+           stripped_server_part["reason"] == "server_first_receive_not_observed");
+    assert(!stripped_server_part.contains("elapsed_ns"));
+    assert(stripped_server_part["io_breakdown"]["reason"] == "io_events_not_observed");
+    assert(stripped_server_part["handshake_call_begin_to_application_complete"]["available"] ==
+           true);
+    assert(stripped_server_part["handshake_call_begin_to_application_complete"]["elapsed_ns"] ==
+           400);
+
+    auto progress_events = common_events("client", false);
+    progress_events.pop_back();
+    progress_events.pop_back();
+    auto append_progress = [&](int sequence, int timestamp, const char* kind, int result,
+                               int transferred) {
+        progress_events.push_back({{"kind", kind}, {"call", "app_recv"},
+                                   {"sequence", sequence}, {"monotonic_ns", timestamp},
+                                   {"thread_cpu_ns", timestamp / 10}, {"result", result},
+                                   {"transferred", transferred},
+                                   {"location", "implementation_boundary"},
+                                   {"connection", 0}});
+    };
+    append_progress(5, 200, "CALL_BEGIN", 0, 0);
+    append_progress(6, 210, "CALL_END", 0, 0);
+    append_progress(7, 250, "CALL_BEGIN", 0, 0);
+    append_progress(8, 300, "CALL_END", 2, 1);
+    append_progress(9, 350, "CALL_BEGIN", 0, 0);
+    append_progress(10, 400, "CALL_END", 2, 3);
+    auto progress = partition(common_header, progress_events)[0]
+                        ["handshake_call_begin_to_application_complete"];
+    assert(progress["available"] == true && progress["elapsed_ns"] == 300 &&
+           progress["end_event_sequence"] == 10);
+    auto missing_cpu = progress_events;
+    missing_cpu.back()["thread_cpu_ns"] = nullptr;
+    auto elapsed_without_cpu = partition(common_header, missing_cpu)[0]
+                                   ["handshake_call_begin_to_application_complete"];
+    assert(elapsed_without_cpu["available"] == true && elapsed_without_cpu["elapsed_ns"] == 300);
+    assert(elapsed_without_cpu["thread_cpu_ns"].is_null() &&
+           elapsed_without_cpu["thread_cpu_reason"] == "thread_cpu_snapshot_missing");
+    auto cpu_regression = progress_events;
+    cpu_regression.back()["thread_cpu_ns"] = 1;
+    const auto elapsed_with_cpu_regression =
+        partition(common_header, cpu_regression)[0]
+                 ["handshake_call_begin_to_application_complete"];
+    assert(elapsed_with_cpu_regression["available"] == true &&
+           elapsed_with_cpu_regression["elapsed_ns"] == 300 &&
+           elapsed_with_cpu_regression["thread_cpu_ns"].is_null() &&
+           elapsed_with_cpu_regression["thread_cpu_reason"] == "thread_cpu_regression");
+    auto time_regression = progress_events;
+    time_regression.back()["monotonic_ns"] = 99;
+    assert(partition(common_header, time_regression)[0]
+               ["handshake_call_begin_to_application_complete"]["reason"] ==
+           "boundary_event_order_or_time_regression");
+    auto sequence_regression = progress_events;
+    sequence_regression.back()["sequence"] = 1;
+    assert(partition(common_header, sequence_regression)[0]
+               ["handshake_call_begin_to_application_complete"]["available"] == false);
+    auto incomplete_progress = progress_events;
+    incomplete_progress.back()["transferred"] = 2;
+    assert(partition(common_header, incomplete_progress)[0]
+               ["handshake_call_begin_to_application_complete"]["reason"] ==
+           "application_completion_missing");
+    auto unverified_common = common_header;
+    unverified_common["connections"][0]["application_verified"] = false;
+    assert(partition(unverified_common, progress_events)[0]
+               ["handshake_call_begin_to_application_complete"]["reason"] ==
+           "application_not_verified");
+    auto isolated_connections = common_header;
+    isolated_connections["connections"].push_back(
+        {{"index", 1}, {"warmup", true}, {"application_verified", true}});
+    auto foreign_events = progress_events;
+    for (auto& event : foreign_events) {
+        event["connection"] = 1;
+        event["monotonic_ns"] = event["monotonic_ns"].get<int>() + 10000;
+    }
+    auto mixed_events = progress_events;
+    mixed_events.insert(mixed_events.end(), foreign_events.begin(), foreign_events.end());
+    const auto isolated = partition(isolated_connections, mixed_events);
+    assert(isolated.size() == 1);
+    assert(isolated[0]["handshake_call_begin_to_application_complete"]["elapsed_ns"] == 300);
     for (auto& e : events) {
         e["thread_cpu_ns"] = e["monotonic_ns"];
         e["cycles"] = 2 * e["monotonic_ns"].get<unsigned>();
@@ -133,6 +301,8 @@ int main() {
         unavailable["role"] = "server";
         unavailable["observation_level"] = "library-only";
         unavailable["config"]["tls"] = {{"framework_io", false}};
+        unavailable["config"]["tls"]["application_bytes"] = 4;
+        unavailable["config"]["channel_observer"] = false;
         unavailable["config"]["server_adapter"] = adapter;
         unavailable["declaration"]["library"] = adapter;
         unavailable["connections"][0]["application_verified"] = true;
@@ -140,16 +310,33 @@ int main() {
             {"available", false}, {"reason", "server_first_receive_not_observed"}};
         const auto folder = unavailable_dir / adapter;
         std::filesystem::create_directories(folder);
-        std::ofstream(folder / "server.jsonl") << unavailable.dump() << '\n';
+        std::ofstream raw(folder / "server.jsonl");
+        raw << unavailable.dump() << '\n';
+        auto unavailable_events = common_events("server", false);
+        if (std::string(adapter) == "native-b")
+            unavailable_events.back()["thread_cpu_ns"] = nullptr;
+        for (const auto& event : unavailable_events)
+            raw << event.dump() << '\n';
     }
     const auto unavailable_report = summarize(unavailable_dir, dir / "unavailable-report");
     assert(unavailable_report["invalid_samples"] == 0);
     assert(unavailable_report["groups"].size() == 2);
     assert(unavailable_report["comparisons"].empty());
     for (const auto& group : unavailable_report["groups"]) {
-        assert(group["metrics"].empty());
+        assert(group["metrics"]["handshake_call_begin_to_application_complete_elapsed_ns"]
+                           ["count"] == 1);
+        if (group["dimensions"]["library"] == "native-a")
+            assert(group["metrics"]
+                        ["handshake_call_begin_to_application_complete_thread_cpu_ns"]["count"] ==
+                   1);
+        else
+            assert(!group["metrics"].contains(
+                "handshake_call_begin_to_application_complete_thread_cpu_ns"));
+        assert(group["handshake_call_begin_to_application_complete"]["definition"] ==
+               "handshake_call_begin_to_application_complete");
         assert(group["batches"].empty());
         assert(group["automatic_comparison_eligible"] == false);
+        assert(group["dimensions"]["run_controls"]["channel_observer"] == false);
     }
     const auto legacy_marker_dir = dir / "legacy-marker-native";
     std::filesystem::create_directories(legacy_marker_dir);
@@ -168,6 +355,8 @@ int main() {
     assert(legacy_marker_report["groups"][0]["metrics"]["elapsed_ns"]["count"] == 1);
     assert(!legacy_marker_report["groups"][0]["metrics"].contains("io_ns"));
     assert(legacy_marker_report["groups"][0]["automatic_comparison_eligible"] == false);
+    assert(legacy_marker_report["groups"][0]["dimensions"]["run_controls"]
+                               ["channel_observer"] == true);
     {
         std::ofstream raw(dir / "client.jsonl");
         raw << header.dump() << '\n';
@@ -632,6 +821,80 @@ int main() {
     const auto director_invalid = summarize(director_dir, dir / "director-report");
     assert(director_invalid["groups"].empty());
     assert(director_invalid["invalid_samples"] == 2);
+
+    auto write_common_admission_sample = [&](const std::filesystem::path& root,
+                                             bool header_valid, bool network_required) {
+        std::filesystem::create_directories(root);
+        auto metadata = header;
+        metadata["valid"] = header_valid;
+        metadata["config"]["tls"] = {{"application_bytes", 4},
+                                       {"framework_io", true}};
+        metadata["config"]["channel_observer"] = false;
+        if (network_required)
+            metadata["config"]["network_handoff"] = {
+                {"net_profile", {{"paths", J::object()}}}};
+        std::ofstream raw(root / "client.jsonl");
+        raw << metadata.dump() << '\n';
+        for (const auto& event : common_events("client", false))
+            raw << event.dump() << '\n';
+    };
+    auto common_available = [](const J& report) {
+        return report["samples"][0]["connections"][0]
+                     ["handshake_call_begin_to_application_complete"]["available"] == true;
+    };
+    auto common_metric_absent = [](const J& report) {
+        for (const auto& group : report["groups"])
+            if (group["metrics"].contains(
+                    "handshake_call_begin_to_application_complete_elapsed_ns"))
+                return false;
+        return true;
+    };
+
+    const auto invalid_tls_dir = dir / "common-valid-boundary-invalid-tls";
+    write_common_admission_sample(invalid_tls_dir, false, false);
+    const auto invalid_tls = summarize(invalid_tls_dir, dir / "common-invalid-tls-report");
+    assert(common_available(invalid_tls));
+    assert(invalid_tls["groups"].empty() && common_metric_absent(invalid_tls));
+
+    const auto invalid_network_dir = dir / "common-valid-boundary-invalid-network";
+    write_common_admission_sample(invalid_network_dir, true, true);
+    const auto invalid_network =
+        summarize(invalid_network_dir, dir / "common-invalid-network-report");
+    assert(common_available(invalid_network));
+    assert(!invalid_network["groups"].empty() && common_metric_absent(invalid_network));
+
+    const auto invalid_parent_dir = dir / "common-valid-boundary-invalid-parent";
+    const auto invalid_parent_sample = invalid_parent_dir / "sample-1";
+    write_common_admission_sample(invalid_parent_sample, true, false);
+    {
+        std::ofstream ledger(invalid_parent_dir / "attempts.jsonl");
+        ledger << J({{"type", "turtle-attempt-ledger"}, {"schema", 1},
+                     {"record_kind", "run_config"}, {"requested_count", 1}})
+                          .dump()
+               << '\n';
+        ledger << J({{"type", "turtle-attempt-ledger"}, {"schema", 1},
+                     {"record_kind", "attempt_started"}, {"attempt_id", 1},
+                     {"started", true}})
+                          .dump()
+               << '\n';
+        ledger << J({{"type", "turtle-attempt-ledger"}, {"schema", 1},
+                     {"record_kind", "attempt_final"}, {"attempt_id", 1},
+                     {"final_status", "timeout"}, {"network_observation_ids", J::array()}})
+                          .dump()
+               << '\n';
+        ledger << J({{"type", "turtle-attempt-ledger"}, {"schema", 1},
+                     {"record_kind", "run_summary"}, {"requested", 1}, {"started", 1},
+                     {"success", 0}, {"timeout", 1}, {"error", 0}, {"incomplete", 0},
+                     {"not_attempted", 0}, {"missing_artifacts", 0},
+                     {"missing_artifact_rows", J::array()}})
+                          .dump()
+               << '\n';
+    }
+    const auto invalid_parent =
+        summarize(invalid_parent_dir, dir / "common-invalid-parent-report");
+    assert(common_available(invalid_parent));
+    assert(invalid_parent["groups"].empty() && common_metric_absent(invalid_parent));
+
     auto reject_bad_ledger = [&](const char* name, const std::string& contents) {
         const auto bad = dir / name;
         std::filesystem::create_directory(bad);

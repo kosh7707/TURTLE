@@ -214,6 +214,15 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
         info.kernel_receive_events_available = false;
         info.kernel_receive_events_reason = "native_socket_io_not_observed";
         info.incomplete.push_back("native socket I/O has no framework byte or kernel capture");
+    } else if (!config.channel_observer) {
+        info.observation_level = "observer-disabled";
+        info.tls_stream_available = false;
+        info.tls_stream_reason = "channel_observer_disabled";
+        info.io_events_available = false;
+        info.io_events_reason = "channel_observer_disabled";
+        info.kernel_receive_events_available = false;
+        info.kernel_receive_events_reason = "channel_observer_disabled";
+        info.incomplete.push_back("channel observer disabled; framework I/O bytes and receive events were not captured");
     }
     measure::Meter meter(config.mode, config.perf);
     Capture capture{meter, buffer};
@@ -283,7 +292,8 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
         };
         setup_event(model::EventKind::SetupBegin, setup_begin);
         setup_event(model::EventKind::SetupEnd, setup_end);
-        if (config.tls.framework_io && info.capabilities.kernel_timestamp_configured) {
+        if (config.tls.framework_io && config.channel_observer &&
+            info.capabilities.kernel_timestamp_configured) {
             info.kernel_receive_events_available = true;
             info.kernel_receive_events_reason.clear();
         }
@@ -301,7 +311,8 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
             connection.tcp_start = tcp::read_tcp_info(sockets[i]);
             client_lookup.run_connection(i, protocol, parent, deadline);
             capture.connection = i; capture.sent = capture.received = capture.first_receive = 0;
-            transport::Channel channel{sockets[i], &capture, Capture::observe};
+            transport::Channel channel{sockets[i], &capture,
+                                       config.channel_observer ? Capture::observe : nullptr};
             auto io = channel.io(); capture.call = model::Call::Open;
             capture.event(model::EventKind::OpenBegin);
             std::unique_ptr<Connection, decltype(api.close)> tls(api.open(context.get(), io), api.close);
@@ -318,7 +329,7 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
             };
             if (role == Role::Client)
                 connection.start_sequence = capture.sequence + 1;
-            else if (!config.tls.framework_io) {
+            else if (!config.tls.framework_io || !config.channel_observer) {
                 connection.primary_window_available = false;
                 connection.primary_window_reason = "server_first_receive_not_observed";
             }

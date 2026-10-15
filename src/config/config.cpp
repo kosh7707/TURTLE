@@ -145,7 +145,7 @@ void profile(model::RunConfig& run, const std::string& filename) {
              {"samples", "connections", "warmups", "batch", "seed", "timeout_ms",
               "failure_policy", "flush_grace_ms", "ca_cpu",
               "event_capacity", "stream_capacity", "keylog_capacity", "calibration_samples",
-              "mode", "perf", "kernel_timestamps", "isolate", "pin_cores", "director_cpu",
+              "mode", "perf", "kernel_timestamps", "channel_observer", "isolate", "pin_cores", "director_cpu",
               "client_cpu", "server_cpu"},
              "measurement");
         assign(m, "samples", run.samples);
@@ -161,6 +161,7 @@ void profile(model::RunConfig& run, const std::string& filename) {
         assign(m, "calibration_samples", run.calibration_samples);
         assign(m, "perf", run.perf);
         assign(m, "kernel_timestamps", run.kernel_timestamps);
+        assign(m, "channel_observer", run.channel_observer);
         assign(m, "isolate", run.isolate);
         assign(m, "pin_cores", run.pin_cores);
         assign(m, "director_cpu", run.director_cpu);

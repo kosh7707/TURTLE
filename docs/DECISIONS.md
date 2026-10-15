@@ -149,3 +149,13 @@ OpenSSL native socket 경로에서는 TLS 라이브러리가 framework `Io`를 �
 ## native/callback 외부 근거는 skb metadata로 제한
 
 M6은 새 packet 도구나 netem 조건을 만들지 않고 기존 lookup=false zero-loss runner를 재사용합니다. 수신자 쪽 router egress의 AF_PACKET 행을 주소·TCP 4-tuple·방향으로 제한해 skb count와 payload 합을 기술하지만 두 모드의 수치 동일성을 요구하지 않습니다. 사용자 공간 observer-read timestamp, 근사 phase window, 재전송·분할 가능성을 함께 기록합니다. 이를 syscall trace, full pcap, 고유 TLS bytes, 물리 packet·wire 시각이라고 부르지 않습니다. M13·M14와 N05의 고정 범위는 바꾸지 않습니다.
+
+## 관측자 off는 포인터 하나만 바꿈
+
+M7은 공개 adapter ABI나 CLI 옵션을 추가하지 않고 JSON의 `measurement.channel_observer`만 사용합니다. 기본값과 과거 필드 부재는 true입니다. false이면 같은 callback transport에 전달하는 관측 함수 포인터만 null로 만들며 socket 설정·실제 버퍼·kernel timestamp 준비·호출/대기·keylog/plaintext·perf는 유지합니다. 따라서 observer-disabled를 uninstrumented 실행으로 부르지 않고 stream·I/O·kernel receive 수집만 이유 있는 unavailable로 기록합니다.
+
+## observer 비교에는 이름 있는 공통 호출 경계를 사용
+
+기존 server primary는 first framework receive에서 시작하므로 observer off에서 unavailable인 의미를 바꾸지 않습니다. 대신 양 역할·양 모드에 `handshake_call_begin_to_application_complete`를 별도 계산합니다. 첫 handshake 호출 시작부터 역할의 전체 최종 application 호출 완료까지이며 partial progress를 모두 확인합니다. elapsed와 thread CPU는 독립 availability를 가지며 CPU 누락을 elapsed 실패로 확대하지 않습니다.
+
+`channel_observer`는 안정 그룹 조건이고 공통 경계 metric은 기존 primary 이름과 분리합니다. observer off나 native server에도 공통 metric이 있을 수 있지만 이를 primary로 승격하거나 기존 자동 비교에 넣지 않습니다. TLS·parent 원장·network integrity가 실패하면 공통 metric도 그룹에 수용하지 않습니다. on/off 차이는 역할별 진단 산술값일 뿐 방향·부호·크기·유의성이나 WSL 성능 결론을 합격 기준으로 두지 않습니다.

@@ -361,6 +361,10 @@ Json analyze(const std::filesystem::path& raw, const std::filesystem::path& outp
             availability.at("reason").is_string())
             stream_reason = availability.at("reason").get<std::string>();
     } else {
+        const bool observer_disabled =
+            (header.contains("config") && header.at("config").is_object() &&
+             header.at("config").value("channel_observer", true) == false) ||
+            header.value("observation_level", std::string()) == "observer-disabled";
         const bool native =
             (header.contains("config") && header.at("config").contains("tls") &&
              !header.at("config").at("tls").value("framework_io", true)) ||
@@ -368,6 +372,9 @@ Json analyze(const std::filesystem::path& raw, const std::filesystem::path& outp
         if (native) {
             stream_available = false;
             stream_reason = "legacy_native_socket_io_not_observed";
+        } else if (observer_disabled) {
+            stream_available = false;
+            stream_reason = "channel_observer_disabled";
         }
     }
     const auto prefix = raw.parent_path() / role;

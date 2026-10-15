@@ -44,6 +44,16 @@ foreach(adapter IN LISTS adapters)
   endforeach()
 endforeach()
 if(TARGET turtle_adapter_openssl AND TARGET turtle-report AND TARGET turtle-interpret)
+  add_test(NAME observer_impact_normal COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/observer_impact.py"
+    --turtle "$<TARGET_FILE:turtle>"
+    --report "$<TARGET_FILE:turtle-report>"
+    --interpret "$<TARGET_FILE:turtle-interpret>"
+    --adapters "${CMAKE_BINARY_DIR}/adapters"
+    --pki "${test_pki}"
+    --output "${CMAKE_BINARY_DIR}/test-results/observer-impact")
+  set_tests_properties(observer_impact_normal PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 180 LABELS integration)
   set(io_path_evidence_root "${CMAKE_BINARY_DIR}/test-results/io-path")
   add_test(NAME io_path_normal COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/io_path.py" normal

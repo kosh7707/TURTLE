@@ -379,8 +379,13 @@ def validate_report_availability(summary: dict[str, object], samples_per_conditi
     for group in native_groups:
         role = group["dimensions"].get("role")
         metrics = group.get("metrics", {})
+        common_elapsed = "handshake_call_begin_to_application_complete_elapsed_ns"
+        common_cpu = "handshake_call_begin_to_application_complete_thread_cpu_ns"
         check(group.get("automatic_comparison_eligible") is False,
               "callback/native result was promoted to automatic performance comparison")
+        check(metrics.get(common_elapsed, {}).get("count") == samples_per_condition and
+              metrics.get(common_cpu, {}).get("count") == samples_per_condition,
+              "native report lost the additive named common-window metrics")
         if role == "client":
             check(metrics.get("elapsed_ns", {}).get("count") == samples_per_condition and
                   metrics.get("thread_cpu_ns", {}).get("count") == samples_per_condition and
@@ -388,8 +393,10 @@ def validate_report_availability(summary: dict[str, object], samples_per_conditi
                           ("computation_ns", "io_ns", "wait_ns", "gap_ns")),
                   "native client report synthesized I/O decomposition metrics")
         else:
-            check("elapsed_ns" not in metrics and "thread_cpu_ns" not in metrics,
-                  "native server report synthesized primary metrics")
+            check("elapsed_ns" not in metrics and "thread_cpu_ns" not in metrics and
+                  not any(name in metrics for name in
+                          ("computation_ns", "io_ns", "wait_ns", "gap_ns")),
+                  "native server report synthesized primary or I/O breakdown metrics")
 
 
 def normal(args: argparse.Namespace, root: Path, manifest: dict[str, object]) -> None:

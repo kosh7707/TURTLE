@@ -292,7 +292,8 @@ Json endpoint_identity(const std::optional<Json>& header, std::string_view role)
             {"measurement_controls", {{"perf", config.value("perf", Json(nullptr))},
                                        {"isolate", config.value("isolate", Json(nullptr))},
                                        {"pin_cores", config.value("pin_cores", Json(nullptr))},
-                                       {"kernel_timestamps", config.value("kernel_timestamps", Json(nullptr))}}},
+                                       {"kernel_timestamps", config.value("kernel_timestamps", Json(nullptr))},
+                                       {"channel_observer", config.value("channel_observer", true)}}},
             {"support", support}};
 }
 

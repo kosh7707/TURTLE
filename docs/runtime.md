@@ -42,6 +42,16 @@ native 경로의 TLS 라이브러리는 소켓을 직접 사용하므로 framewo
 
 TLS 인증과 32바이트 핑퐁이 성공한 기능 유효성과 특정 metric의 관측 가능성은 별도 상태입니다. native 서버의 주 구간이 없어도 기능 결과는 유효할 수 있고, 반대로 metric이 존재해도 application 검증이나 attempt/network integrity 실패를 성공으로 바꾸지 않습니다.
 
+### 채널 관측자 on/off
+
+프로필 JSON의 `measurement.channel_observer`는 기본 `true`입니다. CLI 옵션이나 공개 adapter ABI를 추가하지 않고 내부 실행 설정에만 둡니다. 필드가 없는 이전 프로필·원자료는 on으로 읽습니다.
+
+`false`는 `transport::Channel`에 전달하는 관측 함수 포인터만 `nullptr`로 바꿉니다. 같은 callback `Io.send/recv`와 `send/recvmsg`, 비차단 retry, 버퍼 크기, 소켓 설정과 kernel timestamp readback을 유지합니다. `Capture::invoke`의 TLS 호출 시작·끝, wait 사건, keylog·plaintext sink, perf와 calibration도 계속 동작합니다. 따라서 observer off를 **무계측** 또는 uninstrumented 실행이라고 부르지 않습니다.
+
+off에서는 framework stream 복사와 I/O·KERNEL_RX 사건만 수집하지 않습니다. 표본은 `observation_level=observer-disabled`이고 `tls_stream`, `io_events`, `kernel_receive_events`가 모두 `available=false`, `reason=channel_observer_disabled`입니다. 빈 stream 파일을 관측된 0바이트로 해석하지 않습니다. 서버의 기존 first-receive 주 구간도 계속 unavailable입니다.
+
+호출 사건은 양쪽 모드에 남으므로 보고서는 양 역할에 `handshake_call_begin_to_application_complete` 공통 경계를 계산합니다. 시작은 측정 연결의 첫 handshake `CALL_BEGIN`, 끝은 클라이언트의 전체 app_recv 또는 서버의 전체 app_send를 완성한 마지막 성공 `CALL_END`입니다. 부분 전송과 retry는 요청한 application bytes가 모두 끝날 때까지 합산합니다. 이 공통 경계는 native나 observer-off 서버의 unavailable 주 구간을 대체하거나 만들어 내지 않는 별도 진단 경계입니다.
+
 셋업 시작과 끝의 스냅샷은 실제 호출 경계에서 얻고, 어댑터의 할당 함수 지원 선언을 확인한 후 기록합니다. 지원되지 않는 힙 관측은 0이 아니라 빈 값입니다. 누락되거나 다중화된 성능 카운터는 `perf_complete=false`입니다.
 
 ## 저장과 무효 표본
@@ -85,7 +95,7 @@ Python과 지휘 프로세스는 setup/scenario/cleanup begin/end를 JSON 한 �
 - `io_path.py normal`: OpenSSL callback/native와 서버 인증/상호 인증 네 조건에서 실제 TLS·응용 교환, 역할별 availability와 offline 해석·보고를 검사합니다.
 - `io_path.py external`: 기존 lookup=false zero-loss runner를 callback/native 각각 2 attempts에 재사용합니다. router receiver-facing egress AF_PACKET metadata와 network integrity를 검사하며 N05나 `verify`를 실행하지 않습니다.
 
-G006 당시 통합 작업 트리에서는 57×20=1,140회가 통과했습니다. runner 시작 race와 strict ledger reader 수리 뒤 G007 동결 트리는 58×20=1,160회, M5 CLI 상호운용 트리는 70×20=1,400회 통과했습니다. OpenSSL callback/native I/O 경로를 더한 현재 동결 트리는 72×20=1,440회와 11개 부품 include 경계 검사, 생산 번역 단위 24개의 cppcheck·clang-tidy를 통과했습니다. M6 제품 코드 review는 APPROVE, 구조 검토는 CLEAR였고 normal/external 원자료 감사도 통과했습니다. 각 시점의 실패와 증거는 `docs/validation.md`에 따로 보존합니다.
+G006 당시 통합 작업 트리에서는 57×20=1,140회가 통과했습니다. G007 동결 트리는 58×20=1,160회, M5 CLI 상호운용 트리는 70×20=1,400회, M6 I/O 경로 트리는 72×20=1,440회 통과했습니다. 채널 관측자 on/off를 더한 현재 동결 트리는 73×20=1,460회와 11개 부품 include 경계 검사, 생산 번역 단위 24개의 cppcheck·clang-tidy를 통과했습니다. M7 제품 code review는 APPROVE, 구조 검토는 CLEAR였고 16 attempts·32개 역할 파일의 원자료 감사도 통과했습니다. 각 시점의 실패와 증거는 `docs/validation.md`에 따로 보존합니다.
 
 ## 통합 검토 후 추가 확인
 

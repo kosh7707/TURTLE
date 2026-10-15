@@ -61,6 +61,7 @@ int main() {
         info.config.flush_grace_ms = 700;
         info.config.failure_policy = model::FailurePolicy::FixedAttempts;
         info.config.ca_cpu = 11;
+        info.config.channel_observer = false;
         info.config.lookup.enabled = true;
         info.config.lookup.cache_mode = model::CacheMode::FixedSnapshot;
         info.config.lookup.object_file = "/input/server-chain.pem";
@@ -127,6 +128,7 @@ int main() {
     assert(config["scenario_name"] == model::lookup_scenario_name);
     assert(config["failure_policy"] == "fixed-attempts" && config["flush_grace_ms"] == 700);
     assert(config["ca_cpu"] == 11);
+    assert(config["channel_observer"] == false);
     assert(config["lookup"]["enabled"] == true);
     assert(config["lookup"]["cache_mode"] == "fixed-snapshot");
     assert(config["lookup"]["object_file"] == "/input/server-chain.pem");
@@ -157,6 +159,7 @@ int main() {
     nlohmann::json ordinary_sample;
     ordinary_input >> ordinary_sample;
     assert(ordinary_sample["config"]["scenario_name"] == "standard-tls");
+    assert(ordinary_sample["config"]["channel_observer"] == true);
     assert(ordinary_sample["config"]["lookup"]["enabled"] == false);
     assert(ordinary_sample["config"]["lookup"]["object_file"].is_null());
     assert(ordinary_sample["config"]["lookup"]["snapshot_file"].is_null());

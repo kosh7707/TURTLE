@@ -55,6 +55,32 @@ native 그룹은 관측 수준이 `library-only`이고 stream·I/O가 unavailabl
 비교를 만들지 않으며, native server의 없는 값을 0으로 채우거나 순수 computation으로
 해석하지 않습니다. 주 `elapsed_ns`가 없는 그룹은 batch와 비교 후보 계산에서도 제외합니다.
 
+### 양 역할·양 모드의 공통 호출 경계
+
+`handshake_call_begin_to_application_complete`는 observer on/off와 native를 포함해 CALL 사건이
+남은 실행에 공통으로 계산할 수 있는 별도 경계입니다. 첫 handshake `CALL_BEGIN`에서 역할별
+전체 application 요청을 완료한 마지막 성공 `CALL_END`까지입니다. 클라이언트 끝은 app_recv,
+서버 끝은 app_send입니다. 여러 부분 호출의 `transferred`를 요청량까지 합산하며 retry나 첫 부분
+성공을 완료 경계로 쓰지 않습니다. warmup과 다른 연결 사건도 섞지 않습니다.
+
+표본에는 definition, availability/reason, 시작·끝 event sequence, `elapsed_ns`,
+`thread_cpu_ns`와 `thread_cpu_reason`을 남깁니다. elapsed가 유효해도 CPU snapshot 누락·역행이면
+CPU만 `null`일 수 있습니다. 공통 경계가 유효하더라도 기존 server primary를 만들어 내지 않으며,
+primary `elapsed_ns`가 없는 그룹은 기존 자동 비교·batch에 계속 부적격입니다. M6에서 “native
+server primary elapsed·CPU가 없다”는 사실은 유지되지만 이 이름 있는 공통 elapsed·CPU는 따로
+존재할 수 있습니다.
+
+그룹 metric 이름은 `handshake_call_begin_to_application_complete_elapsed_ns`와
+`handshake_call_begin_to_application_complete_thread_cpu_ns`입니다. `run_controls.channel_observer`
+도 조건 identity에 들어가고 과거 필드 부재는 true입니다. TLS 표본, parent attempt 또는 필요한
+network integrity가 실패하면 원자료에 계산 가능한 공통 경계가 있더라도 그룹 분포에는 넣지
+않습니다.
+
+observer on/off 진단은 같은 역할끼리 raw 공통 경계 분포와 단순 산술 차이를 남깁니다. 차이의
+부호·크기·0 여부나 통계적 유의성을 합격 기준으로 쓰지 않습니다. off에서도 호출/대기,
+keylog/plaintext, perf·시계 읽기가 남으므로 이 차이는 관측자 함수만의 순수 비용이나 완전한
+계측 보정값이 아닙니다.
+
 ## 자동 비교 후보
 
 자동 비교는 같은 역할을 측정한 두 그룹 가운데 실행 조건이 같은 경우만 후보로 냅니다.

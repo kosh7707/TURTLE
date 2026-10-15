@@ -282,4 +282,31 @@ normal callback 원자료에서 `raw_timestamp_ns`가 실제로 있는 사건은
 
 외부 표에서 callback은 c2s 6 skb/688 payload bytes, s2c 4/2,601이었고 native는 c2s 6/688, s2c 4/2,599였습니다. 양쪽 capture footer는 두 interface 모두 packets 31, drops 0이었습니다. 이 숫자는 receiver-facing router egress에서 사용자 공간 observer가 읽은 skb metadata의 기술값입니다. timestamp와 scenario 창은 observer/decode read time 기반 근사값이며, skb 수는 물리 packet·고유 TLS record 수가 아니고 payload 합은 재전송·분할을 제거한 unique TLS bytes가 아닙니다. 두 모드 수치의 일치도 합격 조건이 아닙니다.
 
-72×20 실행·정적 검사·독립 검토와 이 원자료 감사를 결합해 G010/M6의 제한된 범위를 완료로 표시합니다. 이는 기능·관측 경계 검증이며 WSL 성능 결론, callback/native 동등성, full pcap·syscall·물리 wire 증거가 아닙니다. M7의 `channel_observer` flag와 공통 `handshake_call_begin_to_application_complete` 구간은 아직 구현하지 않았습니다.
+72×20 실행·정적 검사·독립 검토와 이 원자료 감사를 결합해 G010/M6의 제한된 범위를 완료로 표시합니다. 이는 기능·관측 경계 검증이며 WSL 성능 결론, callback/native 동등성, full pcap·syscall·물리 wire 증거가 아닙니다. M6 완료 시점에는 M7의 `channel_observer` flag와 공통 `handshake_call_begin_to_application_complete` 구간이 다음 단계였습니다.
+
+## G011/M7 채널 관측자 on/off 최종 검증
+
+동결 구현은 `measurement.channel_observer`를 JSON-only 내부 설정으로 추가했고 기본값과 과거 필드 부재를 true로 유지합니다. false는 Channel 관측 함수 포인터만 비우며 callback transport, actual socket buffer와 timestamp 설정, CALL/WAIT, keylog/plaintext, perf·calibration을 유지합니다. off의 stream·I/O·kernel receive availability는 `channel_observer_disabled`이고 빈 stream을 0바이트 해독 성공으로 처리하지 않습니다.
+
+보고서는 client/server, observer on/off 모두에 `handshake_call_begin_to_application_complete`를 직접 원자료에서 재계산합니다. 첫 handshake CALL_BEGIN에서 client app_recv 또는 server app_send의 전체 32바이트를 완료한 마지막 성공 CALL_END까지이며 event sequence와 elapsed를 보존합니다. CPU snapshot은 elapsed와 독립이므로 누락·역행이면 CPU만 이유 있는 `null`입니다. observer-off server의 기존 first-receive primary가 unavailable인 사실은 그대로이고, 새 공통 metric이 이를 대체하지 않습니다. native server도 같은 CALL 사건이 있으면 이 공통 metric을 가질 수 있습니다.
+
+첫 실제 통합 실행은 attempt 원장에 존재하지 않는 batch 필드를 요구해 실패했고 `results/observer-impact/check-first.log`와 `normal-1792048076611007990-1085316`에 보존했습니다. 다음 실행은 raw `config.tls`에 직렬화되지 않는 version을 요구해 실패했으며 `results/observer-impact/batch-recheck.log`와 `normal-1792048376493542567-1092327`에 남겼습니다. 제품 schema를 시험 기대에 맞춰 늘리지 않고 batch는 역할 raw config에서, TLS 조건은 실제 직렬화 필드에서 확인하도록 고쳤습니다.
+
+수정 뒤 `results/observer-impact/batch-final.log`의 실제 OpenSSL callback 실행은 on/off, off/on, on/off, off/on 순서의 4 batches를 통과했습니다. 각 위치는 samples 2여서 모두 16 attempts·32개 역할 파일이고, 각 모드는 역할별 8개 공통 elapsed·CPU 값을 남깁니다. `diagnostic-summary.json`은 역할별 raw 값과 on-minus-off 산술 차이를 보존하지만 부호·크기·0·통계적 유의성은 합격 기준이 아닙니다. 이 WSL 기능 표본으로 순위나 성능 결론을 내리지 않습니다.
+
+두 profile을 정규화하면 다른 입력 변수는 `measurement.channel_observer` 하나뿐입니다. 실행 argv의 차이도 대응하는 profile·batch·output 식별자에 한정됩니다. 32개 역할 파일은 같은 framework/OpenSSL 판, callback I/O, 실제 socket buffer·kernel timestamp readback, perf 설정, keylog/plaintext와 buffer 크기를 보존했습니다. 모든 TLS 인증·응용 교환은 성공했고 on은 stream 해독 완료, off는 stream·I/O·KERNEL_RX unavailable과 빈 stream 비해독을 확인했습니다.
+
+동결 트리의 최종 결합 증거는 다음과 같습니다.
+
+| 증거 | 결과 |
+|---|---|
+| `results/observer-impact/check-final-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 73개 시험을 각각 20회, 총 **1,460회** 실행해 실패·skip 없이 통과했습니다. `observer_impact_normal`도 20회 통과했고 11개 부품 include 경계·순환 검사도 통과했습니다. 로그 SHA-256은 `6b147a819d17b1368ab1f22a62534ea6495891878ad7c86fd6de0a5eb4168021`입니다. |
+| `results/observer-impact/static-final.log` | 외부 소스를 제외한 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했습니다. |
+| `results/observer-impact/preserved/validation-summary.json` | 선택한 성공 실행의 294개 파일·1,697,930바이트가 세 hash manifest에서 같았습니다. 16/16 attempts, 32개 역할 파일과 네 역할×observer 보고 그룹, 모든 공통 경계의 raw 재계산과 offline report 동일성을 확인했습니다. |
+| 독립 검토 | 제품 code review는 APPROVE, 구조 검토는 CLEAR였고 추가 제품 수정 요구가 없었습니다. |
+
+보존 감사에서 실패한 두 sibling 실행은 명시적으로 제외하고 위의 `normal-1792048590965177294-1097154`만 선택했습니다. 실제 성공 실행에는 CPU snapshot 누락이 0건이었습니다. elapsed가 유효하지만 CPU가 누락·역행할 때 CPU만 `null`로 두는 경계는 unit test 증거이며 실제 실행에서 관측한 결측이라고 주장하지 않습니다.
+
+raw에서 다시 계산한 on-minus-off 단순 산술 평균은 client elapsed 42,009.375ns·CPU 49,291.625ns, server elapsed 43,627.0ns·CPU 6,911.125ns였습니다. 이 값은 구현된 진단 계산이 원자료와 맞는지 확인하는 자료일 뿐입니다. 효과의 방향·부호·0 여부·크기·유의성, WSL 순위, uninstrumented 기준이나 완전한 관측 비용 보정으로 해석하지 않습니다.
+
+73×20 실행·정적 검사·독립 검토와 원자료 감사를 결합해 G011/M7의 제한된 범위를 완료로 표시합니다. M13·M14와 N05는 실행하거나 확장하지 않았습니다. G012 최종 cleaner·독립 검토와 milestone commit은 아직 남았으므로 전체 목표 완료를 주장하지 않습니다.

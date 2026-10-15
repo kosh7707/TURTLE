@@ -54,7 +54,7 @@ python3 scripts/netem-study.py verify --build build --pki PKI_DIR \
 
 OpenSSL의 실제 표준 TLS와 netem을 함께 쓴 고정 검증 묶음은 2026년 10월 15일 한 번 실행해 통과했습니다. CA→client 5ms·20% loss의 사전 고정 64 attempts가 모두 성공했고, qdisc skb drop 94와 CA 소켓 `TCP_INFO.total_retrans` 차이 58을 별도로 관측했습니다. 이 수치는 기능 gate 증거이지 성능 표본이나 현실망 모델이 아닙니다. 손실 설정값, 실제 skb drop, TCP 재전송은 서로 다른 값이며 어느 하나로 다른 값을 대신하지 않습니다.
 
-G005의 구현·고정 실행·오프라인 보고를 완료했습니다. 보존한 일곱 조건의 원자료를 최신 보고 도구로 다시 처리한 합계는 requested=started=100, success=97, timeout=3이며 attempt/connection 행도 각각 100개입니다. G006에서는 당시 57개 시험을 각각 20회, 총 1,140회 실행해 실패 없이 통과했습니다. G007 동결 트리는 58×20=1,160회, M5 CLI 상호운용 트리는 70×20=1,400회 통과했습니다. OpenSSL callback/native I/O 경로를 더한 현재 트리는 72×20=1,440회 통과했고 24개 생산 번역 단위의 정적 검사와 독립 검토를 마쳤습니다. 이전 실패와 수정 근거는 [검증 기록](docs/validation.md)에 별도로 보존합니다.
+G005의 구현·고정 실행·오프라인 보고를 완료했습니다. 보존한 일곱 조건의 원자료를 최신 보고 도구로 다시 처리한 합계는 requested=started=100, success=97, timeout=3이며 attempt/connection 행도 각각 100개입니다. G006에서는 당시 57×20=1,140회, G007 동결 트리는 58×20=1,160회, M5 CLI 상호운용 트리는 70×20=1,400회, M6 I/O 경로 트리는 72×20=1,440회 통과했습니다. 채널 관측자 on/off를 더한 현재 트리는 73×20=1,460회 통과했고 24개 생산 번역 단위의 정적 검사와 독립 검토를 마쳤습니다. 이전 실패와 수정 근거는 [검증 기록](docs/validation.md)에 별도로 보존합니다.
 
 stock TLS의 Certificate 메시지는 그대로이며 실제 인증서 압축·생략·캐싱 연구 기법은 구현하지 않았습니다. 진단 실행에서 얻은 지연값은 기능 경로 확인용 데이터이며 성능 논문 결론이 아닙니다.
 
@@ -101,6 +101,8 @@ cmake --build build --parallel 4
 **송수신 함수 경계의 관측이 모든 TLS 메시지의 독립적인 연산 시간을 뜻하지는 않습니다.** 한 호출이 여러 레코드나 메시지를 처리하면 그 묶음까지가 관측 가능한 범위입니다. 계측과 키 로그·바이트 복사의 비용도 실제 실행에 영향을 줍니다. 원자료와 보정 표본을 보존하지만, 이를 빼면 비계측 실행의 참값이 된다고 주장하지 않습니다.
 
 OpenSSL native socket 정상 경로도 실제 TLS로 확인했습니다. native 클라이언트는 호출 경과·스레드 CPU를 남기지만 I/O 분해와 framework stream은 없고, native 서버의 첫 수신 기반 주 구간은 unavailable입니다. 이 결과는 기능 성공과 metric availability를 구별하며 callback/native 자동 성능 비교를 만들지 않습니다. wolfSSL·Mbed TLS native는 지원하지 않습니다. 기존 zero-loss runner에서 두 경로의 receiver-facing router egress skb metadata도 확인했지만, 이는 full pcap·syscall trace·물리 packet 또는 unique TLS byte 비교가 아닙니다.
+
+프로필 JSON에서 `measurement.channel_observer=false`를 지정하면 callback I/O의 관측 함수 포인터만 끕니다. 기본값은 true이며 CLI 옵션은 없습니다. off에서도 같은 TLS callback transport, 호출·대기 계측, keylog/plaintext와 perf 설정을 사용하므로 “무계측 실행”이 아닙니다. stream·I/O·kernel receive 수집은 unavailable로 남기고, 양 역할에서 공통 `handshake_call_begin_to_application_complete` 경과와 가능한 스레드 CPU를 별도 진단값으로 계산합니다. 이 공통값은 observer-off 서버의 unavailable 주 측정 구간을 대체하지 않습니다. 네 batch 교대 실행으로 계산 경로를 확인했지만 on/off 차이의 방향·부호·크기나 유의성, WSL 성능 결론을 합격 기준으로 쓰지 않습니다.
 
 ## 테스트와 반복 실험
 
