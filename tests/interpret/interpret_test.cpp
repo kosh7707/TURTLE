@@ -1,11 +1,14 @@
 #include "interpret/interpret.hpp"
 #include <cassert>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <string>
 #include <vector>
+#include <unistd.h>
 namespace {
 struct Capture {
     std::string keys;
@@ -129,5 +132,31 @@ int main() {
     assert(reassembled["client_sent"]["messages"].size() == 1);
     assert(reassembled["client_sent"]["messages"][0]["name"] == "UnknownHandshake");
     assert(reassembled["client_sent"]["messages"][0]["records"].size() == 2);
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("turtle-interpret-native-" + std::to_string(getpid()));
+    std::filesystem::create_directory(dir);
+    auto check_unavailable = [&](const char* name, nlohmann::json header,
+                                 const char* expected_reason) {
+        const auto raw = dir / (std::string(name) + ".jsonl");
+        const auto out = dir / (std::string(name) + ".decoded.json");
+        std::ofstream(raw) << header.dump() << '\n';
+        const auto result = turtle::interpret::analyze(raw, out);
+        const auto& connection = result["connections"][0];
+        assert(connection["decryption_complete"] == false);
+        assert(connection["availability"]["tls_stream"]["available"] == false);
+        assert(connection["availability"]["tls_stream"]["reason"] == expected_reason);
+        assert(connection["client_sent"]["decryption_complete"] == false);
+    };
+    nlohmann::json native = {
+        {"schema", 1}, {"type", "sample"}, {"sample", 1}, {"role", "client"},
+        {"connections", nlohmann::json::array({{{"index", 0}}})},
+        {"availability", {{"tls_stream", {{"available", false},
+                                             {"reason", "native_socket_io_not_observed"}}}}}};
+    check_unavailable("client", native, "native_socket_io_not_observed");
+    native.erase("availability");
+    native["observation_level"] = "library-only";
+    native["config"] = {{"tls", {{"framework_io", false}}}};
+    check_unavailable("legacy", native, "legacy_native_socket_io_not_observed");
+    std::filesystem::remove_all(dir);
     std::cout << "real TLS 1.3 decryption and callback comparison passed\n";
 }

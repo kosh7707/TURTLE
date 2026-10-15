@@ -38,6 +38,23 @@ ClientHello와 Finished 경계의 묶임 여부를 각각 표시합니다. 이 �
 무시했는지와 그 이유를 따로 남깁니다. 이때도 원자료만으로 만든 기본 보고서는 그대로
 남습니다.
 
+## 기능 유효성과 metric availability
+
+`connections[*].valid`는 인증과 응용 교환을 포함한 기능 결과입니다. `primary_window`와
+`io_breakdown`은 그 연결에서 특정 측정 구간·분해를 관측할 수 있는지 따로 설명합니다. 한쪽을
+다른 쪽으로 대신하지 않습니다.
+
+- callback client/server는 기존 주 구간과 I/O 분해를 계산합니다.
+- native client는 첫 handshake 호출부터 마지막 app receive 완료까지의 `elapsed_ns`와
+  `thread_cpu_ns`를 보존하지만 `computation_ns`, `io_ns`, `wait_ns`, `gap_ns`는 `null`입니다.
+- native server는 첫 성공 framework receive가 없으므로 주 구간 자체가 unavailable이며
+  elapsed·CPU를 만들지 않습니다.
+
+native 그룹은 관측 수준이 `library-only`이고 stream·I/O가 unavailable이므로 기존 자동 성능
+비교에서 항상 제외합니다. native client의 호출 경과가 있다는 이유로 callback/native 자동
+비교를 만들지 않으며, native server의 없는 값을 0으로 채우거나 순수 computation으로
+해석하지 않습니다. 주 `elapsed_ns`가 없는 그룹은 batch와 비교 후보 계산에서도 제외합니다.
+
 ## 자동 비교 후보
 
 자동 비교는 같은 역할을 측정한 두 그룹 가운데 실행 조건이 같은 경우만 후보로 냅니다.
@@ -96,6 +113,21 @@ metric에 넣지 않습니다. success/timeout, drop, retrans도 같은 이유�
 준비 연결과 측정 연결의 실제 소켓 설정은 모두 조건을 구성하지만, 경과 시간·스레드 CPU를
 비롯한 metric에는 `warmup=false`인 측정 연결만 들어갑니다. 준비 연결을 표본 수나 metric 수에
 더하지 않습니다.
+
+### callback/native 외부 흐름 metadata
+
+M6의 외부 확인은 기존 lookup=false, delay 0, loss 0, trace=true runner를 그대로 사용합니다.
+callback/native를 각각 새 output에서 2 attempts 실행하고 요청·실제 network identity, 정확한
+여섯 phase 참조, host unchanged와 cleanup integrity를 같은 판독기로 확인합니다. M13·M14의
+`verify`나 N05는 실행하지 않습니다.
+
+`external-observation.json`은 각 방향에서 수신자 쪽 router egress interface, egress 방향,
+기대 주소·TCP 4-tuple과 양의 payload를 만족하는 행만 선택해 `observed_skb_count`와
+`payload_byte_sum`을 나란히 보존합니다. timestamp는 kernel/NIC 도착 시각이 아니라 AF_PACKET
+observer가 사용자 공간에서 읽고 해석한 시각입니다. scenario marker로 자른 창도 정확한 TLS
+phase가 아니라 근사 observer-read-time 창입니다. 재전송·분할 때문에 count는 고유 TLS record나
+물리 packet 수가 아니고 payload 합도 unique TLS bytes가 아닙니다. callback/native 두 수치가
+같아야 한다는 조건은 없으며, full pcap·syscall trace·물리 wire 증거로 확대하지 않습니다.
 
 ## 인증서 조회 시나리오 보고
 

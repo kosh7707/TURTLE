@@ -288,8 +288,12 @@ struct ConnectionInfo {
     Verification verification = Verification::Failed;
     Negotiated negotiated;
     bool application_verified = false;
-    std::uint64_t start_sequence = 0;
+    // The primary measurement start is absent when its observation boundary
+    // cannot be seen (not an observed sequence zero).
+    std::optional<std::uint64_t> start_sequence;
     std::uint64_t end_sequence = 0;
+    bool primary_window_available = false;
+    std::string primary_window_reason = "measurement_boundaries_incomplete";
     std::optional<SocketSettings> socket;
     std::optional<TcpInfoSnapshot> tcp_start;
     std::optional<TcpInfoSnapshot> tcp_end;
@@ -309,8 +313,14 @@ struct SampleInfo {
     ClockPair clock_end;
     std::vector<ConnectionInfo> connections;
     bool valid = true;
+    bool tls_stream_available = true;
+    bool io_events_available = true;
+    bool kernel_receive_events_available = false;
     std::string invalid_reason;
     std::string observation_level = "L0";
+    std::string tls_stream_reason;
+    std::string io_events_reason;
+    std::string kernel_receive_events_reason = "kernel_timestamps_not_configured";
     std::vector<std::string> incomplete;
     std::size_t saved_context_size = 0;
     std::size_t loaded_context_size = 0;

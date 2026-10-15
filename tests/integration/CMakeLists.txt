@@ -44,6 +44,29 @@ foreach(adapter IN LISTS adapters)
   endforeach()
 endforeach()
 if(TARGET turtle_adapter_openssl AND TARGET turtle-report AND TARGET turtle-interpret)
+  set(io_path_evidence_root "${CMAKE_BINARY_DIR}/test-results/io-path")
+  add_test(NAME io_path_normal COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/io_path.py" normal
+    --turtle "$<TARGET_FILE:turtle>"
+    --report "$<TARGET_FILE:turtle-report>"
+    --interpret "$<TARGET_FILE:turtle-interpret>"
+    --adapters "${CMAKE_BINARY_DIR}/adapters"
+    --pki "${test_pki}"
+    --netem "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/netem-study.py"
+    --output "${io_path_evidence_root}")
+  set_tests_properties(io_path_normal PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 60 LABELS integration)
+  add_test(NAME io_path_external_metadata COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/io_path.py" external
+    --turtle "$<TARGET_FILE:turtle>"
+    --report "$<TARGET_FILE:turtle-report>"
+    --interpret "$<TARGET_FILE:turtle-interpret>"
+    --adapters "${CMAKE_BINARY_DIR}/adapters"
+    --pki "${test_pki}"
+    --netem "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/netem-study.py"
+    --output "${io_path_evidence_root}")
+  set_tests_properties(io_path_external_metadata PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 180 LABELS integration SKIP_RETURN_CODE 77)
   add_test(NAME pure_tls_netem_actual COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/pure_tls_netem.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/netem-study.py"

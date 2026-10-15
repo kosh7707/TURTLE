@@ -15,6 +15,10 @@ using Json = nlohmann::json;
 template <class T> Json nullable(const std::optional<T>& value) {
     return value ? Json(*value) : Json(nullptr);
 }
+Json availability(bool available, const std::string& reason) {
+    return {{"available", available},
+            {"reason", available || reason.empty() ? Json(nullptr) : Json(reason)}};
+}
 struct Bytes {
     explicit Bytes(std::size_t capacity) : storage(capacity) {}
     std::vector<std::uint8_t> storage;
@@ -214,8 +218,11 @@ Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
                                {"verification", model::name(c.verification)},
                                {"negotiated", negotiated_json(c.negotiated)},
                                {"application_verified", c.application_verified},
-                               {"start_sequence", c.start_sequence},
+                               {"start_sequence", nullable(c.start_sequence)},
                                {"end_sequence", c.end_sequence},
+                               {"primary_window",
+                                availability(c.primary_window_available,
+                                             c.primary_window_reason)},
                                {"socket", socket_json(c.socket)},
                                {"tcp_start", detail::tcp_json(c.tcp_start)},
                                {"tcp_end", detail::tcp_json(c.tcp_end)}});
@@ -246,6 +253,12 @@ Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
             {"clock_end", clock_json(v.clock_end)},
             {"connections", connections},
             {"observation_level", v.observation_level},
+            {"availability",
+             {{"tls_stream", availability(v.tls_stream_available, v.tls_stream_reason)},
+              {"io_events", availability(v.io_events_available, v.io_events_reason)},
+              {"kernel_receive_events",
+               availability(v.kernel_receive_events_available,
+                            v.kernel_receive_events_reason)}}},
             {"incomplete", v.incomplete},
             {"saved_context_size", v.saved_context_size},
             {"loaded_context_size", v.loaded_context_size},

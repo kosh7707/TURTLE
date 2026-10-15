@@ -32,6 +32,16 @@ TCP 준비에서는 `ESTABLISHED`와 읽지 않은 바이트 0뿐 아니라 설�
 
 클라이언트 구간은 첫 핸드셰이크 호출부터 마지막 퐁 수신 호출 완료까지입니다. 서버 구간은 첫 성공한 수신 반환부터 마지막 퐁 송신 호출 완료까지입니다. 호출 완료 사건의 `result`는 `Step` 값이며, 응용 호출에는 `AppResult.step`을 기록합니다. `Done`은 2입니다. 네이티브 소켓 비교에서는 프레임워크 송수신이 보이지 않으므로 `library-only`로 표시하고 바이트와 커널 관측이 없음을 남깁니다.
 
+### callback과 native 경로의 관측 가능성
+
+OpenSSL 어댑터는 `framework_io=true`인 callback 경로와 `false`인 native socket 경로를 지원합니다. wolfSSL과 Mbed TLS는 native 경로를 지원하지 않으며 설정을 거절합니다. native 지원을 추정하거나 이 두 어댑터에 가짜 결과를 만들지 않습니다.
+
+callback 경로에서는 `transport::Channel`을 지난 TLS stream 바이트와 I/O 사건을 기록합니다. 수신 시각 설정이 실제로 준비됐으면 kernel receive 사건을 수집할 통로도 available입니다. 그러나 `availability.kernel_receive_events.available=true`는 **수집 경로가 설정·지원됐다는 뜻**이지 특정 실행에서 kernel timestamp 사건이 실제로 하나 이상 생겼다는 증거가 아닙니다. 실제 `raw_timestamp_ns`가 있는 원자료 사건을 확인해야 발생을 주장할 수 있습니다.
+
+native 경로의 TLS 라이브러리는 소켓을 직접 사용하므로 framework TLS stream, I/O 사건과 kernel receive 사건을 볼 수 없습니다. 세 항목을 0으로 쓰지 않고 `available=false`, `reason=native_socket_io_not_observed`로 기록합니다. 네이티브 클라이언트는 첫 handshake 호출부터 마지막 app receive 호출까지의 호출 경계가 남으므로 경과 시간과 스레드 CPU 차이는 보고할 수 있습니다. 다만 computation/I/O/wait/gap 분해와 stream byte metric은 `null`입니다. 네이티브 서버는 주 구간 시작인 첫 성공 framework receive를 볼 수 없으므로 `start_sequence=null`, `primary_window.available=false`, 이유 `server_first_receive_not_observed`로 남기며 경과·CPU를 만들지 않습니다.
+
+TLS 인증과 32바이트 핑퐁이 성공한 기능 유효성과 특정 metric의 관측 가능성은 별도 상태입니다. native 서버의 주 구간이 없어도 기능 결과는 유효할 수 있고, 반대로 metric이 존재해도 application 검증이나 attempt/network integrity 실패를 성공으로 바꾸지 않습니다.
+
 셋업 시작과 끝의 스냅샷은 실제 호출 경계에서 얻고, 어댑터의 할당 함수 지원 선언을 확인한 후 기록합니다. 지원되지 않는 힙 관측은 0이 아니라 빈 값입니다. 누락되거나 다중화된 성능 카운터는 `perf_complete=false`입니다.
 
 ## 저장과 무효 표본
@@ -72,8 +82,10 @@ Python과 지휘 프로세스는 setup/scenario/cleanup begin/end를 JSON 한 �
 - `turtle_lifecycle_test <모듈 폴더>`: 새 프로세스 4개, 표본마다 준비 연결과 측정 연결, 셋업의 제한 이전 실행, 연결 열기의 제한 이후 실행, TLS 이전의 빈 TCP, 검증 실패 후 다음 표본 중단을 확인합니다. 모의 실행이며 실제 TLS 성공 증거로 쓰지 않습니다.
 - `turtle_runtime_tls_test <모듈 폴더> <인증서 폴더> [클라이언트 모듈] [서버 모듈]`: 서버 인증과 상호 인증을 시간·메모리 모드에서 각각 두 표본과 준비 연결로 실행합니다. 실제 TLS 1.3 결과와 응용 데이터 확인을 검사합니다. 인증서는 `scripts/make-pki.sh`로 별도 준비합니다.
 - `pure_tls_netem.py`: 조회가 꺼진 OpenSSL TLS를 0ms·20ms 양방향 netem 조건에서 각 2 attempts 실행하도록 구성되어 있습니다. 세 namespace·두 링크·두 qdisc, CA/lookup 결과 부재, TLS 해독, 소유 자원 정리, 역할별 경과·스레드 CPU가 든 네 보고 그룹을 검사합니다.
+- `io_path.py normal`: OpenSSL callback/native와 서버 인증/상호 인증 네 조건에서 실제 TLS·응용 교환, 역할별 availability와 offline 해석·보고를 검사합니다.
+- `io_path.py external`: 기존 lookup=false zero-loss runner를 callback/native 각각 2 attempts에 재사용합니다. router receiver-facing egress AF_PACKET metadata와 network integrity를 검사하며 N05나 `verify`를 실행하지 않습니다.
 
-G006 당시 통합 작업 트리에서는 경고를 오류로 처리한 소스·시험 빌드와 57개 시험을 각각 20회 실행해 총 1,140회 모두 통과했습니다. 이후 첫 58개 전체 실행은 `netem_runner_contracts` 시작 race 때문에 57/58이었으며 이 실패 기록도 보존합니다. readiness pipe와 strict ledger reader 수리 뒤 동결한 소스에서 경고를 오류로 처리한 빌드와 최신 58개 시험을 각각 20회, 총 1,160회 실행해 모두 통과했습니다. 11개 부품 include 경계 검사와 생산 번역 단위 24개의 cppcheck·clang-tidy도 통과했고, 수명주기 분리와 원장 읽기의 독립 검토는 지적 없이 승인됐습니다.
+G006 당시 통합 작업 트리에서는 57×20=1,140회가 통과했습니다. runner 시작 race와 strict ledger reader 수리 뒤 G007 동결 트리는 58×20=1,160회, M5 CLI 상호운용 트리는 70×20=1,400회 통과했습니다. OpenSSL callback/native I/O 경로를 더한 현재 동결 트리는 72×20=1,440회와 11개 부품 include 경계 검사, 생산 번역 단위 24개의 cppcheck·clang-tidy를 통과했습니다. M6 제품 코드 review는 APPROVE, 구조 검토는 CLEAR였고 normal/external 원자료 감사도 통과했습니다. 각 시점의 실패와 증거는 `docs/validation.md`에 따로 보존합니다.
 
 ## 통합 검토 후 추가 확인
 

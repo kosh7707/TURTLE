@@ -351,6 +351,25 @@ Json analyze(const std::filesystem::path& raw, const std::filesystem::path& outp
     if (header.at("schema") != 1 || header.at("type") != "sample")
         throw std::runtime_error("unsupported sample schema");
     const auto role = header.at("role").get<std::string>();
+    bool stream_available = true;
+    std::string stream_reason;
+    if (header.contains("availability") && header.at("availability").is_object() &&
+        header.at("availability").contains("tls_stream")) {
+        const auto& availability = header.at("availability").at("tls_stream");
+        stream_available = availability.value("available", false);
+        if (!stream_available && availability.contains("reason") &&
+            availability.at("reason").is_string())
+            stream_reason = availability.at("reason").get<std::string>();
+    } else {
+        const bool native =
+            (header.contains("config") && header.at("config").contains("tls") &&
+             !header.at("config").at("tls").value("framework_io", true)) ||
+            header.value("observation_level", std::string()) == "library-only";
+        if (native) {
+            stream_available = false;
+            stream_reason = "legacy_native_socket_io_not_observed";
+        }
+    }
     const auto prefix = raw.parent_path() / role;
     std::ifstream keys(prefix.string() + ".keys.log");
     const std::string keylog{std::istreambuf_iterator<char>(keys), {}};
@@ -361,11 +380,33 @@ Json analyze(const std::filesystem::path& raw, const std::filesystem::path& outp
     Json connections = Json::array();
     for (const auto& c : header.at("connections")) {
         const auto index = c.at("index").get<std::size_t>();
+        if (!stream_available) {
+            const auto unavailable_direction =
+                Json{{"records", Json::array()},
+                     {"messages", Json::array()},
+                     {"decryption_complete", false},
+                     {"availability", {{"available", false}, {"reason", stream_reason}}}};
+            connections.push_back(
+                {{"connection", index},
+                 {"cipher_suite", nullptr},
+                 {"supported_cipher", nullptr},
+                 {"client_random", nullptr},
+                 {"client_sent", unavailable_direction},
+                 {"server_sent", unavailable_direction},
+                 {"decryption_complete", false},
+                 {"availability",
+                  {{"tls_stream", {{"available", false}, {"reason", stream_reason}}}}},
+                 {"event_annotations", Json::array()},
+                 {"note", "TLS stream decryption unavailable because ciphertext was not observed"}});
+            continue;
+        }
         const auto p = prefix.string() + ".conn-" + std::to_string(index);
         const auto sent = read_bytes(p + ".sent.bin"), received = read_bytes(p + ".received.bin");
         auto decoded =
             role == "client" ? decode(sent, received, keylog) : decode(received, sent, keylog);
         decoded["connection"] = index;
+        decoded["availability"] =
+            {{"tls_stream", {{"available", true}, {"reason", nullptr}}}};
         Json annotations = Json::array();
         for (const auto& event : events) {
             if (event.at("connection") != index)

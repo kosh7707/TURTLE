@@ -324,6 +324,20 @@ bool boundary(const Json& e) {
     const auto l = e.at("location").get<std::string>();
     return l == "implementation_boundary" || l == "framework";
 }
+bool native_stream_unobserved(const Json& header) {
+    return header.value("observation_level", std::string()) == "library-only" ||
+           (header.contains("config") && header.at("config").contains("tls") &&
+            !header.at("config").at("tls").value("framework_io", true));
+}
+bool io_events_observed(const Json& header) {
+    const bool has_availability =
+        header.contains("availability") && header.at("availability").is_object() &&
+        header.at("availability").contains("io_events") &&
+        header.at("availability").at("io_events").is_object();
+    return has_availability
+               ? header.at("availability").at("io_events").value("available", false)
+               : !native_stream_unobserved(header);
+}
 std::string kind(const Json& e) {
     return e.at("kind").get<std::string>();
 }
@@ -395,8 +409,38 @@ Json partition(const Json& header, const std::vector<Json>& input) {
         for (const auto& e : input)
             if (e.at("connection") == index && boundary(e))
                 events.push_back(&e);
-        Json result = {{"connection", index}, {"valid", false}};
+        const bool functional_valid = conn.value("application_verified", false);
+        bool primary_observable = true;
+        std::string primary_reason;
+        if (conn.contains("primary_window") && conn.at("primary_window").is_object()) {
+            primary_observable = conn.at("primary_window").value("available", false);
+            if (!primary_observable && conn.at("primary_window").contains("reason") &&
+                conn.at("primary_window").at("reason").is_string())
+                primary_reason = conn.at("primary_window").at("reason").get<std::string>();
+        } else if (header.at("role") == "server" && native_stream_unobserved(header)) {
+            primary_observable = false;
+            primary_reason = "server_first_receive_not_observed";
+        }
+        Json result = {{"connection", index}, {"valid", functional_valid}};
+        result["primary_window"] =
+            {{"available", primary_observable},
+             {"reason", primary_observable || primary_reason.empty() ? Json(nullptr)
+                                                                       : Json(primary_reason)}};
+        if (!primary_observable) {
+            result["reason"] = primary_reason;
+            result["io_breakdown"] = {
+                {"available", false},
+                {"reason", io_events_observed(header)
+                               ? Json(primary_reason.empty() ? "measurement_boundaries_incomplete"
+                                                            : primary_reason)
+                               : Json("io_events_not_observed")}};
+            results.push_back(result);
+            continue;
+        }
         if (events.empty()) {
+            result["valid"] = false;
+            result["primary_window"] =
+                {{"available", false}, {"reason", "missing_boundary_events"}};
             result["reason"] = "missing boundary events";
             results.push_back(result);
             continue;
@@ -420,10 +464,44 @@ Json partition(const Json& header, const std::vector<Json>& input) {
             }
         }
         if (!start || !end || *end < *start) {
+            result["valid"] = false;
+            result["primary_window"] =
+                {{"available", false}, {"reason", "missing_successful_measurement_boundaries"}};
             result["reason"] = "missing successful measurement boundaries";
             results.push_back(result);
             continue;
         }
+        const bool io_observed = io_events_observed(header);
+        if (!io_observed) {
+            result.update({{"valid", functional_valid},
+                           {"start_ns", *start},
+                           {"end_ns", *end},
+                           {"elapsed_ns", *end - *start},
+                           {"computation_ns", nullptr},
+                           {"io_ns", nullptr},
+                           {"wait_ns", nullptr},
+                           {"gap_ns", nullptr},
+                           {"segments", Json::array()},
+                           {"end_definition", "successful_application_call_end"},
+                           {"io_breakdown",
+                            {{"available", false}, {"reason", "io_events_not_observed"}}}});
+            for (const char* metric : {"thread_cpu_ns", "cycles", "instructions"}) {
+                result[metric] = nullptr;
+                const bool supported = std::string(metric) == "thread_cpu_ns" ||
+                                       header.value("perf_complete", false);
+                if (supported && start_event->contains(metric) && end_event->contains(metric) &&
+                    !start_event->at(metric).is_null() && !end_event->at(metric).is_null()) {
+                    const auto a = start_event->at(metric).get<std::uint64_t>();
+                    const auto b = end_event->at(metric).get<std::uint64_t>();
+                    if (b >= a)
+                        result[metric] = b - a;
+                }
+            }
+            result["heap_peak_bytes"] = nullptr;
+            results.push_back(result);
+            continue;
+        }
+        result["io_breakdown"] = {{"available", true}, {"reason", nullptr}};
         std::uint64_t computation = 0, io = 0, wait = 0, gap = 0;
         bool in_call = false, in_io = false, in_wait = false, consistent = true;
         std::uint64_t previous = time(*events.front());
@@ -472,7 +550,7 @@ Json partition(const Json& header, const std::vector<Json>& input) {
         }
         const auto elapsed = *end - *start;
         consistent = consistent && computation + io + wait + gap == elapsed;
-        result.update({{"valid", consistent},
+        result.update({{"valid", functional_valid && consistent},
                        {"start_ns", *start},
                        {"end_ns", *end},
                        {"elapsed_ns", elapsed},
@@ -732,6 +810,13 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 !network_required || network.integrity.value("eligible", false);
             group.automatic_comparison_eligible =
                 group.automatic_comparison_eligible && metrics_admitted;
+            const bool primary_available =
+                p.contains("primary_window") && p.at("primary_window").is_object() &&
+                p.at("primary_window").value("available", false) && p.contains("elapsed_ns") &&
+                !p.at("elapsed_ns").is_null();
+            group.automatic_comparison_eligible =
+                group.automatic_comparison_eligible && primary_available &&
+                !native_stream_unobserved(header);
             if (!metrics_admitted)
                 continue;
             for (const auto* metric :
@@ -752,8 +837,9 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                         window.at("cycles").get<double>());
                 }
             }
-            group.batches[header.at("batch").get<std::uint64_t>()].push_back(
-                p.at("elapsed_ns").get<double>());
+            if (primary_available)
+                group.batches[header.at("batch").get<std::uint64_t>()].push_back(
+                    p.at("elapsed_ns").get<double>());
         }
     }
     std::filesystem::create_directories(output);
@@ -823,6 +909,9 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 db["peer_context_identity"]["hash"].is_null())
                 continue;
             if (groups[a]["batch_ids"] != groups[b]["batch_ids"])
+                continue;
+            if (!groups[a]["metrics"].contains("elapsed_ns") ||
+                !groups[b]["metrics"].contains("elapsed_ns"))
                 continue;
             const auto role = da.at("role").get<std::string>();
             const char* own_adapter = role == "client" ? "client_adapter" : "server_adapter";

@@ -60,9 +60,15 @@ int main(int argc, char** argv) {
                             data.at("connections")[2].at("warmup") == false,
                         "warmup and measured connections were mixed");
                 require(data.at("declaration").at("is_mock").get<bool>(), "mock mislabeled");
+                require(data.at("availability").at("tls_stream").at("available") == true,
+                        "callback stream availability missing");
+                require(data.at("availability").at("io_events").at("available") == true,
+                        "callback I/O availability missing");
                 for (const auto& connection : data.at("connections"))
-                    require(connection.at("application_verified").get<bool>(),
-                            "application not verified");
+                    require(connection.at("application_verified").get<bool>() &&
+                                connection.at("primary_window").at("available").get<bool>() &&
+                                !connection.at("start_sequence").is_null(),
+                            "application or primary boundary not verified");
             }
         require(pids.size() == 4, "role processes were reused");
         for (const char* directory : {"sample-000001", "sample-000002"}) {

@@ -24,6 +24,10 @@
 
 `clock_start`, `clock_end`는 실제 시각과 단조 시각의 대응 관측입니다. `observation_level`, `incomplete`, `perf_complete`, 저장·복원한 상태 크기, 고정한 CPU도 남깁니다. 버퍼 공간이 부족하면 `capture_dropped`가 증가하고 표본은 무효로 저장됩니다. 넘친 데이터를 일부만 잘라 성공으로 표시하지 않습니다.
 
+`availability`는 `tls_stream`, `io_events`, `kernel_receive_events` 각각에 대해 `available` boolean과 `reason`을 가집니다. callback 경로의 stream·I/O는 available이며, native socket 경로는 세 항목 모두 `native_socket_io_not_observed` 이유로 unavailable입니다. callback에서도 kernel timestamp 설정을 준비하지 못했으면 `kernel_timestamps_not_configured`입니다. availability는 수집 통로의 지원·설정 상태이며 사건 발생 횟수가 아닙니다. 특히 `kernel_receive_events.available=true`만으로 실제 수신 timestamp가 있었다고 말하지 않습니다. `raw_timestamp_ns`가 있는 사건이 발생 증거입니다.
+
+`connections[*].primary_window`는 역할의 기존 주 측정 구간을 만들 수 있는지와 이유를 보존합니다. native client는 호출 시작·끝을 볼 수 있어 available이지만, native server는 첫 성공 framework receive를 볼 수 없어 `available=false`, `reason=server_first_receive_not_observed`이며 `start_sequence`는 `null`입니다. 기능적으로 성공한 연결도 이 metric은 unavailable일 수 있습니다.
+
 `connections[*].socket`에는 TLS 이전에 다시 읽은 `nonblocking`, `tcp_nodelay`, `send_buffer`, `receive_buffer`, `kernel_timestamps`를 저장합니다. 버퍼 크기는 커널의 실제 조회값이며 `config.socket_send_buffer`와 `config.socket_receive_buffer`의 요청값과 다를 수 있습니다. 관측하지 않은 경우에는 객체 대신 `null`이고, 이전 원자료에는 이 필드가 없을 수 있습니다.
 
 `loaded_context_hash`는 실제 셋업 입력 바이트의 FNV-1a 지문입니다. 입력이 비었으면 빈 문자열이며, 비어 있지 않으면 `loaded_context_size`와 함께 입력 상태를 식별합니다. 역할 프로세스마다 파일을 다시 읽지 않고 지휘 프로세스가 고정한 입력을 전달합니다. 저장 결과 파일은 이 입력과 다를 수 있습니다. 지문은 보안 검증값이 아닙니다.
@@ -63,6 +67,7 @@ timeout 검증의 원장은 3개 attempt를 모두 timeout으로 보존했고 mi
 ## 오프라인 해석과 요약
 
 - `turtle-interpret <역할>.jsonl <출력>.json`은 저장한 양방향 스트림과 해당 역할의 키 로그를 읽습니다. TLS_AES_128_GCM_SHA256만 해독하며, 핸드셰이크 키에서 응용 데이터 키로 바뀌는 지점은 해당 방향의 Finished입니다. 누락된 키나 지원하지 않는 암호 방식은 해독 불가로 표시하고 레코드 구간을 보존합니다.
+- native socket 경로의 빈 `.sent.bin`·`.received.bin`은 관측된 0바이트 TLS나 해독 성공이 아닙니다. 해석 결과는 `availability.tls_stream.available=false`, 빈 record/message 배열과 `decryption_complete=false`를 남깁니다. availability 필드가 생기기 전의 `framework_io=false` 또는 `observation_level=library-only` 원자료도 `legacy_native_socket_io_not_observed`로 읽습니다. 과거 callback schema 1 자료의 의미는 유지합니다.
 - 해독 결과의 `plaintext_fragments`는 레코드 안의 평문 위치입니다. `record_stream_ranges`는 그 메시지를 담은 레코드 전체의 전송 구간입니다. 암호문 안에서 메시지에 해당하는 정확한 바이트 구간이라고 주장하지 않습니다. 한 레코드에 여러 메시지가 있으면 `bundled`로 표시합니다.
 - `event_annotations`는 성공한 입출력의 바이트 구간과 레코드 전체 구간이 겹치는 메시지 이름입니다. 정확한 메시지별 연산 비용은 아닙니다.
 - `turtle-report <원자료 파일 또는 폴더> <출력 폴더>`는 `summary.json`과 경험적 누적 분포 SVG를 만듭니다. 유효하지 않은 표본과 데우기 연결은 요약에서 제외합니다.

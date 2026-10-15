@@ -54,7 +54,7 @@ python3 scripts/netem-study.py verify --build build --pki PKI_DIR \
 
 OpenSSL의 실제 표준 TLS와 netem을 함께 쓴 고정 검증 묶음은 2026년 10월 15일 한 번 실행해 통과했습니다. CA→client 5ms·20% loss의 사전 고정 64 attempts가 모두 성공했고, qdisc skb drop 94와 CA 소켓 `TCP_INFO.total_retrans` 차이 58을 별도로 관측했습니다. 이 수치는 기능 gate 증거이지 성능 표본이나 현실망 모델이 아닙니다. 손실 설정값, 실제 skb drop, TCP 재전송은 서로 다른 값이며 어느 하나로 다른 값을 대신하지 않습니다.
 
-G005의 구현·고정 실행·오프라인 보고를 완료했습니다. 보존한 일곱 조건의 원자료를 최신 보고 도구로 다시 처리한 합계는 requested=started=100, success=97, timeout=3이며 attempt/connection 행도 각각 100개입니다. G006에서는 당시 57개 시험을 각각 20회, 총 1,140회 실행해 실패 없이 통과했습니다. G007의 순수 TLS netem 경로와 엄격한 원장 읽기까지 포함한 동결 트리도 58×20=1,160회 통과했습니다. M5 CLI 상호운용 시험을 더한 현재 트리는 70×20=1,400회 통과했고 24개 생산 번역 단위와 새 CLI 구동기의 정적 검사를 마쳤습니다. 이전 실패와 수정 근거는 [검증 기록](docs/validation.md)에 별도로 보존합니다.
+G005의 구현·고정 실행·오프라인 보고를 완료했습니다. 보존한 일곱 조건의 원자료를 최신 보고 도구로 다시 처리한 합계는 requested=started=100, success=97, timeout=3이며 attempt/connection 행도 각각 100개입니다. G006에서는 당시 57개 시험을 각각 20회, 총 1,140회 실행해 실패 없이 통과했습니다. G007 동결 트리는 58×20=1,160회, M5 CLI 상호운용 트리는 70×20=1,400회 통과했습니다. OpenSSL callback/native I/O 경로를 더한 현재 트리는 72×20=1,440회 통과했고 24개 생산 번역 단위의 정적 검사와 독립 검토를 마쳤습니다. 이전 실패와 수정 근거는 [검증 기록](docs/validation.md)에 별도로 보존합니다.
 
 stock TLS의 Certificate 메시지는 그대로이며 실제 인증서 압축·생략·캐싱 연구 기법은 구현하지 않았습니다. 진단 실행에서 얻은 지연값은 기능 경로 확인용 데이터이며 성능 논문 결론이 아닙니다.
 
@@ -86,8 +86,8 @@ cmake --build build --parallel 4
 | 시간 | 단조 시계와 해당 역할 스레드의 CPU 시간입니다. |
 | 사이클·명령어 | 가능한 환경에서 `perf_event_open`으로 해당 스레드의 사용자 공간 실행을 셉니다. 미지원·누락·다중화는 구별합니다. |
 | 힙 | 별도 메모리 모드에서 라이브러리 할당 훅이 관측한 요청 바이트의 현재값·구간 최고값을 기록합니다. 전체 프로세스 RSS나 스택이 아닙니다. |
-| 바이트 | 실제 성공한 송수신의 방향별 TLS 스트림입니다. TCP/IP 패킷 경계나 크기가 아닙니다. |
-| 커널 수신 시각 | `recvmsg`의 `SO_TIMESTAMPNS` 부가정보를 별도로 남깁니다. 각 바이트의 정확한 도착 시각으로 확대 해석하지 않습니다. |
+| 바이트 | callback I/O에서 실제 성공한 송수신의 방향별 TLS 스트림입니다. TCP/IP 패킷 경계나 크기가 아닙니다. native socket 경로에서는 unavailable이지 관측된 0바이트가 아닙니다. |
+| 커널 수신 시각 | callback `recvmsg`의 `SO_TIMESTAMPNS` 부가정보를 별도로 남깁니다. availability는 수집 통로의 지원·설정이며 사건 발생 증거는 실제 원자료 행입니다. 각 바이트의 정확한 도착 시각으로 확대 해석하지 않습니다. |
 | 메시지 | 키 로그와 스트림에서 레코드를 해독하여 종류와 레코드 범위를 붙입니다. 암호문 오프셋과 평문 메시지 오프셋을 혼동하지 않습니다. |
 | 요약 | 역할별 연산·입출력·대기·틈의 합, StQ 세 값, 전체 표본, 분포 SVG와 독립 부트스트랩 비교 후보를 남깁니다. |
 
@@ -99,6 +99,8 @@ cmake --build build --parallel 4
 - 세션 티켓을 켜면 이 구간 안에서 수행된 티켓 작업도 들어갑니다. 티켓 0장과 2장은 같은 프로필이 아닙니다. `examples/profiles/openssl-tickets.json`으로 그 차이를 관측할 수 있습니다.
 
 **송수신 함수 경계의 관측이 모든 TLS 메시지의 독립적인 연산 시간을 뜻하지는 않습니다.** 한 호출이 여러 레코드나 메시지를 처리하면 그 묶음까지가 관측 가능한 범위입니다. 계측과 키 로그·바이트 복사의 비용도 실제 실행에 영향을 줍니다. 원자료와 보정 표본을 보존하지만, 이를 빼면 비계측 실행의 참값이 된다고 주장하지 않습니다.
+
+OpenSSL native socket 정상 경로도 실제 TLS로 확인했습니다. native 클라이언트는 호출 경과·스레드 CPU를 남기지만 I/O 분해와 framework stream은 없고, native 서버의 첫 수신 기반 주 구간은 unavailable입니다. 이 결과는 기능 성공과 metric availability를 구별하며 callback/native 자동 성능 비교를 만들지 않습니다. wolfSSL·Mbed TLS native는 지원하지 않습니다. 기존 zero-loss runner에서 두 경로의 receiver-facing router egress skb metadata도 확인했지만, 이는 full pcap·syscall trace·물리 packet 또는 unique TLS byte 비교가 아닙니다.
 
 ## 테스트와 반복 실험
 

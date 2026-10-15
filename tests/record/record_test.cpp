@@ -75,6 +75,14 @@ int main() {
             R"({"type":"turtle-netem-profile","schema":1,"qdisc":"none"})";
         info.config.network_handoff = handoff;
         info.connections.emplace_back();
+        info.connections.back().primary_window_available = false;
+        info.connections.back().primary_window_reason = "server_first_receive_not_observed";
+        info.tls_stream_available = false;
+        info.tls_stream_reason = "native_socket_io_not_observed";
+        info.io_events_available = false;
+        info.io_events_reason = "native_socket_io_not_observed";
+        info.kernel_receive_events_available = false;
+        info.kernel_receive_events_reason = "native_socket_io_not_observed";
         model::TcpInfoSnapshot tcp_start;
         tcp_start.structure_bytes = 104;
         tcp_start.total_retrans = 0;
@@ -106,6 +114,15 @@ int main() {
     assert(sample["connections"][0]["tcp_start"]["total_retrans"] == 0);
     assert(sample["connections"][0]["tcp_start"]["state"].is_null());
     assert(sample["connections"][0]["tcp_end"].is_null());
+    assert(sample["connections"][0]["start_sequence"].is_null());
+    assert(sample["connections"][0]["primary_window"]["available"] == false);
+    assert(sample["connections"][0]["primary_window"]["reason"] ==
+           "server_first_receive_not_observed");
+    for (const auto* field : {"tls_stream", "io_events", "kernel_receive_events"}) {
+        assert(sample["availability"][field]["available"] == false);
+        assert(sample["availability"][field]["reason"] ==
+               "native_socket_io_not_observed");
+    }
     const auto& config = sample["config"];
     assert(config["scenario_name"] == model::lookup_scenario_name);
     assert(config["failure_policy"] == "fixed-attempts" && config["flush_grace_ms"] == 700);

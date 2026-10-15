@@ -88,7 +88,7 @@ python3 scripts/run-study.py --build build --pki pki/default \
 
 `results/validation-20261015-resume/`에 새 checkout 검사(`m0-clean-check.log`, `current-clean-check.log`), 단회 검사(`check-45.log`), 실패를 포함한 반복 검사(`check-45-repeat20.log`), 정적 검사(`static.log`), 실제 교차 다중 연결 원자료(`cross-multiple/`)를 보존했습니다.
 
-이번 환경에는 clang-format 실행 파일이 없어 자동 형식 검사는 다시 수행하지 못했습니다. sanitizer와 물리 리눅스 perf 정확도는 이 초기 완료 범위가 아니었습니다. 당시 아직 하지 않았던 M5의 외부 OpenSSL 명령 연결은 뒤의 G009 절에서 별도로 완료했으며, M6 비교는 여전히 미완료입니다.
+이번 환경에는 clang-format 실행 파일이 없어 자동 형식 검사는 다시 수행하지 못했습니다. sanitizer와 물리 리눅스 perf 정확도는 이 초기 완료 범위가 아니었습니다. 당시 아직 하지 않았던 M5의 외부 OpenSSL 명령 연결과 M6 비교는 뒤의 G009·G010 절에서 각각 완료했습니다.
 
 ## 같은 날 추가 결정 — 암호군 고정
 
@@ -247,4 +247,39 @@ G008을 완료로 표시합니다. 이 cutover 자체는 M5 외부 CLI 상호운
 
 공개 adapter v1에는 TLS `close_notify`를 구동하는 함수가 없습니다. 따라서 시험은 응용 교환 성공 뒤 connection을 닫고 CLI에 `-ignore_unexpected_eof`를 명시합니다. 이는 EOF 계약을 맞춘 것이며 정상 TLS shutdown alert를 검증했다는 뜻이 아닙니다. 이 시험은 WSL의 기능 상호운용성 근거이지 native/callback 동등성, 관측자 비용이나 성능 결론도 아닙니다.
 
-이 결합 증거로 G009/M5의 현재 범위를 완료로 표시합니다. N05·netem·lookup은 실행하지 않았습니다. M6·M7은 승인된 별도 계획만 있으며 아직 실행하지 않았습니다.
+이 결합 증거로 G009/M5의 현재 범위를 완료로 표시합니다. N05·netem·lookup은 실행하지 않았습니다. G009 완료 시점에는 M6·M7이 승인된 별도 계획뿐이었으며, 이후 M6 결과는 다음 절에 기록합니다.
+
+## G010/M6 OpenSSL callback/native I/O 경로 최종 검증
+
+동결한 구현은 OpenSSL↔OpenSSL callback/native×서버 인증/상호 인증 네 정상 조건을 실제 `turtle run`으로 실행합니다. 모든 조건은 새 context·연결, TLS 1.3, `TLS_AES_128_GCM_SHA256`, P-256 요청, tickets 0, 32바이트 암호화 핑퐁, 역할별 인증 결과와 attempt 성공을 요구합니다. wolfSSL·Mbed TLS의 native 경로는 지원하지 않으며 시험 범위를 줄여 성공으로 세지 않습니다.
+
+원자료·해석·보고 회귀는 다음 경계를 고정합니다.
+
+- callback의 TLS stream/I/O와 설정 가능한 kernel receive 수집 경로는 available입니다. kernel receive availability만으로 실제 timestamp 사건 발생을 주장하지 않습니다.
+- native의 stream·I/O·kernel receive는 `native_socket_io_not_observed`입니다. 빈 stream 해석은 `decryption_complete=false`이며 과거 library-only 자료도 legacy unavailable로 읽습니다.
+- native client는 호출 경과·스레드 CPU를 보존하되 I/O 분해와 stream byte metric은 `null`입니다. native server의 주 구간은 `server_first_receive_not_observed`이고 elapsed·CPU도 없습니다.
+- 기능 성공과 metric availability를 분리하고 native 그룹을 자동 비교에서 제외합니다.
+
+별도 실제 외부 조건은 기존 pure TLS zero-loss runner에 callback/native를 각각 2 attempts로 실행합니다. 수신자 쪽 router egress AF_PACKET 행의 양방향 payload를 확인하고 skb count·payload 합을 근사 observer-read-time 창별로 보존하되, 두 모드 수치의 동일성은 요구하지 않습니다. 이는 full pcap·syscall·물리 wire나 고유 TLS byte 증거가 아닙니다. `verify`와 N05는 실행하지 않았고 M13·M14 범위를 확장하지 않았습니다.
+
+동결 트리의 실행 증거는 다음과 같습니다.
+
+| 증거 | 결과 |
+|---|---|
+| `results/io-path/check-final-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 72개 시험을 각각 20회, 총 **1,440회** 실행해 실패 0건으로 통과했습니다. `io_path_normal`과 지원 환경의 `io_path_external_metadata`도 각각 20회 모두 실제 통과해 skip이 없었고, 11개 부품 include 경계·순환 검사도 통과했습니다. 로그 SHA-256은 `ec865445da3ede7380623c53667ef1f3922984acecd0c83f8b47347246488233`입니다. |
+| `results/io-path/static-final.log` | 외부 소스를 제외한 생산 번역 단위 24개의 cppcheck·clang-tidy가 통과했습니다. |
+| 독립 검토 | 제품 코드 review는 APPROVE, 구조 검토는 CLEAR였고 추가 수정 요구가 없었습니다. |
+
+보존한 실제 원자료의 독립 감사도 통과했습니다.
+
+| 증거 | 결과 |
+|---|---|
+| `results/io-path/preserved/validation-summary.json` | normal 4조건은 4 attempts·8개 역할 파일 모두 성공했습니다. callback은 stream 해독까지 완료했고 native는 명시적으로 unavailable이었습니다. native client의 elapsed·CPU와 native server의 unavailable 주 구간도 원자료와 보고서가 일치했습니다. |
+| 같은 파일의 external 감사 | callback/native 두 모드가 각각 2/2 attempts 성공해 모두 4 attempts·8개 역할 파일입니다. 각 모드의 12개 phase observation, host unchanged, helper/FD cleanup과 양방향 receiver-facing egress payload를 확인했습니다. |
+| `results/io-path/preserved/validation.log` 및 hash manifest | 선택한 171개 파일의 원본·보존본 hash가 세 manifest에서 일치했고, `derived/`의 최신 offline report도 정규화한 기존 보고서와 같았습니다. |
+
+normal callback 원자료에서 `raw_timestamp_ns`가 실제로 있는 사건은 서버 인증 client/server가 각각 14/8개, 상호 인증 client/server가 16/12개였습니다. 이 행들이 해당 실행의 kernel receive 사건 증거입니다. `kernel_receive_events.available=true`만으로 이 발생 횟수를 대신 주장하지 않습니다. native 원자료는 해당 수집 경로 자체를 unavailable로 기록합니다.
+
+외부 표에서 callback은 c2s 6 skb/688 payload bytes, s2c 4/2,601이었고 native는 c2s 6/688, s2c 4/2,599였습니다. 양쪽 capture footer는 두 interface 모두 packets 31, drops 0이었습니다. 이 숫자는 receiver-facing router egress에서 사용자 공간 observer가 읽은 skb metadata의 기술값입니다. timestamp와 scenario 창은 observer/decode read time 기반 근사값이며, skb 수는 물리 packet·고유 TLS record 수가 아니고 payload 합은 재전송·분할을 제거한 unique TLS bytes가 아닙니다. 두 모드 수치의 일치도 합격 조건이 아닙니다.
+
+72×20 실행·정적 검사·독립 검토와 이 원자료 감사를 결합해 G010/M6의 제한된 범위를 완료로 표시합니다. 이는 기능·관측 경계 검증이며 WSL 성능 결론, callback/native 동등성, full pcap·syscall·물리 wire 증거가 아닙니다. M7의 `channel_observer` flag와 공통 `handshake_call_begin_to_application_complete` 구간은 아직 구현하지 않았습니다.

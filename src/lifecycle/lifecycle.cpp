@@ -205,6 +205,16 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
     model::SampleInfo info;
     info.sample = sample; info.batch = config.batch; info.role = role; info.pid = ::getpid();
     info.config = config;
+    if (!config.tls.framework_io) {
+        info.observation_level = "library-only";
+        info.tls_stream_available = false;
+        info.tls_stream_reason = "native_socket_io_not_observed";
+        info.io_events_available = false;
+        info.io_events_reason = "native_socket_io_not_observed";
+        info.kernel_receive_events_available = false;
+        info.kernel_receive_events_reason = "native_socket_io_not_observed";
+        info.incomplete.push_back("native socket I/O has no framework byte or kernel capture");
+    }
     measure::Meter meter(config.mode, config.perf);
     Capture capture{meter, buffer};
     control::Waiter parent(control_fd);
@@ -273,9 +283,9 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
         };
         setup_event(model::EventKind::SetupBegin, setup_begin);
         setup_event(model::EventKind::SetupEnd, setup_end);
-        if (!config.tls.framework_io) {
-            info.observation_level = "library-only";
-            info.incomplete.push_back("native socket I/O has no framework byte or kernel capture");
+        if (config.tls.framework_io && info.capabilities.kernel_timestamp_configured) {
+            info.kernel_receive_events_available = true;
+            info.kernel_receive_events_reason.clear();
         }
         if (info.declaration.is_mock)
             info.incomplete.push_back("mock: no TLS encryption or certificate verification");
@@ -306,7 +316,12 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
                 throw std::runtime_error(std::string(operation) + ": " +
                     (detail && *detail ? detail : "adapter did not provide a diagnostic"));
             };
-            connection.start_sequence = capture.sequence + 1;
+            if (role == Role::Client)
+                connection.start_sequence = capture.sequence + 1;
+            else if (!config.tls.framework_io) {
+                connection.primary_window_available = false;
+                connection.primary_window_reason = "server_first_receive_not_observed";
+            }
             for (;;) {
                 auto step = capture.invoke(model::Call::Handshake,
                     [&] { return api.handshake_step(tls.get()); });
@@ -349,7 +364,12 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
             connection.application_verified = true;
             client_lookup.scenario_end();
             connection.end_sequence = capture.sequence;
-            if (role == Role::Server && capture.first_receive) connection.start_sequence = capture.first_receive;
+            if (role == Role::Server && capture.first_receive)
+                connection.start_sequence = capture.first_receive;
+            if (connection.start_sequence) {
+                connection.primary_window_available = true;
+                connection.primary_window_reason.clear();
+            }
             connection.negotiated = capture.invoke(model::Call::Negotiated,
                 [&] { return api.negotiated(tls.get()); });
             if (!info.declaration.is_mock) {

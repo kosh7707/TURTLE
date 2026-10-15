@@ -33,7 +33,10 @@ int main() {
     assert(c.difference == 2 && c.lower == 2 && c.upper == 2 && c.distinguishable);
     assert(!compare(a, a, 7, 100).distinguishable);
     using J = nlohmann::json;
-    J header = {{"role", "client"}, {"connections", J::array({{{"index", 0}, {"warmup", false}}})}};
+    J header = {{"role", "client"},
+                {"connections", J::array({{{"index", 0},
+                                             {"warmup", false},
+                                             {"application_verified", true}}})}};
     std::vector<J> events;
     auto add = [&](const char* kind, int time, const char* call = "handshake", int result = 0) {
         events.push_back({{"kind", kind},
@@ -54,6 +57,44 @@ int main() {
     auto p = partition(header, events)[0];
     assert(p["valid"] == true && p["elapsed_ns"] == 30);
     assert(p["computation_ns"] == 16 && p["io_ns"] == 3 && p["wait_ns"] == 9 && p["gap_ns"] == 2);
+    auto native_client = header;
+    native_client["observation_level"] = "library-only";
+    native_client["config"] = {{"tls", {{"framework_io", false}}}};
+    native_client["availability"] = {
+        {"tls_stream", {{"available", false}, {"reason", "native_socket_io_not_observed"}}},
+        {"io_events", {{"available", false}, {"reason", "native_socket_io_not_observed"}}}};
+    auto native_client_part = partition(native_client, events)[0];
+    assert(native_client_part["valid"] == true && native_client_part["elapsed_ns"] == 30);
+    assert(native_client_part["io_ns"].is_null() &&
+           native_client_part["computation_ns"].is_null());
+    assert(native_client_part["io_breakdown"]["available"] == false);
+    auto native_server = native_client;
+    native_server["role"] = "server";
+    native_server["connections"][0]["application_verified"] = true;
+    native_server["connections"][0]["primary_window"] = {
+        {"available", false}, {"reason", "server_first_receive_not_observed"}};
+    auto native_server_part = partition(native_server, events)[0];
+    assert(native_server_part["valid"] == true);
+    assert(native_server_part["primary_window"]["available"] == false);
+    assert(native_server_part["reason"] == "server_first_receive_not_observed");
+    assert(native_server_part["io_breakdown"]["reason"] == "io_events_not_observed");
+    assert(!native_server_part.contains("elapsed_ns"));
+    auto callback_partial = header;
+    callback_partial["connections"][0]["primary_window"] = {
+        {"available", false}, {"reason", "measurement_boundaries_incomplete"}};
+    const auto callback_partial_part = partition(callback_partial, events)[0];
+    assert(callback_partial_part["valid"] == true);
+    assert(callback_partial_part["io_breakdown"]["available"] == false);
+    assert(callback_partial_part["io_breakdown"]["reason"] ==
+           "measurement_boundaries_incomplete");
+    auto unverified_application = header;
+    unverified_application["connections"][0]["application_verified"] = false;
+    const auto unverified_part = partition(unverified_application, events)[0];
+    assert(unverified_part["primary_window"]["available"] == true);
+    assert(unverified_part["elapsed_ns"] == 30);
+    assert(unverified_part["valid"] == false);
+    unverified_application["connections"][0].erase("application_verified");
+    assert(partition(unverified_application, events)[0]["valid"] == false);
     for (auto& e : events) {
         e["thread_cpu_ns"] = e["monotonic_ns"];
         e["cycles"] = 2 * e["monotonic_ns"].get<unsigned>();
@@ -86,6 +127,47 @@ int main() {
     const auto dir =
         std::filesystem::temp_directory_path() / ("turtle-report-" + std::to_string(getpid()));
     std::filesystem::create_directories(dir);
+    const auto unavailable_dir = dir / "unavailable-primary";
+    for (const auto* adapter : {"native-a", "native-b"}) {
+        auto unavailable = header;
+        unavailable["role"] = "server";
+        unavailable["observation_level"] = "library-only";
+        unavailable["config"]["tls"] = {{"framework_io", false}};
+        unavailable["config"]["server_adapter"] = adapter;
+        unavailable["declaration"]["library"] = adapter;
+        unavailable["connections"][0]["application_verified"] = true;
+        unavailable["connections"][0]["primary_window"] = {
+            {"available", false}, {"reason", "server_first_receive_not_observed"}};
+        const auto folder = unavailable_dir / adapter;
+        std::filesystem::create_directories(folder);
+        std::ofstream(folder / "server.jsonl") << unavailable.dump() << '\n';
+    }
+    const auto unavailable_report = summarize(unavailable_dir, dir / "unavailable-report");
+    assert(unavailable_report["invalid_samples"] == 0);
+    assert(unavailable_report["groups"].size() == 2);
+    assert(unavailable_report["comparisons"].empty());
+    for (const auto& group : unavailable_report["groups"]) {
+        assert(group["metrics"].empty());
+        assert(group["batches"].empty());
+        assert(group["automatic_comparison_eligible"] == false);
+    }
+    const auto legacy_marker_dir = dir / "legacy-marker-native";
+    std::filesystem::create_directories(legacy_marker_dir);
+    auto legacy_marker = header;
+    legacy_marker["observation_level"] = "library-only";
+    legacy_marker["config"].erase("tls");
+    {
+        std::ofstream raw(legacy_marker_dir / "client.jsonl");
+        raw << legacy_marker.dump() << '\n';
+        for (const auto& event : events)
+            raw << event.dump() << '\n';
+    }
+    const auto legacy_marker_report =
+        summarize(legacy_marker_dir, dir / "legacy-marker-report");
+    assert(legacy_marker_report["groups"].size() == 1);
+    assert(legacy_marker_report["groups"][0]["metrics"]["elapsed_ns"]["count"] == 1);
+    assert(!legacy_marker_report["groups"][0]["metrics"].contains("io_ns"));
+    assert(legacy_marker_report["groups"][0]["automatic_comparison_eligible"] == false);
     {
         std::ofstream raw(dir / "client.jsonl");
         raw << header.dump() << '\n';

@@ -139,3 +139,13 @@ host unchanged, phase observation, helper/observer 회수 같은 실행 integrit
 ## 수명주기에서 구체 조회 책임을 분리
 
 공통 자식 제어 프로토콜은 `endpoint_protocol.cpp`로, 캐시·조회 wire·lookup 원자료와 모의 CA 실행은 `lookup_runtime.cpp`의 구체 `ClientLookupRuntime`으로 옮겼습니다. `lifecycle.cpp`는 표본·역할·연결의 순서와 실패 회수를 계속 소유합니다. 범용 플러그인이나 서비스 조회기를 만들지 않고 실제로 독립된 조회 책임만 분리했습니다.
+
+## 기능 성공과 I/O 관측 가능성을 분리
+
+OpenSSL native socket 경로에서는 TLS 라이브러리가 framework `Io`를 거치지 않습니다. 성공한 TLS와 응용 핑퐁을 framework stream·I/O·kernel receive 값 0으로 바꾸지 않고, 각 수집 통로를 이유 있는 unavailable로 기록합니다. native client의 TLS 호출 경과·스레드 CPU는 실제 호출 snapshot에서 보존하되 I/O 분해를 추정하지 않습니다. native server의 첫 성공 receive 기반 주 구간은 만들지 않으며 handshake 시작으로 대체하지 않습니다.
+
+기능 유효성, 주 구간 availability와 I/O 분해 availability는 서로 독립입니다. native 그룹은 기존 자동 성능 비교에 넣지 않습니다. 해석기도 native 빈 stream을 성공한 0바이트 해독으로 보지 않으며, availability 필드가 없는 과거 library-only 자료만 명시적인 legacy 규칙으로 읽습니다. wolfSSL·Mbed TLS에는 native 지원을 추가하지 않았습니다.
+
+## native/callback 외부 근거는 skb metadata로 제한
+
+M6은 새 packet 도구나 netem 조건을 만들지 않고 기존 lookup=false zero-loss runner를 재사용합니다. 수신자 쪽 router egress의 AF_PACKET 행을 주소·TCP 4-tuple·방향으로 제한해 skb count와 payload 합을 기술하지만 두 모드의 수치 동일성을 요구하지 않습니다. 사용자 공간 observer-read timestamp, 근사 phase window, 재전송·분할 가능성을 함께 기록합니다. 이를 syscall trace, full pcap, 고유 TLS bytes, 물리 packet·wire 시각이라고 부르지 않습니다. M13·M14와 N05의 고정 범위는 바꾸지 않습니다.
