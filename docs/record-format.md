@@ -16,6 +16,10 @@
 
 `clock_start`, `clock_end`는 실제 시각과 단조 시각의 대응 관측입니다. `observation_level`, `incomplete`, `perf_complete`, 저장·복원한 상태 크기, 고정한 CPU도 남깁니다. 버퍼 공간이 부족하면 `capture_dropped`가 증가하고 표본은 무효로 저장됩니다. 넘친 데이터를 일부만 잘라 성공으로 표시하지 않습니다.
 
+`connections[*].socket`에는 TLS 이전에 다시 읽은 `nonblocking`, `tcp_nodelay`, `send_buffer`, `receive_buffer`, `kernel_timestamps`를 저장합니다. 버퍼 크기는 커널의 실제 조회값이며 `config.socket_send_buffer`와 `config.socket_receive_buffer`의 요청값과 다를 수 있습니다. 관측하지 않은 경우에는 객체 대신 `null`이고, 이전 원자료에는 이 필드가 없을 수 있습니다.
+
+`loaded_context_hash`는 실제 셋업 입력 바이트의 FNV-1a 지문입니다. 입력이 비었으면 빈 문자열이며, 비어 있지 않으면 `loaded_context_size`와 함께 입력 상태를 식별합니다. 역할 프로세스마다 파일을 다시 읽지 않고 지휘 프로세스가 고정한 입력을 전달합니다. 저장 결과 파일은 이 입력과 다를 수 있습니다. 지문은 보안 검증값이 아닙니다.
+
 ## 사건
 
 각 줄에 표본·묶음·역할·프로필 해시·환경 해시와 연결 번호, 사건 순번, 종류, 관측 위치, 호출 종류·번호를 붙입니다. 시간은 나노초입니다. 사이클·명령어·성능 카운터 실행 시간·힙을 얻지 못하면 `null`입니다. 실제로 관측한 0과 다릅니다.

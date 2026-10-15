@@ -126,6 +126,8 @@ Step result(Session& s, int rc) {
 }
 Context* setup(Role role, const TlsConfig& config, const HostServices& services,
                std::span<const std::uint8_t> saved) {
+    require(config.cipher == "TLS_AES_128_GCM_SHA256",
+            "TURTLE supports only TLS_AES_128_GCM_SHA256");
     require(saved.empty(), "OpenSSL adapter has no serializable context");
     require(config.record_size_limit == 0 && !config.certificate_compression,
             "OpenSSL adapter does not implement requested record limit or certificate compression");

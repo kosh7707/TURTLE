@@ -58,6 +58,7 @@ int main() {
         record::Writer writer(dir.string(), Role::Client, 2);
         model::SampleInfo info;
         info.sample = 7;
+        info.connections.emplace_back();
         const auto child = fork();
         assert(child >= 0);
         if (child == 0) {
@@ -79,6 +80,8 @@ int main() {
     input >> sample >> event;
     assert(sample["sample"] == 7 && sample["valid"] == false);
     assert(sample["capture_dropped"] == 4);
+    assert(sample["connections"][0].contains("socket"));
+    assert(sample["connections"][0]["socket"].is_null());
     assert(event["cycles"].is_null() && event["heap"].is_null());
     assert(event["sequence"] == 42);
     assert(std::filesystem::file_size(dir / "client.conn-0.sent.bin") == 4);

@@ -158,8 +158,8 @@ std::vector<std::uint8_t> load_context(const model::RunConfig& config, Role role
 }
 int endpoint(const model::RunConfig& config, Role role, std::uint64_t sample,
              const std::string& directory, int listener, std::uint16_t port, int control_fd,
-             control::Deadline deadline) {
-    const std::size_t count = config.warmups + 1;
+             control::Deadline deadline, std::span<const std::uint8_t> saved) {
+    const std::size_t count = config.warmups + config.connections;
     record::Writer writer(directory, role, count);
     record::Buffer buffer(
         {config.event_capacity, config.stream_capacity, config.keylog_capacity, count});
@@ -173,6 +173,8 @@ int endpoint(const model::RunConfig& config, Role role, std::uint64_t sample,
     Capture capture{meter, buffer};
     std::vector<int> sockets;
     sockets.reserve(count);
+    std::vector<model::SocketSettings> socket_settings;
+    socket_settings.reserve(count);
     std::vector<std::unique_ptr<control::Waiter>> waiters;
     waiters.reserve(count);
     control::Waiter control_waiter(control_fd);
@@ -198,8 +200,9 @@ int endpoint(const model::RunConfig& config, Role role, std::uint64_t sample,
                           {&capture, plaintext},
                           config.mode == model::Mode::Memory,
                           config.mode == model::Mode::Trace};
-        auto saved = load_context(config, role);
         info.loaded_context_size = saved.size();
+        if (!saved.empty())
+            info.loaded_context_hash = model::fingerprint(std::string(saved.begin(), saved.end()));
         const auto setup_begin = meter.read();
         std::unique_ptr<Context, decltype(api.teardown)> context(
             api.setup(role, config.tls, host, saved), api.teardown);
@@ -234,10 +237,12 @@ int endpoint(const model::RunConfig& config, Role role, std::uint64_t sample,
             int fd = role == Role::Server ? tcp::accept_one(listener) : tcp::connect_loopback(port);
             sockets.push_back(fd);
             waiters.push_back(std::make_unique<control::Waiter>(fd));
-            bool stamps =
+            const auto settings =
                 transport::configure(fd, config.tcp_nodelay, config.socket_send_buffer,
                                      config.socket_receive_buffer, config.kernel_timestamps);
-            info.capabilities.kernel_timestamp_configured = stamps;
+            socket_settings.push_back(settings);
+            info.capabilities.kernel_timestamp_configured =
+                settings.kernel_timestamps && (i == 0 || info.capabilities.kernel_timestamp_configured);
             if (auto reason = tcp::check_ready(fd); !reason.empty())
                 throw std::runtime_error(reason);
         }
@@ -261,6 +266,7 @@ int endpoint(const model::RunConfig& config, Role role, std::uint64_t sample,
             model::ConnectionInfo connection;
             connection.index = i;
             connection.warmup = i < config.warmups;
+            connection.socket = socket_settings[i];
             transport::Channel channel{sockets[i], &capture, Capture::observe};
             auto io = channel.io();
             capture.call = model::Call::Open;
@@ -405,8 +411,16 @@ int endpoint(const model::RunConfig& config, Role role, std::uint64_t sample,
 } // namespace
 int run(const model::RunConfig& input) {
     auto config = input;
+    if (config.tls.cipher != "TLS_AES_128_GCM_SHA256")
+        throw std::invalid_argument("TURTLE supports only TLS_AES_128_GCM_SHA256");
+    if (config.connections == 0 || config.connections > 1025 ||
+        config.warmups > 1025 - config.connections)
+        throw std::invalid_argument("total warmup and measured connections must be 1..1025");
     auto environment = capability::inspect_environment();
     capability::choose_cpus(config, environment);
+    // Freeze role-specific inputs before any child runs. Outputs never replace them.
+    const auto client_context = load_context(config, Role::Client);
+    const auto server_context = load_context(config, Role::Server);
     cpu_set_t original_affinity;
     const bool have_affinity =
         ::sched_getaffinity(0, sizeof original_affinity, &original_affinity) == 0;
@@ -437,7 +451,8 @@ int run(const model::RunConfig& input) {
             try {
                 result = endpoint(config, role, sample, directory,
                                   role == Role::Server ? listener.fd : -1, listener.port,
-                                  pair[index], deadline);
+                                  pair[index], deadline,
+                                  role == Role::Client ? client_context : server_context);
             } catch (const std::exception& e) {
                 std::cerr << model::name(role) << ": " << e.what() << '\n';
             }

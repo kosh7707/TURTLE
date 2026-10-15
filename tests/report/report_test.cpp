@@ -183,6 +183,9 @@ int main() {
 
     const auto candidates_dir = dir / "comparison-candidates";
     std::filesystem::create_directory(candidates_dir);
+    const J socket = {{"nonblocking", true}, {"tcp_nodelay", true},
+                     {"send_buffer", 131072}, {"receive_buffer", 131072},
+                     {"kernel_timestamps", false}};
     auto write_candidate = [&](const std::filesystem::path& root, const std::string& folder_name,
                                const std::string& own_adapter, const std::string& peer_adapter,
                                const std::string& profile, const std::string& library,
@@ -199,6 +202,7 @@ int main() {
         candidate["declaration"]["library"] = library;
         candidate["declaration"]["version"] = library + "-version";
         candidate["declaration"]["build_options"] = library + "-build";
+        candidate["connections"][0]["socket"] = socket;
         const auto folder = root / folder_name;
         std::filesystem::create_directory(folder);
         std::ofstream raw(folder / "client.jsonl");
@@ -258,6 +262,143 @@ int main() {
                     "library-two", 2);
     const auto disjoint = summarize(disjoint_dir, dir / "disjoint-report");
     assert(disjoint["comparisons"].empty());
+
+    auto update_header = [&](const std::filesystem::path& path, auto change) {
+        std::ifstream input(path);
+        std::string line;
+        std::getline(input, line);
+        auto metadata = J::parse(line);
+        const std::string rest{std::istreambuf_iterator<char>(input),
+                               std::istreambuf_iterator<char>()};
+        input.close();
+        change(metadata);
+        std::ofstream(path) << metadata.dump() << '\n' << rest;
+    };
+    const auto sockets_dir = dir / "socket-settings";
+    std::filesystem::create_directory(sockets_dir);
+    for (const auto* folder : {"first", "second"}) {
+        write_candidate(sockets_dir, folder, "same-adapter", "fixed-peer", "same-profile",
+                        "same-library");
+        for (const auto* role : {"client", "server"})
+            update_header(sockets_dir / folder / (std::string(role) + ".jsonl"),
+                          [&](J& metadata) { metadata["connections"][0]["socket"] = socket; });
+    }
+    update_header(sockets_dir / "second/client.jsonl", [](J& metadata) {
+        metadata["connections"][0]["socket"]["send_buffer"] = 262144;
+    });
+    assert(summarize(sockets_dir, dir / "socket-report")["groups"].size() == 2);
+    update_header(sockets_dir / "second/client.jsonl", [&](J& metadata) {
+        metadata["connections"][0]["socket"] = socket;
+    });
+    update_header(sockets_dir / "second/server.jsonl", [](J& metadata) {
+        metadata["connections"][0]["socket"]["receive_buffer"] = 262144;
+    });
+    assert(summarize(sockets_dir, dir / "peer-socket-report")["groups"].size() == 2);
+
+    auto add_warmup = [&](const std::filesystem::path& path) {
+        std::ifstream input(path);
+        std::vector<J> lines;
+        std::string line;
+        while (std::getline(input, line))
+            lines.push_back(J::parse(line));
+        input.close();
+        lines[0]["config"]["warmups"] = 1;
+        lines[0]["config"]["connections"] = 1;
+        lines[0]["connections"] =
+            J::array({{{"index", 0}, {"warmup", true}, {"socket", socket}},
+                      {{"index", 1}, {"warmup", false}, {"socket", socket}}});
+        for (std::size_t i = 1; i < lines.size(); ++i)
+            lines[i]["connection"] = 1;
+        std::ofstream output(path);
+        for (const auto& value : lines)
+            output << value.dump() << '\n';
+    };
+    const auto warmup_sockets_dir = dir / "warmup-socket-settings";
+    std::filesystem::create_directory(warmup_sockets_dir);
+    for (const auto* folder : {"first", "second"}) {
+        write_candidate(warmup_sockets_dir, folder, "same-adapter", "fixed-peer",
+                        "same-profile", "same-library");
+        for (const auto* role : {"client", "server"})
+            add_warmup(warmup_sockets_dir / folder / (std::string(role) + ".jsonl"));
+    }
+    update_header(warmup_sockets_dir / "second/client.jsonl", [](J& metadata) {
+        metadata["connections"][0]["socket"]["send_buffer"] = 262144;
+    });
+    const auto different_warmup =
+        summarize(warmup_sockets_dir, dir / "warmup-socket-report");
+    assert(different_warmup["groups"].size() == 2);
+    assert(different_warmup["comparisons"].empty());
+
+    const auto missing_warmup_dir = dir / "missing-warmup-socket";
+    std::filesystem::create_directory(missing_warmup_dir);
+    for (const auto* adapter : {"adapter-a", "adapter-b"}) {
+        write_candidate(missing_warmup_dir, adapter, adapter, "fixed-peer", "same-profile",
+                        adapter);
+        for (const auto* role : {"client", "server"})
+            add_warmup(missing_warmup_dir / adapter / (std::string(role) + ".jsonl"));
+    }
+    update_header(missing_warmup_dir / "adapter-b/client.jsonl", [](J& metadata) {
+        metadata["connections"][0].erase("socket");
+    });
+    const auto missing_warmup =
+        summarize(missing_warmup_dir, dir / "missing-warmup-socket-report");
+    assert(missing_warmup["groups"].size() == 2);
+    assert(missing_warmup["comparisons"].empty());
+    bool preserved_missing_warmup = false;
+    for (const auto& group : missing_warmup["groups"])
+        preserved_missing_warmup =
+            preserved_missing_warmup || group["dimensions"]["socket_settings"][0].is_null();
+    assert(preserved_missing_warmup);
+
+    const auto contexts_dir = dir / "context-identities";
+    std::filesystem::create_directory(contexts_dir);
+    for (const auto* folder : {"first", "second"}) {
+        write_candidate(contexts_dir, folder, "same-adapter", "fixed-peer", "same-profile",
+                        "same-library");
+        for (const auto* role : {"client", "server"})
+            update_header(contexts_dir / folder / (std::string(role) + ".jsonl"),
+                          [&](J& metadata) {
+                              metadata["loaded_context_size"] = 8;
+                              metadata["loaded_context_hash"] = "baseline-a";
+                          });
+    }
+    update_header(contexts_dir / "second/client.jsonl", [](J& metadata) {
+        metadata["loaded_context_hash"] = "baseline-b";
+    });
+    assert(summarize(contexts_dir, dir / "context-report")["groups"].size() == 2);
+    update_header(contexts_dir / "second/client.jsonl", [](J& metadata) {
+        metadata["loaded_context_hash"] = "baseline-a";
+    });
+    update_header(contexts_dir / "second/server.jsonl", [](J& metadata) {
+        metadata["loaded_context_hash"] = "baseline-b";
+    });
+    assert(summarize(contexts_dir, dir / "peer-context-report")["groups"].size() == 2);
+
+    const auto unknown_context_dir = dir / "unknown-context";
+    std::filesystem::create_directory(unknown_context_dir);
+    for (const auto* adapter : {"adapter-a", "adapter-b"}) {
+        write_candidate(unknown_context_dir, adapter, adapter, "fixed-peer", "same-profile",
+                        adapter);
+        update_header(unknown_context_dir / adapter / "client.jsonl", [](J& metadata) {
+            metadata["loaded_context_size"] = 8;
+        });
+    }
+    const auto unknown_context = summarize(unknown_context_dir, dir / "unknown-context-report");
+    assert(unknown_context["groups"].size() == 2);
+    assert(unknown_context["comparisons"].empty());
+
+    const auto unknown_socket_dir = dir / "unknown-sockets";
+    std::filesystem::create_directory(unknown_socket_dir);
+    for (const auto* adapter : {"adapter-a", "adapter-b"}) {
+        write_candidate(unknown_socket_dir, adapter, adapter, "fixed-peer", "same-profile",
+                        adapter);
+        for (const auto* role : {"client", "server"})
+            update_header(unknown_socket_dir / adapter / (std::string(role) + ".jsonl"),
+                          [](J& metadata) { metadata["connections"][0].erase("socket"); });
+    }
+    const auto unknown_socket = summarize(unknown_socket_dir, dir / "unknown-socket-report");
+    assert(unknown_socket["groups"].size() == 2);
+    assert(unknown_socket["comparisons"].empty());
 
     const auto director_dir = dir / "director-invalid";
     std::filesystem::create_directory(director_dir);

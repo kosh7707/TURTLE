@@ -78,6 +78,7 @@ Json config_json(const model::RunConfig& v) {
             {"context_directory", v.context_directory},
             {"samples", v.samples},
             {"warmups", v.warmups},
+            {"connections", v.connections},
             {"batch", v.batch},
             {"seed", v.seed},
             {"timeout_ms", v.timeout_ms},
@@ -170,6 +171,15 @@ Json heap_json(const model::HeapSnapshot& v) {
             {"frees", v.frees},
             {"allocated_total", v.allocated_total}};
 }
+Json socket_json(const std::optional<model::SocketSettings>& v) {
+    if (!v)
+        return nullptr;
+    return {{"nonblocking", v->nonblocking},
+            {"tcp_nodelay", v->tcp_nodelay},
+            {"send_buffer", v->send_buffer},
+            {"receive_buffer", v->receive_buffer},
+            {"kernel_timestamps", v->kernel_timestamps}};
+}
 Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
     Json connections = Json::array();
     for (const auto& c : v.connections) {
@@ -179,7 +189,8 @@ Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
                                {"negotiated", negotiated_json(c.negotiated)},
                                {"application_verified", c.application_verified},
                                {"start_sequence", c.start_sequence},
-                               {"end_sequence", c.end_sequence}});
+                               {"end_sequence", c.end_sequence},
+                               {"socket", socket_json(c.socket)}});
     }
     std::string reason = v.invalid_reason;
     if (buffer.overflowed()) {
@@ -210,6 +221,7 @@ Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
             {"incomplete", v.incomplete},
             {"saved_context_size", v.saved_context_size},
             {"loaded_context_size", v.loaded_context_size},
+            {"loaded_context_hash", v.loaded_context_hash},
             {"pinned_cpu", v.pinned_cpu},
             {"perf_complete", v.perf_complete},
             {"capture_dropped", buffer.dropped()},

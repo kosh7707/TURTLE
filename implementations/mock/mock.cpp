@@ -6,12 +6,14 @@ using namespace turtle;
 struct MockContext : Context {
     Role role;
     bool mutual;
-    MockContext(Role r, bool m) : role(r), mutual(m) {}
+    std::uint64_t completed = 0;
+    MockContext(Role r, bool m, std::uint64_t count) : role(r), mutual(m), completed(count) {}
 };
 struct MockConnection : Connection {
     MockContext* context;
     Io io;
     unsigned phase = 0;
+    bool counted = false;
     std::uint8_t marker = 42;
     MockConnection(MockContext* c, const Io& i) : context(c), io(i) {}
 };
@@ -33,16 +35,21 @@ const char* name() noexcept {
 Declaration declaration(const Context*) {
     Declaration d;
     d.library = "mock";
-    d.version = "1";
+    d.version = "2";
     d.is_mock = true;
-    d.context_description = "Synthetic lifecycle only; no TLS encryption";
+    d.context_description =
+        "Completed synthetic connections as an eight-byte little-endian counter";
+    d.context_serialization = true;
     return d;
 }
 Context* setup(Role role, const TlsConfig& config, const HostServices&,
                std::span<const std::uint8_t> saved) {
-    if (!saved.empty())
+    if (!saved.empty() && saved.size() != 8)
         return nullptr;
-    return new MockContext(role, config.mutual_auth);
+    std::uint64_t completed = 0;
+    for (std::size_t i = 0; i < saved.size(); ++i)
+        completed |= static_cast<std::uint64_t>(saved[i]) << (i * 8);
+    return new MockContext(role, config.mutual_auth, completed);
 }
 Connection* open(Context* c, const Io& io) {
     return new MockConnection(static_cast<MockContext*>(c), io);
@@ -56,6 +63,10 @@ Step handshake(Connection* base) {
         if (r.status != IoStatus::Ok)
             return status(r);
         ++c.phase;
+    }
+    if (!c.counted) {
+        ++c.context->completed;
+        c.counted = true;
     }
     return Step::Done;
 }
@@ -87,8 +98,12 @@ const char* error(const Connection*) noexcept {
 void close(Connection* c) noexcept {
     delete c;
 }
-std::vector<std::uint8_t> save(Context*) {
-    return {};
+std::vector<std::uint8_t> save(Context* base) {
+    const auto completed = static_cast<MockContext*>(base)->completed;
+    std::vector<std::uint8_t> output(8);
+    for (std::size_t i = 0; i < output.size(); ++i)
+        output[i] = static_cast<std::uint8_t>(completed >> (i * 8));
+    return output;
 }
 void teardown(Context* c) noexcept {
     delete c;

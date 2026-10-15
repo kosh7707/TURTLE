@@ -201,6 +201,36 @@ struct PeerHeader {
     Json header;
 };
 
+Json socket_settings(const Json& header) {
+    Json settings = Json::array();
+    for (const auto& connection : header.value("connections", Json::array()))
+        settings.push_back(connection.value("socket", Json(nullptr)));
+    return settings;
+}
+
+bool observed_sockets(const Json& settings) {
+    if (!settings.is_array() || settings.empty())
+        return false;
+    for (const auto& socket : settings) {
+        if (!socket.is_object())
+            return false;
+        for (const auto* key : {"nonblocking", "tcp_nodelay", "kernel_timestamps"})
+            if (!socket.contains(key) || !socket.at(key).is_boolean())
+                return false;
+        for (const auto* key : {"send_buffer", "receive_buffer"})
+            if (!socket.contains(key) || !socket.at(key).is_number_integer() || socket.at(key) <= 0)
+                return false;
+    }
+    return true;
+}
+
+Json context_identity(const Json& header) {
+    const auto size = header.value("loaded_context_size", std::size_t{0});
+    const auto hash = header.value("loaded_context_hash", std::string{});
+    return {{"size", size},
+            {"hash", size == 0 ? Json("") : (hash.empty() ? Json(nullptr) : Json(hash))}};
+}
+
 PeerHeader peer_header(const std::filesystem::path& path, const Json& header) {
     const auto role = header.at("role").get<std::string>();
     const auto expected_role = role == "client" ? "server" : "client";
@@ -563,6 +593,10 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             {"observation_level", header.value("observation_level", "L0")},
             {"warmups", header.at("config").value("warmups", 0)},
             {"loaded_context", header.value("loaded_context_size", 0) > 0},
+            {"context_identity", context_identity(header)},
+            {"peer_context_identity", peer.verified ? context_identity(peer.header) : Json(nullptr)},
+            {"socket_settings", socket_settings(header)},
+            {"peer_socket_settings", peer.verified ? socket_settings(peer.header) : Json(nullptr)},
             {"library", header.at("declaration").value("library", "")},
             {"library_version", header.at("declaration").value("version", "")},
             {"build_options", header.at("declaration").value("build_options", "")},
@@ -593,12 +627,14 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         for (const char* control :
              {"perf", "kernel_timestamps", "isolate", "pin_cores", "tcp_nodelay",
               "socket_send_buffer", "socket_receive_buffer", "event_capacity", "stream_capacity",
-              "keylog_capacity", "calibration_samples"})
+              "keylog_capacity", "calibration_samples", "connections"})
             if (header.at("config").contains(control))
                 dimensions["run_controls"][control] = header.at("config").at(control);
-        auto& group = collected[dimensions.dump()];
-        group.dimensions = dimensions;
         for (const auto& p : parts) {
+            // Positions share a process/context; never pool them as independent samples.
+            dimensions["connection"] = p.at("connection");
+            auto& group = collected[dimensions.dump()];
+            group.dimensions = dimensions;
             for (const auto* metric :
                  {"elapsed_ns", "computation_ns", "io_ns", "wait_ns", "gap_ns", "thread_cpu_ns",
                   "cycles", "instructions", "heap_peak_bytes"})
@@ -662,6 +698,16 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 continue;
             if (!da.value("peer_verified", false) || !db.value("peer_verified", false) ||
                 !da.value("peer_valid", false) || !db.value("peer_valid", false))
+                continue;
+            if (!observed_sockets(da["socket_settings"]) ||
+                !observed_sockets(db["socket_settings"]) ||
+                !observed_sockets(da["peer_socket_settings"]) ||
+                !observed_sockets(db["peer_socket_settings"]))
+                continue;
+            if (da["context_identity"]["hash"].is_null() ||
+                db["context_identity"]["hash"].is_null() ||
+                da["peer_context_identity"]["hash"].is_null() ||
+                db["peer_context_identity"]["hash"].is_null())
                 continue;
             if (groups[a]["batch_ids"] != groups[b]["batch_ids"])
                 continue;

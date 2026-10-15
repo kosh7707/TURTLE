@@ -59,7 +59,7 @@ struct HostServices {
 };
 
 struct TlsConfig {
-    std::string cipher = "TLS_AES_128_GCM_SHA256";
+    std::string cipher = "TLS_AES_128_GCM_SHA256"; // fixed benchmark suite, not a preference list
     std::string group = "secp256r1";
     std::string signature = "ecdsa_secp256r1_sha256";
     std::string server_name = "localhost";

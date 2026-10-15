@@ -2,8 +2,13 @@
 #include "transport/channel.hpp"
 #include "transport/tcp.hpp"
 #include <array>
+#include <climits>
+#include <fcntl.h>
 #include <iostream>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdexcept>
+#include <sys/socket.h>
 #include <unistd.h>
 void require(bool value) {
     if (!value)
@@ -21,6 +26,23 @@ void observe(void* p, const turtle::transport::Observation& event) noexcept {
         state.bytes += event.result.bytes;
     }
 }
+int socket_option(int fd, int level, int option) {
+    int value = 0;
+    socklen_t size = sizeof value;
+    require(::getsockopt(fd, level, option, &value, &size) == 0);
+    require(size == sizeof value);
+    return value;
+}
+void require_settings_match(int fd, const turtle::model::SocketSettings& settings) {
+    const int flags = ::fcntl(fd, F_GETFL);
+    require(flags >= 0);
+    require(settings.nonblocking == static_cast<bool>(flags & O_NONBLOCK));
+    require(settings.tcp_nodelay == static_cast<bool>(socket_option(fd, IPPROTO_TCP, TCP_NODELAY)));
+    require(settings.send_buffer == socket_option(fd, SOL_SOCKET, SO_SNDBUF));
+    require(settings.receive_buffer == socket_option(fd, SOL_SOCKET, SO_RCVBUF));
+    require(settings.kernel_timestamps ==
+            static_cast<bool>(socket_option(fd, SOL_SOCKET, SO_TIMESTAMPNS)));
+}
 int main() {
     try {
         auto listener = turtle::tcp::listen_loopback();
@@ -29,8 +51,22 @@ int main() {
         ::close(listener.fd);
         require(turtle::tcp::check_ready(client).empty());
         require(turtle::tcp::check_ready(server).empty());
-        turtle::transport::configure(client, true, 65536, 65536, false);
-        turtle::transport::configure(server, true, 65536, 65536, true);
+        const auto small = turtle::transport::configure(client, true, 1, 1, true);
+        require_settings_match(client, small);
+        require(small.nonblocking && small.tcp_nodelay && small.send_buffer > 0 &&
+                small.receive_buffer > 0 && small.kernel_timestamps);
+        require(small.send_buffer != 1 && small.receive_buffer != 1);
+
+        const auto large =
+            turtle::transport::configure(server, false, INT_MAX, INT_MAX, false);
+        require_settings_match(server, large);
+        require(large.nonblocking && !large.tcp_nodelay && large.send_buffer > 0 &&
+                large.receive_buffer > 0 && !large.kernel_timestamps);
+        require(large.send_buffer != INT_MAX && large.receive_buffer != INT_MAX);
+
+        const auto timestamps_off = turtle::transport::configure(client, false, 65536, 65536, false);
+        require_settings_match(client, timestamps_off);
+        require(!timestamps_off.tcp_nodelay && !timestamps_off.kernel_timestamps);
         Observation state;
         turtle::transport::Channel send{client}, recv{server, &state, observe};
         auto sender = send.io();

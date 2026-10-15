@@ -66,6 +66,7 @@ struct RunConfig {
     Mode mode = Mode::Timing;
     std::size_t samples = 1000;
     std::size_t warmups = 0;
+    std::size_t connections = 1;
     std::uint64_t batch = 1;
     std::uint64_t seed = 1;
     unsigned timeout_ms = 10000;
@@ -170,6 +171,14 @@ struct Calibration {
     std::vector<std::uint64_t> instructions;
 };
 
+struct SocketSettings {
+    bool nonblocking = false;
+    bool tcp_nodelay = false;
+    int send_buffer = 0;
+    int receive_buffer = 0;
+    bool kernel_timestamps = false;
+};
+
 struct ConnectionInfo {
     std::size_t index = 0;
     bool warmup = false;
@@ -178,6 +187,7 @@ struct ConnectionInfo {
     bool application_verified = false;
     std::uint64_t start_sequence = 0;
     std::uint64_t end_sequence = 0;
+    std::optional<SocketSettings> socket;
 };
 
 struct SampleInfo {
@@ -199,6 +209,7 @@ struct SampleInfo {
     std::vector<std::string> incomplete;
     std::size_t saved_context_size = 0;
     std::size_t loaded_context_size = 0;
+    std::string loaded_context_hash;
     int pinned_cpu = -1;
     bool perf_complete = false;
 };

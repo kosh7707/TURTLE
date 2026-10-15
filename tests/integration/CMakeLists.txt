@@ -5,6 +5,10 @@ add_test(NAME local_test_certificates
   COMMAND ${CMAKE_COMMAND} -E env "OPENSSL=${TURTLE_OPENSSL_PROGRAM}"
     bash "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/make-pki.sh" "${test_pki}")
 set_tests_properties(local_test_certificates PROPERTIES FIXTURES_SETUP local_pki TIMEOUT 30)
+add_test(NAME local_pki_matrix COMMAND ${Python3_EXECUTABLE}
+  "${CMAKE_CURRENT_SOURCE_DIR}/pki.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/make-pki.sh" "${TURTLE_OPENSSL_PROGRAM}")
+set_tests_properties(local_pki_matrix PROPERTIES TIMEOUT 60 LABELS integration)
 
 set(adapters)
 foreach(name openssl wolfssl mbedtls)
@@ -13,6 +17,12 @@ foreach(name openssl wolfssl mbedtls)
   endif()
 endforeach()
 if(TARGET turtle_adapter_openssl AND TARGET turtle-interpret)
+  add_test(NAME pipeline_multiple_connections COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/pipeline.py"
+    "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
+    "${CMAKE_BINARY_DIR}/adapters" "${test_pki}" openssl openssl 2)
+  set_tests_properties(pipeline_multiple_connections PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 60 LABELS integration)
   add_test(NAME openssl_tickets_and_message_oracle COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/tickets.py"
     "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"

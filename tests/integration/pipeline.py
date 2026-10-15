@@ -25,6 +25,19 @@ def validate_role(raw, mode, interpret):
     check(not header["declaration"]["is_mock"], "mock used for real TLS test")
     check(header["config"]["isolate"], "isolation was silently disabled")
     for conn in header["connections"]:
+        socket = conn["socket"]
+        check(socket is not None, "configured socket settings were not observed")
+        check(set(socket) == {
+            "nonblocking", "tcp_nodelay", "send_buffer", "receive_buffer",
+            "kernel_timestamps",
+        }, "socket settings schema changed")
+        check(socket["nonblocking"] is True, "socket is not nonblocking")
+        check(socket["tcp_nodelay"] == header["config"]["tcp_nodelay"],
+              "TCP_NODELAY differs from requested configuration")
+        check(socket["send_buffer"] > 0, "invalid effective send buffer")
+        check(socket["receive_buffer"] > 0, "invalid effective receive buffer")
+        check(isinstance(socket["kernel_timestamps"], bool),
+              "kernel timestamp state was not recorded")
         check(conn["negotiated"]["version"] == "TLS1.3", "wrong TLS version")
         check(not conn["negotiated"]["resumed"], "full handshake was resumed")
         check(conn["application_verified"], "encrypted pingpong not verified")
@@ -49,7 +62,8 @@ def validate_role(raw, mode, interpret):
 
 
 def main():
-    turtle, report, interpret, adapters, pki, client, server = sys.argv[1:]
+    turtle, report, interpret, adapters, pki, client, server = sys.argv[1:8]
+    connections = int(sys.argv[8]) if len(sys.argv) > 8 else 1
     root = Path(tempfile.mkdtemp(prefix=f"turtle-pipeline-{client}-{server}-"))
     try:
         pids = []
@@ -58,11 +72,12 @@ def main():
                 output = root / f"{mode}-{auth}"
                 run(turtle, "run", "--client", client, "--server", server,
                     "--adapter-dir", adapters, "--pki", pki, "--samples", "2", "--warmups", "1",
+                    "--connections", str(connections),
                     "--mode", mode, f"--{auth}", "--no-affinity", "--no-perf", "--output", output)
                 for sample in sorted(output.glob("sample-*")):
                     for role in ("client", "server"):
                         pids.append(validate_role(sample / f"{role}.jsonl", mode, interpret))
-                    for conn in (0, 1):
+                    for conn in range(1 + connections):
                         for source, dest in (("client", "server"), ("server", "client")):
                             sent = (sample / f"{source}.conn-{conn}.sent.bin").read_bytes()
                             received = (sample / f"{dest}.conn-{conn}.received.bin").read_bytes()
@@ -72,8 +87,12 @@ def main():
         summary = (root / "report/summary.json").read_text()
         data = json.loads(summary)
         check(data["invalid_samples"] == 0, "raw boundaries do not form valid partitions")
-        check(len(data["groups"]) == 8, "role/auth/mode groups mixed")
+        check(len(data["groups"]) == 8 * connections, "role/auth/mode/connection groups mixed")
+        for group in data["groups"]:
+            check(len(group["metrics"]["elapsed_ns"]["values"]) == 2,
+                  "connections from the same process were pooled as independent samples")
         for sample in data["samples"]:
+            check(len(sample["connections"]) == connections, "measured connections missing")
             for conn in sample["connections"]:
                 total = sum(conn[f"{kind}_ns"] for kind in ("computation", "io", "wait", "gap"))
                 check(total == conn["elapsed_ns"], "interval conservation failed")

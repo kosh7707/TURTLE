@@ -61,7 +61,8 @@ IoResult recv(void* p, std::uint8_t* data, std::size_t size) noexcept {
 Io Channel::io() noexcept {
     return {this, send, recv, fd};
 }
-bool configure(int fd, bool nodelay, int send_buffer, int receive_buffer, bool timestamps) {
+model::SocketSettings configure(int fd, bool nodelay, int send_buffer, int receive_buffer,
+                                bool timestamps) {
     int flags = ::fcntl(fd, F_GETFL);
     int value = nodelay;
     if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
@@ -69,7 +70,29 @@ bool configure(int fd, bool nodelay, int send_buffer, int receive_buffer, bool t
         ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &send_buffer, sizeof send_buffer) < 0 ||
         ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof receive_buffer) < 0)
         throw std::runtime_error("TCP configuration failed");
-    value = 1;
-    return timestamps && ::setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &value, sizeof value) == 0;
+    value = timestamps;
+    const bool timestamp_option =
+        ::setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &value, sizeof value) == 0;
+    if (!timestamps && !timestamp_option)
+        throw std::runtime_error("cannot disable TCP receive timestamps");
+    const auto option = [fd](int level, int name) {
+        int observed = 0;
+        socklen_t size = sizeof observed;
+        if (::getsockopt(fd, level, name, &observed, &size) < 0 || size != sizeof observed)
+            throw std::runtime_error("TCP configuration readback failed");
+        return observed;
+    };
+    flags = ::fcntl(fd, F_GETFL);
+    model::SocketSettings observed;
+    observed.nonblocking = flags >= 0 && (flags & O_NONBLOCK) != 0;
+    observed.tcp_nodelay = option(IPPROTO_TCP, TCP_NODELAY) != 0;
+    observed.send_buffer = option(SOL_SOCKET, SO_SNDBUF);
+    observed.receive_buffer = option(SOL_SOCKET, SO_RCVBUF);
+    observed.kernel_timestamps = timestamp_option && option(SOL_SOCKET, SO_TIMESTAMPNS) != 0;
+    if (!observed.nonblocking || observed.tcp_nodelay != nodelay || observed.send_buffer <= 0 ||
+        observed.receive_buffer <= 0 ||
+        (timestamp_option && observed.kernel_timestamps != timestamps))
+        throw std::runtime_error("TCP configuration was not applied");
+    return observed;
 }
 } // namespace turtle::transport

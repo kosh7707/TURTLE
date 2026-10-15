@@ -85,6 +85,51 @@ int main(int argc, char** argv) {
                                     ++*static_cast<std::size_t*>(p);
                                 return true;
                             }};
+        for (const auto* cipher : {"TLS_AES_256_GCM_SHA384",
+                                  "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384"}) {
+            auto unsupported = config;
+            unsupported.cipher = cipher;
+            for (auto* endpoint : {&client, &server}) {
+                Context* unexpected = nullptr;
+                Connection* pending = nullptr;
+                bool rejected = false;
+                std::size_t io_calls = 0;
+                try {
+                    const auto role = endpoint == &client ? Role::Client : Role::Server;
+                    unexpected = endpoint->api.setup(role, unsupported, services, {});
+                    rejected = !unexpected;
+                    if (unexpected) {
+                        // Some adapters carry setup errors to the first operation.
+                        Io probe;
+                        probe.context = &io_calls;
+                        probe.send = [](void* p, const std::uint8_t*, std::size_t) noexcept {
+                            ++*static_cast<std::size_t*>(p);
+                            return IoResult{IoStatus::WantWrite, 0, 0};
+                        };
+                        probe.recv = [](void* p, std::uint8_t*, std::size_t) noexcept {
+                            ++*static_cast<std::size_t*>(p);
+                            return IoResult{IoStatus::WantRead, 0, 0};
+                        };
+                        pending = endpoint->api.open(unexpected, probe);
+                        if (pending && endpoint->api.handshake_step(pending) == Step::Failed &&
+                            endpoint->api.error) {
+                            const auto* reason = endpoint->api.error(pending);
+                            rejected = reason && std::string(reason).find("TLS_AES_128_GCM_SHA256") !=
+                                                     std::string::npos;
+                        }
+                    }
+                } catch (const std::exception& error) {
+                    rejected = std::string(error.what()).find("TLS_AES_128_GCM_SHA256") !=
+                               std::string::npos;
+                }
+                if (pending)
+                    endpoint->api.close(pending);
+                if (unexpected)
+                    endpoint->api.teardown(unexpected);
+                check(rejected && io_calls == 0,
+                      "adapter accepted an out-of-scope cipher suite before TLS I/O");
+            }
+        }
         client.context = client.api.setup(Role::Client, config, services, {});
         server.context = server.api.setup(Role::Server, config, services, {});
         check(client.context && server.context, "setup failed");

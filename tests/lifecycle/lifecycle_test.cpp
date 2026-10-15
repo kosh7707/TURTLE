@@ -30,11 +30,21 @@ int main(int argc, char** argv) {
         config.output_directory = (root / "normal").string();
         config.samples = 2;
         config.warmups = 1;
+        config.connections = 2;
         config.perf = false;
         config.pin_cores = false;
         config.client_cpu = 1;
         config.server_cpu = 2;
         config.calibration_samples = 2;
+        config.tls.cipher = "TLS_AES_256_GCM_SHA384";
+        bool rejected_cipher = false;
+        try {
+            (void)turtle::lifecycle::run(config);
+        } catch (const std::invalid_argument&) {
+            rejected_cipher = true;
+        }
+        require(rejected_cipher, "direct runtime accepted an out-of-scope cipher suite");
+        config.tls.cipher = "TLS_AES_128_GCM_SHA256";
         require(turtle::lifecycle::run(config) == 0, "normal lifecycle failed");
         std::set<long> pids;
         for (const char* directory : {"sample-000001", "sample-000002"})
@@ -44,7 +54,11 @@ int main(int argc, char** argv) {
                 require(data.at("pinned_cpu") == -1,
                         "disabled affinity reported requested CPU as actual");
                 pids.insert(data.at("pid").get<long>());
-                require(data.at("connections").size() == 2, "warmup connection missing");
+                require(data.at("connections").size() == 3, "scenario connection missing");
+                require(data.at("connections")[0].at("warmup") == true &&
+                            data.at("connections")[1].at("warmup") == false &&
+                            data.at("connections")[2].at("warmup") == false,
+                        "warmup and measured connections were mixed");
                 require(data.at("declaration").at("is_mock").get<bool>(), "mock mislabeled");
                 for (const auto& connection : data.at("connections"))
                     require(connection.at("application_verified").get<bool>(),

@@ -1,6 +1,9 @@
 /build*/
 /.vs/
+/.omc/
 /.omx/
+/.omx-state-locks/
+/.omx-state-locks.identity.json
 /.deps/
 /results/
 /artifacts/

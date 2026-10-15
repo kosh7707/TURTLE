@@ -1,5 +1,5 @@
 #pragma once
-#include "turtle/adapter.hpp"
+#include "model/model.hpp"
 #include <cstdint>
 namespace turtle::transport {
 struct Observation {
@@ -16,5 +16,7 @@ struct Channel {
     void (*observe)(void*, const Observation&) noexcept = nullptr;
     Io io() noexcept;
 };
-bool configure(int fd, bool nodelay, int send_buffer, int receive_buffer, bool timestamps);
+// Return observed settings, not requested buffer sizes. Linux may adjust them.
+model::SocketSettings configure(int fd, bool nodelay, int send_buffer, int receive_buffer,
+                                bool timestamps);
 } // namespace turtle::transport

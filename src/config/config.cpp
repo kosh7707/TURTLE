@@ -124,12 +124,13 @@ void profile(model::RunConfig& run, const std::string& filename) {
     if (document.contains("measurement")) {
         const auto& m = document.at("measurement");
         keys(m,
-             {"samples", "warmups", "batch", "seed", "timeout_ms", "event_capacity",
-              "stream_capacity", "keylog_capacity", "calibration_samples", "mode", "perf",
-              "kernel_timestamps", "isolate", "pin_cores", "director_cpu", "client_cpu",
-              "server_cpu"},
+             {"samples", "connections", "warmups", "batch", "seed", "timeout_ms",
+              "event_capacity", "stream_capacity", "keylog_capacity", "calibration_samples",
+              "mode", "perf", "kernel_timestamps", "isolate", "pin_cores", "director_cpu",
+              "client_cpu", "server_cpu"},
              "measurement");
         assign(m, "samples", run.samples);
+        assign(m, "connections", run.connections);
         assign(m, "warmups", run.warmups);
         assign(m, "batch", run.batch);
         assign(m, "seed", run.seed);
@@ -152,8 +153,14 @@ void profile(model::RunConfig& run, const std::string& filename) {
 }
 
 void validate(const model::RunConfig& run) {
-    if (run.samples == 0 || run.samples > 10000000 || run.warmups > 1024)
-        throw std::invalid_argument("samples must be 1..10000000; warmups must be 0..1024");
+    if (run.samples == 0 || run.samples > 10000000)
+        throw std::invalid_argument("samples must be 1..10000000");
+    if (run.connections == 0 || run.connections > 1025)
+        throw std::invalid_argument("connections must be 1..1025");
+    if (run.warmups > 1024)
+        throw std::invalid_argument("warmups must be 0..1024");
+    if (run.connections > 1025 - run.warmups)
+        throw std::invalid_argument("warmups and connections together must not exceed 1025");
     if (run.timeout_ms == 0 || run.tls.application_bytes == 0 || run.event_capacity == 0 ||
         run.stream_capacity == 0 || run.keylog_capacity == 0 || run.socket_send_buffer <= 0 ||
         run.socket_receive_buffer <= 0)
@@ -166,8 +173,10 @@ void validate(const model::RunConfig& run) {
                 std::string::npos)
             throw std::invalid_argument(
                 "adapter name must be a module basename (use --adapter-dir for its directory)");
-    if (run.tls.cipher.empty() || run.tls.group.empty() || run.tls.signature.empty())
-        throw std::invalid_argument("cipher, group, and signature must be explicit");
+    if (run.tls.cipher != "TLS_AES_128_GCM_SHA256")
+        throw std::invalid_argument("TURTLE supports only TLS_AES_128_GCM_SHA256");
+    if (run.tls.group.empty() || run.tls.signature.empty())
+        throw std::invalid_argument("group and signature must be explicit");
 }
 
 void identify(model::RunConfig& run) {
@@ -277,6 +286,8 @@ Command parse(int argc, char** argv) {
             run.mode = mode(value);
         else if (name == "--samples")
             run.samples = number<std::size_t>(value, name);
+        else if (name == "--connections")
+            run.connections = number<std::size_t>(value, name);
         else if (name == "--warmups")
             run.warmups = number<std::size_t>(value, name);
         else if (name == "--batch")
@@ -339,12 +350,15 @@ std::string usage() {
            "  --client NAME --server NAME  Adapter modules (default: openssl)\n"
            "  --adapter-dir DIR            Modules directory (default: beside executable)\n"
            "  --profile FILE --pki DIR     JSON profile; explicit test credentials\n"
-           "  --samples N --warmups N      Fresh role processes per measured sample\n"
+           "  --samples N                  Fresh role processes per measured sample\n"
+           "  --connections N              Measured connections in each role process\n"
+           "  --warmups N                  Warm-up connections before measured connections\n"
            "  --mode timing|memory|trace   Separate instrumentation modes\n"
            "  --output DIR --context DIR   Raw output and optional saved setup context\n"
            "  --batch N --seed N --timeout-ms N\n"
            "  --mutual-auth | --server-auth; --tickets N; --no-ccs\n"
            "  --cipher NAME --group NAME --signature NAME --application-bytes N\n"
+           "  Cipher suite is fixed to TLS_AES_128_GCM_SHA256.\n"
            "  --director-cpu N --client-cpu N --server-cpu N\n"
            "  --event-capacity N --stream-capacity N --keylog-capacity N\n"
            "  --calibration-samples N\n"
