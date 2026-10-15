@@ -159,3 +159,17 @@ M7은 공개 adapter ABI나 CLI 옵션을 추가하지 않고 JSON의 `measureme
 기존 server primary는 first framework receive에서 시작하므로 observer off에서 unavailable인 의미를 바꾸지 않습니다. 대신 양 역할·양 모드에 `handshake_call_begin_to_application_complete`를 별도 계산합니다. 첫 handshake 호출 시작부터 역할의 전체 최종 application 호출 완료까지이며 partial progress를 모두 확인합니다. elapsed와 thread CPU는 독립 availability를 가지며 CPU 누락을 elapsed 실패로 확대하지 않습니다.
 
 `channel_observer`는 안정 그룹 조건이고 공통 경계 metric은 기존 primary 이름과 분리합니다. observer off나 native server에도 공통 metric이 있을 수 있지만 이를 primary로 승격하거나 기존 자동 비교에 넣지 않습니다. TLS·parent 원장·network integrity가 실패하면 공통 metric도 그룹에 수용하지 않습니다. on/off 차이는 역할별 진단 산술값일 뿐 방향·부호·크기·유의성이나 WSL 성능 결론을 합격 기준으로 두지 않습니다.
+
+## 관측자 상태의 호환 판독을 하나로 맞춤
+
+명시적인 `config.channel_observer=false`이거나 `observation_level=observer-disabled`이면 observer off로 판독합니다. config 필드가 없고 marker도 없으면 과거 callback 기본값인 on입니다. `library-only`, native socket, TLS stream availability나 빈 stream만 보고 observer off를 추론하지 않습니다. native I/O visibility와 channel observer 선택은 서로 다른 조건입니다.
+
+일반 보고서와 해석기는 이미 이 규칙을 사용했습니다. lookup 보고서의 조건 identity는 이전에 config 필드의 기본값 true만 읽어 marker-only 자료를 on으로 분류했으므로 같은 판독 정책으로 맞춥니다. 현재 producer는 `channel_observer` 필드를 항상 기록하므로 G011 실제 원자료와 검증 결과는 바뀌지 않습니다. 다만 필드가 없고 `observer-disabled` marker만 있는 호환 자료를 다시 보고하면 조건 키가 이전 on에서 off로 바뀔 수 있습니다. 이는 오래된 자료를 올바른 조건 그룹에 두는 correctness 수정이며 별도의 NOOP cleanup과 섞지 않습니다.
+
+## 여섯 phase 참조에는 관측 본문도 필요함
+
+성공한 network attempt의 setup/scenario/cleanup begin/end ID 여섯 개가 존재한다는 사실만으로 integrity를 통과시키지 않습니다. 각 참조 행에는 비어 있지 않은 `qdiscs` 객체가 있어야 하고, trace 요청이 true이면 `packet_trace`도 존재하며 null이 아니어야 합니다. 누락·빈 qdisc, 누락·null trace는 안정 condition identity를 바꾸지 않지만 integrity와 metric 수용을 fail closed로 만듭니다. lookup과 일반 pure TLS가 같은 shared 판독 규칙을 사용합니다.
+
+## noqueue의 null queue limit은 명시적 not-applicable
+
+요청 qdisc와 실제 qdisc가 모두 `none`이고 실제 path kind가 `noqueue`이며 `limit_packets` 필드가 명시적으로 null인 경우에만 queue limit을 not-applicable로 받아들입니다. field 자체가 없거나 netem path의 limit가 null이면 관측 불완전으로 거절합니다. 이 구별은 보존한 N05 baseline의 실제 readback과 엄격한 누락 검사를 함께 유지하기 위한 좁은 호환 규칙입니다. runner, network 조건이나 N05 원자료는 바꾸거나 다시 실행하지 않습니다.

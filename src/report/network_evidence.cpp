@@ -119,6 +119,9 @@ void validate_topology(const Json& provenance, NetworkTopology topology, Json& r
     const auto requested_paths = condition.value("requested", Json::object())
                                      .value("paths", Json::object());
     const auto actual_paths = actual.value("paths", Json::object());
+    const auto requested_qdisc =
+        condition.value("requested", Json::object()).value("qdisc", "");
+    const auto actual_qdisc = actual.value("qdisc", "");
     const auto readbacks = provenance.value("applied_qdisc_readback", Json::object());
     const auto expected_interface = [](std::string_view path) -> std::string_view {
         if (path == "tls_c2s")
@@ -142,9 +145,18 @@ void validate_topology(const Json& provenance, NetworkTopology topology, Json& r
             reasons.push_back("actual_network_path_missing:" + path);
         } else {
             const auto& value = actual_paths.at(path);
-            for (const char* field : {"delay_ms", "loss_percent", "limit_packets"})
+            for (const char* field : {"delay_ms", "loss_percent"})
                 if (!value.contains(field) || !value.at(field).is_number())
                     reasons.push_back("actual_network_path_field_missing:" + path + ":" + field);
+            const bool noqueue_limit_not_applicable =
+                requested_qdisc == "none" && actual_qdisc == "none" &&
+                value.value("kind", "") == "noqueue" && value.contains("limit_packets") &&
+                value.at("limit_packets").is_null();
+            if (!value.contains("limit_packets") ||
+                (!value.at("limit_packets").is_number() &&
+                 !noqueue_limit_not_applicable))
+                reasons.push_back("actual_network_path_field_missing:" + path +
+                                  ":limit_packets");
         }
         if (!readbacks.contains(path) || !readbacks.at(path).is_object() ||
             readbacks.at(path).value("interface", "") != expected_interface(path))
@@ -394,6 +406,11 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
 
     const auto status = provenance.value("status", "");
     const auto returncode = provenance.value("director", Json::object()).value("returncode", -999);
+    const auto trace = provenance.value("condition_identity", Json::object())
+                           .value("trace", Json::object());
+    const bool trace_known = trace.contains("requested") &&
+                             trace.at("requested").is_boolean();
+    const bool trace_requested = trace_known && trace.at("requested").get<bool>();
     bool expected_failure = false;
     bool complete_denominator = !attempts.empty();
     bool all_success = !attempts.empty();
@@ -418,9 +435,21 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
                     referenced.insert(id.get<std::string>());
         if (referenced != required || attempt.observation_ids.size() != required.size())
             reasons.push_back("successful_attempt_requires_exact_six_phase_observations");
-        for (const auto& id : required)
-            if (!evidence.observations.contains(id))
+        for (const auto& id : required) {
+            if (!evidence.observations.contains(id)) {
                 reasons.push_back("referenced_network_observation_missing:" + id);
+                continue;
+            }
+            const auto& observation = evidence.observations.at(id);
+            const bool qdiscs_complete = observation.contains("qdiscs") &&
+                                         observation.at("qdiscs").is_object() &&
+                                         !observation.at("qdiscs").empty();
+            const bool trace_complete =
+                !trace_requested || (observation.contains("packet_trace") &&
+                                     !observation.at("packet_trace").is_null());
+            if (!qdiscs_complete || !trace_complete)
+                reasons.push_back("referenced_network_observation_payload_incomplete:" + id);
+        }
     }
     if (status == "complete" && returncode == 0) {
         if (!complete_denominator || !all_success)
@@ -467,11 +496,6 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
     }
     if (fatal_not_reaped)
         reasons.push_back("owned_process_not_reaped");
-    const auto trace = provenance.value("condition_identity", Json::object())
-                           .value("trace", Json::object());
-    const bool trace_known = trace.contains("requested") &&
-                             trace.at("requested").is_boolean();
-    const bool trace_requested = trace_known && trace.at("requested").get<bool>();
     if (!trace_known)
         reasons.push_back("trace_request_identity_missing");
     if (helpers != expected(expected_topology).helpers || (trace_requested && !observer_done) ||

@@ -309,4 +309,29 @@ normal callback 원자료에서 `raw_timestamp_ns`가 실제로 있는 사건은
 
 raw에서 다시 계산한 on-minus-off 단순 산술 평균은 client elapsed 42,009.375ns·CPU 49,291.625ns, server elapsed 43,627.0ns·CPU 6,911.125ns였습니다. 이 값은 구현된 진단 계산이 원자료와 맞는지 확인하는 자료일 뿐입니다. 효과의 방향·부호·0 여부·크기·유의성, WSL 순위, uninstrumented 기준이나 완전한 관측 비용 보정으로 해석하지 않습니다.
 
-73×20 실행·정적 검사·독립 검토와 원자료 감사를 결합해 G011/M7의 제한된 범위를 완료로 표시합니다. M13·M14와 N05는 실행하거나 확장하지 않았습니다. G012 최종 cleaner·독립 검토와 milestone commit은 아직 남았으므로 전체 목표 완료를 주장하지 않습니다.
+73×20 실행·정적 검사·독립 검토와 원자료 감사를 결합해 G011/M7의 제한된 범위를 완료로 표시합니다. M13·M14와 N05는 실행하거나 확장하지 않았습니다. G011 완료 시점에는 G012 최종 cleaner·독립 검토와 milestone commit이 다음 단계였습니다.
+
+## G012 최종 QA와 G013 shared network integrity 수리
+
+첫 최종 구조 검토에서 일반 pure TLS 보고가 성공 attempt의 여섯 phase ID 존재만 확인하고, 참조된 observation의 qdisc·trace 본문 완전성을 lookup 보고만큼 엄격하게 요구하지 않는 문제를 찾았습니다. 이 시점의 73×20·정적 검사 결과는 G013 수리 전 과거 증거로 이름을 바꿔 보존했으며 최종 트리 증거로 승격하지 않습니다.
+
+shared network 판독기는 이제 성공 attempt의 여섯 참조 각각에 비어 있지 않은 `qdiscs`를 요구하고, trace 요청이 true이면 non-null `packet_trace`도 요구합니다. 누락·빈 qdisc와 누락·null trace fixture는 condition identity가 같아도 integrity 실패, 빈 metric, 자동 비교 부적격과 comparison 없음으로 끝나야 합니다. 제품 code review는 APPROVE, 구조 재검토는 CLEAR였고 runner나 N05는 실행·수정하지 않았습니다.
+
+보존 원자료 다섯 묶음을 offline으로 다시 보고한 첫 감사는 `results/final-followup/offline/pre-null-compat-validation.json`에 실패로 남겼습니다. pure TLS, M6 normal/external, M7과 실제 630개 성공 phase 참조 본문은 통과했지만, N05 baseline의 qdisc-none/noqueue path가 `limit_packets:null`을 명시한 것을 numeric 누락으로 오판해 성공 8 attempts의 16개 역할 표본을 비교 부적격으로 만들었습니다. 이 실패를 삭제하거나 전체 성공으로 바꾸지 않습니다.
+
+호환 수리는 요청·실제 qdisc가 모두 `none`, actual kind가 `noqueue`, field가 존재하고 null인 경우만 not-applicable로 허용합니다. field 누락이나 netem의 null limit는 계속 실패합니다. 이 좁은 수정과 observer marker-only identity 수정은 correctness 작업이며 NOOP cleanup과 분리합니다.
+
+모든 수리 뒤 동결한 최종 트리의 증거는 다음과 같습니다.
+
+| 증거 | 결과 |
+|---|---|
+| `results/final-followup/check-repeat20.log` | 경고를 오류로 처리한 소스·시험 빌드 뒤 73개 시험을 각각 20회, 총 **1,460회** 실행해 실패·skip 없이 통과했습니다. 세 실제 어댑터, observer batch와 11개 부품 include 경계·순환 검사도 포함합니다. SHA-256은 `a00cab17c52400ed36e56b7568219fadc2274e3214415529ecceeaf274947ea6`입니다. |
+| `results/final-followup/static.log` | 생산 번역 단위 24개의 cppcheck·clang-tidy와 CLI endpoint 전용 clang-tidy가 exit 0이었습니다. SHA-256은 `7891cabf2a42e7d18e191f3594b34853ea8546fe73fd70db5be8ce4c3e0e8189`입니다. |
+| `results/final-followup/offline/validation-summary.json` | 다섯 보존 원자료 묶음의 pass 3/4 보고가 각각 결정적으로 같고 입력 hash가 전후 일치했습니다. SHA-256은 `d496965ad67366508d0a9e617dc31baf3442b336a3ad45fb4bb32df45bb7acf6`입니다. |
+| 독립 최종 검토 | source code review는 APPROVE, 구조 검토는 CLEAR, bounded cleaner는 NOOP PASS였고 추가 제품 수정 요구가 없었습니다. |
+
+offline 최종 감사는 pure TLS 8개 역할·4그룹, M6 native availability, M7 32개 역할·4그룹과 공통 경계 값을 보존했습니다. 성공한 network attempt의 phase 참조 630/630개가 qdisc·필요 trace 본문을 갖췄습니다. N05는 다시 실행하지 않고 기존 일곱 조건, loss 64 성공, qdisc drop 94, CA 재전송 58, packet 행 4,148개와 requested/started/success/timeout=100/100/97/3을 그대로 확인했습니다. baseline 16개 역할을 포함한 성공 역할 194/194개가 비교 적격이고 timeout 세 표본은 여전히 invalid이며 connection·group으로 승격되지 않았습니다. none/noqueue `limit_packets:null`은 0으로 바꾸지 않고 명시적 not-applicable로 남았습니다.
+
+수리 전 전체 반복·정적 검사 로그는 `check-before-phase-completeness-repeat20.log`, `static-before-phase-completeness.log`, `check-before-noqueue-compat-repeat20.log`, `static-before-noqueue-compat.log`로 이름을 바꿔 최종 증거와 구별했습니다. G008의 두 독립 커밋 증거도 `results/final-followup/commit-proof/`에 복사해 45×20 기반과 58×20 후속 경계를 보존했습니다. 사용자 제공 PDF와 `Zone.Identifier`는 읽거나 수정하지 않았고 계속 untracked 상태입니다.
+
+이 결합 증거로 bounded G012/G013 최종 검증과 현재 사용자 후속 요구, M5·M6·M7 범위를 완료로 표시합니다. 문서 동결 뒤 milestone commit과 goal metadata 정리는 리더가 수행합니다. M10의 eBPF/완전한 계측 정확도 대조와 M12의 실제 인증서 압축·생략·캐싱 기법·원 논문 재현은 구현하지 않은 미래 범위이며 이번 완료 주장에 포함하지 않습니다.

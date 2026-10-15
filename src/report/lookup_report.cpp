@@ -293,7 +293,10 @@ Json endpoint_identity(const std::optional<Json>& header, std::string_view role)
                                        {"isolate", config.value("isolate", Json(nullptr))},
                                        {"pin_cores", config.value("pin_cores", Json(nullptr))},
                                        {"kernel_timestamps", config.value("kernel_timestamps", Json(nullptr))},
-                                       {"channel_observer", config.value("channel_observer", true)}}},
+                                       {"channel_observer",
+                                        config.value("channel_observer", true) &&
+                                            header->value("observation_level", std::string()) !=
+                                                "observer-disabled"}}},
             {"support", support}};
 }
 

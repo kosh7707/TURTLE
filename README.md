@@ -54,7 +54,7 @@ python3 scripts/netem-study.py verify --build build --pki PKI_DIR \
 
 OpenSSL의 실제 표준 TLS와 netem을 함께 쓴 고정 검증 묶음은 2026년 10월 15일 한 번 실행해 통과했습니다. CA→client 5ms·20% loss의 사전 고정 64 attempts가 모두 성공했고, qdisc skb drop 94와 CA 소켓 `TCP_INFO.total_retrans` 차이 58을 별도로 관측했습니다. 이 수치는 기능 gate 증거이지 성능 표본이나 현실망 모델이 아닙니다. 손실 설정값, 실제 skb drop, TCP 재전송은 서로 다른 값이며 어느 하나로 다른 값을 대신하지 않습니다.
 
-G005의 구현·고정 실행·오프라인 보고를 완료했습니다. 보존한 일곱 조건의 원자료를 최신 보고 도구로 다시 처리한 합계는 requested=started=100, success=97, timeout=3이며 attempt/connection 행도 각각 100개입니다. G006에서는 당시 57×20=1,140회, G007 동결 트리는 58×20=1,160회, M5 CLI 상호운용 트리는 70×20=1,400회, M6 I/O 경로 트리는 72×20=1,440회 통과했습니다. 채널 관측자 on/off를 더한 현재 트리는 73×20=1,460회 통과했고 24개 생산 번역 단위의 정적 검사와 독립 검토를 마쳤습니다. 이전 실패와 수정 근거는 [검증 기록](docs/validation.md)에 별도로 보존합니다.
+G005의 구현·고정 실행·오프라인 보고를 완료했습니다. 보존한 일곱 조건의 원자료를 최신 보고 도구로 다시 처리한 합계는 requested=started=100, success=97, timeout=3이며 attempt/connection 행도 각각 100개입니다. G006에서는 당시 57×20=1,140회, G007 동결 트리는 58×20=1,160회, M5 CLI 상호운용 트리는 70×20=1,400회, M6 I/O 경로 트리는 72×20=1,440회 통과했습니다. 최종 correctness 수리와 채널 관측자 on/off를 포함한 현재 트리는 73×20=1,460회 통과했고 24개 생산 번역 단위·CLI endpoint의 정적 검사, cleaner와 독립 검토를 마쳤습니다. 다섯 보존 원자료 묶음의 offline 재생도 통과했으며 이전 차단·실패와 수정 근거는 [검증 기록](docs/validation.md)에 별도로 보존합니다.
 
 stock TLS의 Certificate 메시지는 그대로이며 실제 인증서 압축·생략·캐싱 연구 기법은 구현하지 않았습니다. 진단 실행에서 얻은 지연값은 기능 경로 확인용 데이터이며 성능 논문 결론이 아닙니다.
 

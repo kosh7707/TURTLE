@@ -323,18 +323,58 @@ int main() {
     for (const auto* role : {"client", "server"})
         rewrite_header(sample4 / (std::string(role) + ".jsonl"), [](Json& header) {
             header["config"]["channel_observer"] = false;
+            header["observation_level"] = "observer-disabled";
         });
-    const auto observer_off =
-        turtle::report::summarize_lookup(root, root / "observer-off-report");
-    assert(observer_off["joined_rows"][3]["condition_identity"] != cold["condition_identity"]);
-    assert(observer_off["joined_rows"][3]["condition_identity"]["client_endpoint"]
-                       ["measurement_controls"]["channel_observer"] == false);
-    assert(observer_off["joined_rows"][3]["condition_identity"]["server_endpoint"]
-                       ["measurement_controls"]["channel_observer"] == false);
+    const auto explicit_observer_off =
+        turtle::report::summarize_lookup(root, root / "explicit-observer-off-report");
+    const auto explicit_off_identity =
+        explicit_observer_off["joined_rows"][3]["condition_identity"];
+    assert(explicit_off_identity != cold["condition_identity"]);
+    assert(explicit_off_identity["client_endpoint"]["measurement_controls"]
+                                ["channel_observer"] == false);
+    assert(explicit_off_identity["server_endpoint"]["measurement_controls"]
+                                ["channel_observer"] == false);
     for (const auto* role : {"client", "server"})
         rewrite_header(sample4 / (std::string(role) + ".jsonl"), [](Json& header) {
             header["config"].erase("channel_observer");
         });
+    const auto marker_only_off =
+        turtle::report::summarize_lookup(root, root / "marker-only-observer-off-report");
+    assert(marker_only_off["joined_rows"][3]["condition_identity"] == explicit_off_identity);
+    assert(marker_only_off["joined_rows"][3]["condition_identity"] != cold["condition_identity"]);
+
+    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
+        header["observation_level"] = "L0";
+    });
+    const auto client_only_off =
+        turtle::report::summarize_lookup(root, root / "client-only-observer-off-report");
+    const auto client_only_identity = client_only_off["joined_rows"][3]["condition_identity"];
+    assert(client_only_identity != cold["condition_identity"] &&
+           client_only_identity != explicit_off_identity);
+    assert(client_only_identity["client_endpoint"]["measurement_controls"]
+                               ["channel_observer"] == false);
+    assert(client_only_identity["server_endpoint"]["measurement_controls"]
+                               ["channel_observer"] == true);
+
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["observation_level"] = "L0";
+    });
+    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
+        header["observation_level"] = "observer-disabled";
+    });
+    const auto server_only_off =
+        turtle::report::summarize_lookup(root, root / "server-only-observer-off-report");
+    const auto server_only_identity = server_only_off["joined_rows"][3]["condition_identity"];
+    assert(server_only_identity != cold["condition_identity"] &&
+           server_only_identity != explicit_off_identity &&
+           server_only_identity != client_only_identity);
+    assert(server_only_identity["client_endpoint"]["measurement_controls"]
+                               ["channel_observer"] == true);
+    assert(server_only_identity["server_endpoint"]["measurement_controls"]
+                               ["channel_observer"] == false);
+    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
+        header["observation_level"] = "L0";
+    });
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
         header["loaded_context_size"] = 8;
         header["loaded_context_hash"] = "context-a";

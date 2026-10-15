@@ -24,7 +24,8 @@
 | G009/M5 CLI 상호운용성 | 수정하지 않은 `/usr/bin/openssl` 3.0.13과 세 어댑터의 12조건 원자료 감사를 통과했습니다. 최신 70개 시험을 각각 20회, 총 1,400회 통과했고 이 안의 CLI 조건은 240회입니다. 첫 Mbed TLS 근거 분류 오류는 별도 실패 이력으로 보존하고 명시적 category 회귀 시험으로 수정했습니다. |
 | G010/M6 I/O 경로 | OpenSSL callback/native×서버 인증/상호 인증 4조건과 callback/native zero-loss 외부 metadata 실행을 완료했습니다. 기능 성공과 metric availability, native 빈 stream 해석, 자동 비교 제외를 회귀 시험으로 고정했습니다. 동결 코드의 72×20, 정적 검사, 독립 검토와 normal/external 원자료 감사가 모두 통과했습니다. |
 | G011/M7 관측자 영향 | JSON-only `channel_observer` 기본 true 계약, pointer-only on/off, 양 역할의 `handshake_call_begin_to_application_complete` 공통 경계와 독립 CPU availability를 구현했습니다. on/off·off/on·on/off·off/on 네 batch, 16 attempts·32개 역할 파일, 73×20과 원자료 감사를 통과해 완료했습니다. |
-| G012 최종 정리 | 전체 범위의 최종 cleaner·독립 검토와 milestone commit은 아직 남았습니다. G011 완료를 전체 목표 완료로 확대하지 않습니다. |
+| G012 최종 정리 | 최종 cleaner는 NOOP PASS였고 독립 코드·구조 검토, 73×20, 정적 검사와 다섯 보존 원자료 묶음의 offline 재생을 통과했습니다. 수리 전 차단·실패 증거는 별도 보존했습니다. |
+| G013 network integrity | 성공 attempt의 여섯 phase 참조에 비어 있지 않은 qdisc 본문과 요청된 trace 본문을 공통으로 요구합니다. N05 baseline의 none/noqueue `limit_packets:null`만 not-applicable로 보존하고 missing/netem-null은 거절합니다. runner와 N05 원자료는 바꾸거나 다시 실행하지 않았습니다. |
 
 ## 현재 수치를 해석할 때의 제한
 
@@ -41,7 +42,7 @@
 
 ## 2026년 10월 15일 이후 재개 순서
 
-최신 사용자 요청에 따라 M13·M14는 `docs/mock-ca.md`에 기록된 현재 경계에서 멈춥니다. 이미 보존한 N05 20% loss 64회 증거는 그대로 유지하고 이 범위를 확장하거나 다시 실행하지 않습니다. G007 검증, G008 두 커밋 cutover, G009/M5, G010/M6와 G011/M7 검증을 마쳤습니다. 다음은 G012 최종 cleaner·독립 검토와 milestone commit입니다. 아직 전체 목표를 완료로 표시하지 않습니다. M0의 새 작업 폴더 빌드, M1의 소켓 설정·연결 수·격리 시험, M3의 고정 입력 저장·복원 시험을 보완했고 M2의 별도 준비 통로와 파일 원자료 방식은 유지했습니다. 구체적인 실행 결과와 실패도 `docs/validation.md`에 남깁니다.
+최신 사용자 요청에 따라 M13·M14는 `docs/mock-ca.md`에 기록된 현재 경계에서 멈춥니다. 이미 보존한 N05 20% loss 64회 증거는 그대로 유지하고 이 범위를 확장하거나 다시 실행하지 않습니다. G007~G013의 후속 요구와 M5·M6·M7 검증을 마쳤습니다. 문서 동결 뒤 최종 milestone commit과 goal metadata 정리는 리더가 수행합니다. M0의 새 작업 폴더 빌드, M1의 소켓 설정·연결 수·격리 시험, M3의 고정 입력 저장·복원 시험을 보완했고 M2의 별도 준비 통로와 파일 원자료 방식은 유지했습니다. 구체적인 실행 결과와 실패도 `docs/validation.md`에 남깁니다.
 
 1. G001~G005는 완료했습니다. G005는 구현, 고정 실제 실행, 해독과 최종 offline report까지 마쳤습니다.
 2. G006도 완료했습니다. 전체 57개 시험을 각각 20회 실행해 총 1,140회 통과했고, 최종 정적 검사와 독립 코드·구조 검토를 마쳤습니다.
@@ -50,8 +51,8 @@
 5. G009/M5는 활성 세 어댑터 각각의 client/server와 서버 인증/상호 인증, 모두 12조건을 수정하지 않은 OpenSSL CLI와 검증해 완료했습니다.
 6. G010/M6는 구현·독립 검토, 동결 트리의 72×20 반복·정적 검사와 normal/external 원자료 감사를 통과해 완료했습니다.
 7. G011/M7은 구현·독립 검토, 실제 4-batch 교대 실행, 73×20과 원자료 감사를 통과해 완료했습니다.
-8. G012 최종 cleaner·독립 검토와 milestone commit은 아직 남았습니다.
-9. 실제 인증서 압축·생략·캐싱 기법은 구현하지 않았습니다. 메시지 묶음을 개별 메시지 연산 시간으로 나누거나 인증서 경량화 효과를 얻었다는 주장은 새 근거가 생길 때까지 하지 않습니다.
+8. G012 최종 cleaner·독립 검토와 전체 회귀·offline 재생을 통과했습니다. G013 shared network integrity 수리도 같은 최종 증거에 포함됐습니다.
+9. 현재 사용자 후속 요구와 M5·M6·M7은 완료했습니다. 다만 M10의 eBPF/완전한 패킷·계측 정확도 대조와 M12의 실제 인증서 압축·생략·캐싱 기법 및 원 논문 재현은 구현하지 않은 미래 범위입니다. 메시지 묶음을 개별 메시지 연산 시간으로 나누거나 인증서 경량화 효과를 얻었다는 주장도 하지 않습니다.
 
 ## Mock CA·netem 목표의 현재 경계
 

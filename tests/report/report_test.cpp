@@ -6,6 +6,7 @@
 #include <iostream>
 #include <map>
 #include <numeric>
+#include <sstream>
 #include <unistd.h>
 int main() {
     using namespace turtle::report;
@@ -670,9 +671,18 @@ int main() {
         const J paths = {
             {"tls_c2s", {{"delay_ms", delay_ms}, {"loss_percent", 0.0}, {"limit_packets", 10000}}},
             {"tls_s2c", {{"delay_ms", delay_ms}, {"loss_percent", 0.0}, {"limit_packets", 10000}}}};
+        const J actual_paths = {
+            {"tls_c2s", {{"interface", "rstls"}, {"kind", "netem"},
+                          {"delay_ms", delay_ms}, {"loss_percent", 0.0},
+                          {"limit_packets", 10000}}},
+            {"tls_s2c", {{"interface", "rctls"}, {"kind", "netem"},
+                          {"delay_ms", delay_ms}, {"loss_percent", 0.0},
+                          {"limit_packets", 10000}}}};
         const J readbacks = {
-            {"tls_c2s", {{"interface", "rstls"}}},
-            {"tls_s2c", {{"interface", "rctls"}}}};
+            {"tls_c2s", {{"interface", "rstls"}, {"requested", paths.at("tls_c2s")},
+                          {"root_kind", "netem"}}},
+            {"tls_s2c", {{"interface", "rctls"}, {"requested", paths.at("tls_s2c")},
+                          {"root_kind", "netem"}}}};
         std::ofstream(run / "network-provenance.json")
             << J({{"type", "turtle-network-provenance"}, {"schema", 1},
                   {"status", "complete"}, {"director", {{"returncode", 0}}},
@@ -694,8 +704,8 @@ int main() {
                                                      {"server", "stls"},
                                                      {"router_client_tls", "rctls"},
                                                      {"router_server", "rstls"}}}}},
-                    {"requested", {{"paths", paths}}},
-                    {"actual", {{"qdisc", "netem"}, {"paths", paths}}},
+                    {"requested", {{"qdisc", "netem"}, {"paths", paths}}},
+                    {"actual", {{"qdisc", "netem"}, {"paths", actual_paths}}},
                     {"mtu", {{"requested", 1500}, {"actual", {{"ctls", 1500}}}}},
                     {"offload", {{"requested", false}, {"actual", {{"ctls", false}}}}},
                     {"trace", {{"requested", false}}}}}})
@@ -711,7 +721,8 @@ int main() {
             observations << J({{"type", "network-observation"}, {"schema", 1},
                                {"observation_id", text}, {"attempt", 1},
                                {"phase", phase},
-                               {"edge", text.ends_with("begin") ? "begin" : "end"}})
+                               {"edge", text.ends_with("begin") ? "begin" : "end"},
+                               {"qdiscs", readbacks}})
                                     .dump()
                          << '\n';
         }
@@ -734,7 +745,102 @@ int main() {
                       ["delay_ms"] == 0)
             zero_dimensions = dimensions;
     }
+    const auto zero_observations_path =
+        pure_netem_dir / "zero" / "network-observations.jsonl";
+    std::ifstream zero_observations_input(zero_observations_path);
+    const std::string zero_observations{
+        std::istreambuf_iterator<char>(zero_observations_input),
+        std::istreambuf_iterator<char>()};
+    auto rewrite_observations = [&](auto change) {
+        std::istringstream input(zero_observations);
+        std::ofstream output(zero_observations_path);
+        std::string line;
+        while (std::getline(input, line)) {
+            auto row = J::parse(line);
+            change(row);
+            output << row.dump() << '\n';
+        }
+    };
+    auto require_network_payload_failure = [&](const char* output_name) {
+        const auto failed = summarize(pure_netem_dir / "zero", dir / output_name);
+        assert(failed["groups"].size() == 1);
+        assert(failed["groups"][0]["dimensions"] == zero_dimensions);
+        assert(failed["groups"][0]["automatic_comparison_eligible"] == false);
+        assert(failed["groups"][0]["metrics"].empty());
+        assert(failed["comparisons"].empty());
+        assert(failed["samples"][0]["network_integrity"]["eligible"] == false);
+    };
+    rewrite_observations([](J& row) { row.erase("qdiscs"); });
+    require_network_payload_failure("missing-qdiscs-report");
+    rewrite_observations([](J& row) { row["qdiscs"] = J::object(); });
+    require_network_payload_failure("empty-qdiscs-report");
+    std::ofstream(zero_observations_path) << zero_observations;
+
     const auto zero_provenance_path = pure_netem_dir / "zero" / "network-provenance.json";
+    const auto zero_provenance = J::parse(std::ifstream(zero_provenance_path));
+    auto trace_provenance = zero_provenance;
+    trace_provenance["condition_identity"]["trace"]["requested"] = true;
+    trace_provenance["cleanup"].push_back({{"observer", "reaped"}});
+    std::ofstream(zero_provenance_path) << trace_provenance.dump(2) << '\n';
+    rewrite_observations([](J& row) { row["packet_trace"] = "packets.jsonl"; });
+    const auto trace_complete =
+        summarize(pure_netem_dir / "zero", dir / "trace-complete-report");
+    assert(trace_complete["groups"][0]["automatic_comparison_eligible"] == true);
+    const auto trace_dimensions = trace_complete["groups"][0]["dimensions"];
+    rewrite_observations([](J& row) { row.erase("packet_trace"); });
+    const auto trace_missing =
+        summarize(pure_netem_dir / "zero", dir / "trace-missing-report");
+    assert(trace_missing["groups"][0]["dimensions"] == trace_dimensions);
+    assert(trace_missing["groups"][0]["automatic_comparison_eligible"] == false);
+    assert(trace_missing["groups"][0]["metrics"].empty());
+    assert(trace_missing["comparisons"].empty());
+    assert(trace_missing["samples"][0]["network_integrity"]["eligible"] == false);
+    rewrite_observations([](J& row) { row["packet_trace"] = nullptr; });
+    const auto trace_null = summarize(pure_netem_dir / "zero", dir / "trace-null-report");
+    assert(trace_null["groups"][0]["dimensions"] == trace_dimensions);
+    assert(trace_null["groups"][0]["automatic_comparison_eligible"] == false);
+    assert(trace_null["groups"][0]["metrics"].empty());
+    assert(trace_null["comparisons"].empty());
+    assert(trace_null["samples"][0]["network_integrity"]["eligible"] == false);
+    std::ofstream(zero_observations_path) << zero_observations;
+    std::ofstream(zero_provenance_path) << zero_provenance.dump(2) << '\n';
+
+    auto none_provenance = zero_provenance;
+    none_provenance["condition_identity"]["requested"]["qdisc"] = "none";
+    none_provenance["condition_identity"]["actual"]["qdisc"] = "none";
+    for (const auto* path : {"tls_c2s", "tls_s2c"}) {
+        auto& actual = none_provenance["condition_identity"]["actual"]["paths"][path];
+        actual["kind"] = "noqueue";
+        actual["limit_packets"] = nullptr;
+        none_provenance["applied_qdisc_readback"][path]["root_kind"] = "noqueue";
+    }
+    std::ofstream(zero_provenance_path) << none_provenance.dump(2) << '\n';
+    const auto none_qdisc =
+        summarize(pure_netem_dir / "zero", dir / "none-qdisc-report");
+    assert(none_qdisc["groups"][0]["automatic_comparison_eligible"] == true);
+    assert(!none_qdisc["groups"][0]["metrics"].empty());
+    assert(none_qdisc["groups"][0]["dimensions"]["network_actual_identity"]
+                     ["actual"]["paths"]["tls_c2s"]["limit_packets"].is_null());
+
+    auto missing_limit = none_provenance;
+    missing_limit["condition_identity"]["actual"]["paths"]["tls_c2s"].erase(
+        "limit_packets");
+    std::ofstream(zero_provenance_path) << missing_limit.dump(2) << '\n';
+    const auto missing_limit_report =
+        summarize(pure_netem_dir / "zero", dir / "none-qdisc-missing-limit-report");
+    assert(missing_limit_report["groups"][0]["automatic_comparison_eligible"] == false);
+    assert(missing_limit_report["groups"][0]["metrics"].empty());
+
+    auto netem_null_limit = zero_provenance;
+    netem_null_limit["condition_identity"]["actual"]["paths"]["tls_c2s"]
+                    ["limit_packets"] = nullptr;
+    std::ofstream(zero_provenance_path) << netem_null_limit.dump(2) << '\n';
+    const auto netem_null_limit_report =
+        summarize(pure_netem_dir / "zero", dir / "netem-null-limit-report");
+    assert(netem_null_limit_report["groups"][0]["automatic_comparison_eligible"] == false);
+    assert(netem_null_limit_report["groups"][0]["metrics"].empty());
+    std::ofstream(zero_provenance_path) << zero_provenance.dump(2) << '\n';
+
     auto host_changed_provenance = J::parse(std::ifstream(zero_provenance_path));
     host_changed_provenance["host_network_identity"]["unchanged"] = false;
     std::ofstream(zero_provenance_path) << host_changed_provenance.dump(2) << '\n';
