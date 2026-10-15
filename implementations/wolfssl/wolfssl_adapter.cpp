@@ -231,6 +231,11 @@ Declaration declaration(const Context* base) {
     value.extra_threads = false;
     value.context_serialization = false;
     value.is_mock = false;
+    value.read_ahead = false;
+    value.read_ahead_note =
+        "wolfSSL 5.8.2 stores a disabled compatibility flag, but its TLS stream reader does "
+        "not consult that flag; the pinned reader independently requests the exact remaining "
+        "header or body bytes";
     value.memory_note =
         value.allocator_hooks
             ? "wolfSSL allocations use host callbacks; excludes adapter C++ objects and caller "
@@ -287,6 +292,11 @@ Context* setup(Role role, const TlsConfig& config, const HostServices& services,
     wolfSSL_CTX_SetIORecv(context->ssl_context, io_receive);
     wolfSSL_CTX_SetIOSend(context->ssl_context, io_send);
     wolfSSL_CTX_set_keylog_callback(context->ssl_context, key_log);
+    if (wolfSSL_CTX_set_read_ahead(context->ssl_context, 0) != WOLFSSL_SUCCESS ||
+        wolfSSL_CTX_get_read_ahead(context->ssl_context) != 0) {
+        context->setup_error = "wolfSSL_CTX read-ahead compatibility flag could not be disabled";
+        return context;
+    }
 
     if (wolfSSL_CTX_set_cipher_list(context->ssl_context, kWolfCipher) != WOLFSSL_SUCCESS) {
         set_setup_error(*context, "wolfSSL_CTX_set_cipher_list");
@@ -526,7 +536,7 @@ void teardown(Context* base) noexcept {
 
 } // namespace
 
-extern "C" turtle::ImplementationApi turtle_adapter_v1() {
+extern "C" turtle::ImplementationApi turtle_adapter_v2() {
     turtle::ImplementationApi api;
     api.version = turtle::adapter_api_version;
     api.name = adapter_name;

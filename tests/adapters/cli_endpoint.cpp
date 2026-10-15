@@ -467,12 +467,13 @@ int main(int argc, char** argv) {
         auto entry = reinterpret_cast<AdapterEntry>(dlsym(module, adapter_entry_name));
         const char* symbol_error = dlerror();
         require(symbol_error == nullptr && entry != nullptr,
-                std::string("adapter entry missing: ") + (symbol_error ? symbol_error : "unknown"));
+                std::string("adapter ABI v2 entry turtle_adapter_v2 is missing: ") +
+                    (symbol_error ? symbol_error : "unknown"));
         api = entry();
         require(api.version == adapter_api_version, "adapter API version mismatch");
         require(api.name && api.declaration && api.setup && api.open && api.handshake_step &&
                     api.peer_verification && api.negotiated && api.app_send && api.app_recv &&
-                    api.close && api.teardown,
+                    api.error && api.close && api.save && api.teardown,
                 "adapter API function table is incomplete");
         const char* adapter_name = api.name();
         require(adapter_name != nullptr && *adapter_name != '\0', "adapter name is empty");

@@ -1,6 +1,6 @@
-#define turtle_adapter_v1 turtle_mock_api
+#define turtle_adapter_v2 turtle_mock_api
 #include "../../implementations/mock/mock.cpp"
-#undef turtle_adapter_v1
+#undef turtle_adapter_v2
 #include "transport/tcp.hpp"
 #include <cerrno>
 #include <sys/resource.h>
@@ -33,7 +33,7 @@ turtle::Connection* checked_open(turtle::Context* context, const turtle::Io& io)
     return turtle_mock_api().open(context, io);
 }
 } // namespace
-extern "C" turtle::ImplementationApi turtle_adapter_v1() {
+extern "C" turtle::ImplementationApi turtle_adapter_v2() {
     auto api = turtle_mock_api();
     api.setup = checked_setup;
     api.open = checked_open;

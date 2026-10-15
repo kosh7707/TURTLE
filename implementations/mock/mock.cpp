@@ -40,6 +40,7 @@ Declaration declaration(const Context*) {
     d.context_description =
         "Completed synthetic connections as an eight-byte little-endian counter";
     d.context_serialization = true;
+    d.read_ahead_note = "Not applicable: mock implementation does not parse TLS records";
     return d;
 }
 Context* setup(Role role, const TlsConfig& config, const HostServices&,
@@ -109,7 +110,8 @@ void teardown(Context* c) noexcept {
     delete c;
 }
 } // namespace
-extern "C" turtle::ImplementationApi turtle_adapter_v1() {
-    return {1,          name, declaration, setup, open,  handshake, verify,
-            negotiated, send, recv,        error, close, save,      teardown};
+extern "C" turtle::ImplementationApi turtle_adapter_v2() {
+    return {turtle::adapter_api_version, name, declaration, setup, open,  handshake, verify,
+            negotiated,                   send, recv,        error, close, save,
+            teardown};
 }

@@ -20,3 +20,12 @@ if(TARGET turtle_interpret AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/interpret/CMa
   add_subdirectory(interpret)
 endif()
 add_subdirectory(integration)
+
+foreach(name openssl wolfssl mbedtls)
+  if(TARGET turtle_adapter_${name})
+    add_test(NAME read_pattern_${name} COMMAND turtle_adapter_read_pattern
+      "$<TARGET_FILE:turtle_adapter_${name}>" "${CMAKE_BINARY_DIR}/pki")
+    set_tests_properties(read_pattern_${name} PROPERTIES
+      FIXTURES_REQUIRED local_pki TIMEOUT 30 LABELS integration)
+  endif()
+endforeach()

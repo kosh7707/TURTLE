@@ -70,6 +70,8 @@ cmake --build build --parallel 4
 
 고정 판은 OpenSSL 3.5.4, wolfSSL 5.8.2-stable, Mbed TLS 3.6.4입니다. OpenSSL·Mbed TLS 압축 파일의 SHA-256과 wolfSSL 커밋을 확인합니다. 기본 캐시는 `.deps/`이며 `TURTLE_DEPS_ROOT`로 바꿀 수 있습니다. OpenSSL만 사용할 때는 시스템의 3.0 이상도 지원하지만 원자료에 실제 판을 기록합니다. 기본 코어 실행 파일은 TLS 라이브러리에 링크하지 않고 각 역할에서 어댑터를 불러옵니다.
 
+현재 모듈 계약은 adapter ABI 2이며 진입점은 `turtle_adapter_v2`입니다. v1으로 빌드한 기존 `.so`는 새 코어가 `declaration`·`setup` 호출 전에 거절하므로 모든 어댑터를 함께 다시 빌드하십시오. 호환 계층은 없습니다. adapter ABI 2, 측정 계약 개정값 2, 원자료 형식 1은 각각 모듈 바이너리, 측정 귀속, JSON 형식을 구별하는 별개 버전입니다.
+
 의존성 빌드에는 C 컴파일러, `curl`, Git, Perl, Make와 `tar`도 필요합니다. 이 스크립트는 운영체제 패키지를 자동 설치하지 않습니다.
 
 세 라이브러리의 공통 프로필은 AES-128-GCM/SHA-256, P-256 키 교환, ECDSA P-256 인증서, 호환용 ChangeCipherSpec, 티켓 0장입니다. 지원 범위를 벗어난 설정은 조용히 무시하지 않습니다. 상세한 차이는 [어댑터 지원 범위](implementations/common/README.md)에 있습니다.

@@ -33,7 +33,12 @@ int main() {
     model::Event e;
     e.sequence = 42;
     forbid_allocation = true;
-    assert(buffer.append(e));
+    auto* prepared = buffer.prepare_event(e);
+    assert(prepared != nullptr);
+    prepared->snapshot.monotonic_ns = 99;
+    assert(buffer.events().size() == 1);
+    assert(buffer.events()[0].sequence == 42);
+    assert(buffer.events()[0].snapshot.monotonic_ns == 99);
     const std::uint8_t data[]{1, 2, 3, 4};
     assert(buffer.append_bytes(0, model::Direction::Sent, data));
     assert(buffer.append_bytes(1, model::Direction::Received, data));
@@ -58,6 +63,8 @@ int main() {
         record::Writer writer(dir.string(), Role::Client, 2);
         model::SampleInfo info;
         info.sample = 7;
+        info.declaration.read_ahead = false;
+        info.declaration.read_ahead_note = "exact-needed receive policy";
         info.config.flush_grace_ms = 700;
         info.config.failure_policy = model::FailurePolicy::FixedAttempts;
         info.config.ca_cpu = 11;
@@ -112,6 +119,9 @@ int main() {
     assert(sample["schema"] == model::record_schema);
     assert(sample["measurement_contract_revision"] ==
            model::measurement_contract_revision);
+    assert(sample["measurement_contract_revision"] == 2);
+    assert(sample["declaration"]["read_ahead"] == false);
+    assert(sample["declaration"]["read_ahead_note"] == "exact-needed receive policy");
     assert(sample["capture_dropped"] == 4);
     assert(sample["connections"][0].contains("socket"));
     assert(sample["connections"][0]["socket"].is_null());
@@ -168,6 +178,8 @@ int main() {
     assert(ordinary_sample["config"]["lookup"]["snapshot_file"].is_null());
     assert(ordinary_sample["config"]["network_manifest"].is_null());
     assert(ordinary_sample["config"]["network_handoff"].is_null());
+    assert(ordinary_sample["declaration"]["read_ahead"].is_null());
+    assert(ordinary_sample["declaration"]["read_ahead_note"] == "");
     std::filesystem::remove_all(dir);
     record::Buffer zero({0, 0, 0, 0});
     assert(!zero.append(e));

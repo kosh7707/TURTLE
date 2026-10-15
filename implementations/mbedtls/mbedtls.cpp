@@ -301,6 +301,10 @@ turtle::Declaration declaration(const turtle::Context* base) {
     result.extra_threads = false;
     result.context_serialization = false;
     result.is_mock = false;
+    result.read_ahead = false;
+    result.read_ahead_note =
+        "Mbed TLS 3.6.4 has no read-ahead setting; its pinned TLS stream reader requests only "
+        "the remaining bytes required for the current header or record body";
     result.memory_note =
         result.allocator_hooks
             ? "Mbed TLS allocations use host callbacks; excludes adapter C++ objects and caller "
@@ -559,7 +563,7 @@ void teardown(turtle::Context* base) noexcept {
 
 } // namespace
 
-extern "C" turtle::ImplementationApi turtle_adapter_v1() {
+extern "C" turtle::ImplementationApi turtle_adapter_v2() {
     return {turtle::adapter_api_version,
             name,
             declaration,

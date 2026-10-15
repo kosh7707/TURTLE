@@ -142,6 +142,8 @@ Json declaration_json(const Declaration& v) {
             {"extra_threads", v.extra_threads},
             {"context_serialization", v.context_serialization},
             {"is_mock", v.is_mock},
+            {"read_ahead", nullable(v.read_ahead)},
+            {"read_ahead_note", v.read_ahead_note},
             {"memory_note", v.memory_note}};
 }
 Json environment_json(const model::Environment& v) {
@@ -334,12 +336,18 @@ struct Buffer::State {
 };
 Buffer::Buffer(const Limits& limits) : state_(std::make_unique<State>(limits)) {}
 Buffer::~Buffer() = default;
-bool Buffer::append(model::Event event) noexcept {
+model::Event* Buffer::prepare_event(model::Event event) noexcept {
     auto& s = *state_;
-    if (s.event_count == s.event_storage.size())
-        return s.reject();
-    s.event_storage[s.event_count++] = event;
-    return true;
+    if (s.event_count == s.event_storage.size()) {
+        s.reject();
+        return nullptr;
+    }
+    auto* slot = &s.event_storage[s.event_count++];
+    *slot = event;
+    return slot;
+}
+bool Buffer::append(model::Event event) noexcept {
+    return prepare_event(event) != nullptr;
 }
 bool Buffer::append_bytes(std::size_t connection, model::Direction direction,
                           std::span<const std::uint8_t> bytes) noexcept {

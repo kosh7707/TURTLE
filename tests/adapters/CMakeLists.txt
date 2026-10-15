@@ -13,3 +13,9 @@ target_include_directories(turtle_adapter_cli_endpoint PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/../../include)
 target_compile_features(turtle_adapter_cli_endpoint PRIVATE cxx_std_20)
 target_link_libraries(turtle_adapter_cli_endpoint PRIVATE ${CMAKE_DL_LIBS})
+
+add_executable(turtle_adapter_read_pattern read_pattern.cpp)
+target_include_directories(turtle_adapter_read_pattern PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/../../include)
+target_compile_features(turtle_adapter_read_pattern PRIVATE cxx_std_20)
+target_link_libraries(turtle_adapter_read_pattern PRIVATE ${CMAKE_DL_LIBS})

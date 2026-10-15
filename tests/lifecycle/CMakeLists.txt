@@ -45,3 +45,18 @@ target_link_options(turtle_attempt_boundaries_test PRIVATE
 add_dependencies(turtle_attempt_boundaries_test turtle_mock)
 add_test(NAME lifecycle_attempt_boundaries COMMAND turtle_attempt_boundaries_test "${CMAKE_BINARY_DIR}/adapters")
 set_tests_properties(lifecycle_attempt_boundaries PROPERTIES TIMEOUT 45)
+
+add_executable(turtle_capture_test capture_test.cpp)
+target_include_directories(turtle_capture_test PRIVATE ../../src ../../include)
+target_link_libraries(turtle_capture_test PRIVATE turtle_record)
+add_test(NAME lifecycle_capture_return_order COMMAND turtle_capture_test)
+
+add_library(turtle_v1_only_adapter MODULE v1_only_adapter.cpp)
+set_target_properties(turtle_v1_only_adapter PROPERTIES PREFIX "" OUTPUT_NAME "v1_only"
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/adapters")
+add_executable(turtle_adapter_abi_test adapter_abi_test.cpp)
+target_include_directories(turtle_adapter_abi_test PRIVATE ../../src ../../include ../../third_party)
+target_link_libraries(turtle_adapter_abi_test PRIVATE turtle_lifecycle ${CMAKE_DL_LIBS})
+add_dependencies(turtle_adapter_abi_test turtle_v1_only_adapter turtle_mock)
+add_test(NAME adapter_v1_rejected_before_callbacks
+  COMMAND turtle_adapter_abi_test "$<TARGET_FILE:turtle_v1_only_adapter>")

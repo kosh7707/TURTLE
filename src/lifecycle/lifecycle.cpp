@@ -1,4 +1,5 @@
 #include "lifecycle/lifecycle.hpp"
+#include "lifecycle/capture.hpp"
 #include "lifecycle/endpoint_protocol.hpp"
 #include "lifecycle/lookup_runtime.hpp"
 #include "capability/capability.hpp"
@@ -24,7 +25,6 @@
 #include <sstream>
 #include <stdexcept>
 #include <sys/socket.h>
-#include <type_traits>
 #include <unistd.h>
 namespace turtle::lifecycle {
 namespace {
@@ -44,12 +44,13 @@ struct Module {
         if (!entry) {
             ::dlclose(handle);
             handle = nullptr;
-            throw std::runtime_error("adapter entry missing");
+            throw std::runtime_error("adapter ABI v2 entry turtle_adapter_v2 is missing");
         }
         api = entry();
         if (api.version != adapter_api_version || !api.name || !api.setup || !api.declaration ||
             !api.open || !api.handshake_step || !api.peer_verification || !api.negotiated ||
-            !api.app_send || !api.app_recv || !api.close || !api.save || !api.teardown) {
+            !api.app_send || !api.app_recv || !api.error || !api.close || !api.save ||
+            !api.teardown) {
             ::dlclose(handle);
             handle = nullptr;
             throw std::runtime_error("incomplete adapter API");
@@ -60,90 +61,7 @@ struct Module {
             ::dlclose(handle);
     }
 };
-struct Capture {
-    measure::Meter& meter;
-    record::Buffer& buffer;
-    std::size_t connection = 0;
-    std::uint64_t sequence = 0, call_id = 0, sent = 0, received = 0;
-    model::Call call = model::Call::None;
-    std::uint64_t first_receive = 0;
-    bool heap_supported = false;
-    model::Snapshot snapshot() noexcept {
-        auto value = meter.read();
-        if (!heap_supported)
-            value.heap.reset();
-        return value;
-    }
-    void event(model::EventKind kind, model::Location location = model::Location::Boundary,
-               std::int64_t result = 0, std::size_t requested = 0,
-               std::size_t transferred = 0) noexcept {
-        model::Event e;
-        e.kind = kind;
-        e.location = location;
-        e.result = result;
-        e.requested = requested;
-        e.transferred = transferred;
-        e.connection = connection;
-        e.sequence = ++sequence;
-        e.call = call;
-        e.call_id = call_id;
-        e.snapshot = snapshot();
-        buffer.append(e);
-    }
-    static void observe(void* p, const transport::Observation& o) noexcept {
-        auto& c = *static_cast<Capture*>(p);
-        model::Event e;
-        e.connection = c.connection;
-        e.sequence = ++c.sequence;
-        e.call = c.call;
-        e.call_id = c.call_id;
-        e.snapshot = c.snapshot();
-        e.kind =
-            o.sending
-                ? (o.entering ? model::EventKind::IoSendEnter : model::EventKind::IoSendReturn)
-                : (o.entering ? model::EventKind::IoRecvEnter : model::EventKind::IoRecvReturn);
-        auto& offset = o.sending ? c.sent : c.received;
-        e.stream_begin = offset;
-        e.requested = o.requested;
-        if (!o.entering) {
-            e.transferred = o.result.bytes;
-            e.result = static_cast<int>(o.result.status);
-            e.system_error = o.result.system_error;
-            offset += o.result.bytes;
-        }
-        e.stream_end = offset;
-        c.buffer.append(e);
-        if (!o.entering && o.result.bytes) {
-            c.buffer.append_bytes(c.connection,
-                                  o.sending ? model::Direction::Sent : model::Direction::Received,
-                                  {o.data, o.result.bytes});
-            if (!o.sending && !c.first_receive)
-                c.first_receive = e.sequence;
-            if (o.kernel_realtime_ns) {
-                e.kind = model::EventKind::KernelRx;
-                e.location = model::Location::Kernel;
-                e.sequence = ++c.sequence;
-                e.raw_timestamp_ns = o.kernel_realtime_ns;
-                c.buffer.append(e);
-            }
-        }
-    }
-    template <class F> auto invoke(model::Call operation, F&& f, std::size_t requested = 0) {
-        call = operation;
-        ++call_id;
-        event(model::EventKind::CallBegin, model::Location::Boundary, 0, requested);
-        auto result = f();
-        std::int64_t code = 0;
-        std::size_t transferred = 0;
-        if constexpr (std::is_same_v<decltype(result), AppResult>) {
-            code = static_cast<int>(result.step);
-            transferred = result.bytes;
-        } else if constexpr (std::is_enum_v<decltype(result)>)
-            code = static_cast<int>(result);
-        event(model::EventKind::CallEnd, model::Location::Boundary, code, requested, transferred);
-        return result;
-    }
-};
+using Capture = detail::Capture<measure::Meter>;
 bool keylog(void* p, const char* line, std::size_t size) noexcept {
     return static_cast<Capture*>(p)->buffer.append_keylog({line, size});
 }
@@ -681,7 +599,12 @@ int run_attempt(const model::RunConfig& config, std::uint64_t sample,
         ledger.failure_phase = model::FailurePhase::TcpReady;
         for (auto& child : children) {
             auto ready = control::receive_message(*child.waiter, deadline);
-            if (ready.kind != control::MessageKind::TcpReady) throw std::runtime_error("participant TCP_READY missing");
+            if (ready.kind == control::MessageKind::Failed)
+                throw std::runtime_error(ready.reason.empty()
+                                             ? "participant TCP_READY failed without a diagnostic"
+                                             : ready.reason);
+            if (ready.kind != control::MessageKind::TcpReady)
+                throw std::runtime_error("participant TCP_READY missing");
         }
         if (config.network_handoff) {
             auto ack = control::exchange_phase(config.network_handoff->phase_control_fd, sample,

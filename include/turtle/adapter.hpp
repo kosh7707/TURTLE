@@ -3,6 +3,7 @@
 // Public adapter contract. No framework-internal headers are exposed here.
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -89,6 +90,8 @@ struct Declaration {
     bool extra_threads = false;
     bool context_serialization = false;
     bool is_mock = false;
+    std::optional<bool> read_ahead;
+    std::string read_ahead_note;
     std::string memory_note;
 };
 
@@ -113,7 +116,7 @@ struct Connection {
 // Config and HostServices outlive Context; Io outlives Connection. A retry uses
 // the same operation and buffer until that operation reports progress or Done.
 struct ImplementationApi {
-    std::uint32_t version = 1;
+    std::uint32_t version = 2;
     const char* (*name)() noexcept = nullptr;
     Declaration (*declaration)(const Context*) = nullptr;
     Context* (*setup)(Role, const TlsConfig&, const HostServices&,
@@ -131,11 +134,11 @@ struct ImplementationApi {
 };
 
 using AdapterEntry = ImplementationApi (*)();
-inline constexpr std::uint32_t adapter_api_version = 1;
-inline constexpr const char* adapter_entry_name = "turtle_adapter_v1";
+inline constexpr std::uint32_t adapter_api_version = 2;
+inline constexpr const char* adapter_entry_name = "turtle_adapter_v2";
 
 } // namespace turtle
 
 // Each adapter module exports this function. It returns a function table by
 // value, not a singleton instance. Library initialization belongs to setup().
-extern "C" turtle::ImplementationApi turtle_adapter_v1();
+extern "C" turtle::ImplementationApi turtle_adapter_v2();

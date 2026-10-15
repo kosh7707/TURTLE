@@ -29,20 +29,34 @@ def take_vector(data, offset, size_bytes, label):
     return take(data, offset, size, label)
 
 
-def plaintext_handshakes(stream, direction):
-    """Return complete, pre-encryption handshake messages from a TLS byte stream."""
-    plaintext = bytearray()
+def tls_records(stream, direction):
+    result = []
     offset = 0
     while offset < len(stream):
+        begin = offset
         header, offset = take(stream, offset, 5, f"{direction} TLS record header")
-        payload, offset = take(
+        header_end = offset
+        _, offset = take(
             stream,
             offset,
             int.from_bytes(header[3:5], "big"),
             f"{direction} TLS record payload",
         )
-        if header[0] == TLS_HANDSHAKE_RECORD:
-            plaintext.extend(payload)
+        result.append({
+            "content_type": header[0],
+            "begin": begin,
+            "header_end": header_end,
+            "end": offset,
+        })
+    return result
+
+
+def plaintext_handshakes(stream, direction):
+    """Return complete, pre-encryption handshake messages from a TLS byte stream."""
+    plaintext = bytearray()
+    for record in tls_records(stream, direction):
+        if record["content_type"] == TLS_HANDSHAKE_RECORD:
+            plaintext.extend(stream[record["header_end"]:record["end"]])
 
     messages = []
     offset = 0

@@ -22,9 +22,11 @@
 
 `schema`, `sample`, `batch`, `role`, `pid`, `mode`, `valid`, `invalid_reason`, 프로필·환경 해시를 담습니다. `config`, `environment`, `capabilities`, `declaration`, `calibration`, `connections`에는 공통 값 구조의 모든 설정과 관측 결과를 보존합니다. 비밀 키 파일 경로는 설정의 일부이며 키 파일 내용 자체는 JSON에 넣지 않습니다.
 
-`measurement_contract_revision`은 원자료 형식과 별개로 측정 경계의 의미를 식별하는 최상위 선택 필드입니다. 양의 정수만 알려진 값으로 취급합니다. 새 원자료의 값 1은 세 어댑터의 키 공유 생성이 `open()`이 아닌 핸드셰이크 측정 구간에 들어간 계약입니다. 이 필드를 추가해도 `schema` 1은 바뀌지 않습니다.
+`measurement_contract_revision`은 원자료 형식과 별개로 측정 경계의 의미를 식별하는 최상위 선택 필드입니다. 양의 정수만 알려진 값으로 취급합니다. 개정값 1은 세 어댑터의 키 공유 생성이 `open()`이 아닌 핸드셰이크 측정 구간에 들어간 계약입니다. 현재 새 원자료의 개정값 2는 이 키 생성 배치와 함께, 성공한 I/O 반환의 프레임워크 캡처 작업을 후속 연산이 아닌 I/O 구간에 두는 계약입니다. 개정값을 올려도 `schema` 1은 바뀌지 않습니다.
 
 필드가 없거나 값이 유효하지 않은 예전 원자료도 계속 읽습니다. 이 경우 측정 계약은 `null`인 알 수 없음으로 남기며, 이미 관측한 성공 표본·지표·분포를 삭제하거나 0으로 바꾸지 않습니다. 다만 상대 엔드포인트를 포함해 같은 계약임을 확인할 수 없으므로 자동 비교에서는 제외합니다.
+
+`declaration.read_ahead`는 TLS 수신 선행 정책의 선택 불리언이고 `declaration.read_ahead_note`는 근거와 한계입니다. `false`는 현재 레코드의 필요 범위를 넘어 다음 레코드를 선행 수신하지 않는 정책입니다. 성공 `recv` 횟수를 두 번으로 고정하는 값이 아닙니다. 예전 원자료의 필드 부재와 `mock`의 `null`은 `false`로 바꾸지 않습니다.
 
 `clock_start`, `clock_end`는 실제 시각과 단조 시각의 대응 관측입니다. `observation_level`, `incomplete`, `perf_complete`, 저장·복원한 상태 크기, 고정한 CPU도 남깁니다. 버퍼 공간이 부족하면 `capture_dropped`가 증가하고 표본은 무효로 저장됩니다. 넘친 데이터를 일부만 잘라 성공으로 표시하지 않습니다.
 
@@ -63,6 +65,8 @@ timeout 검증의 원장은 3개 attempt를 모두 timeout으로 보존했고 mi
 `attempts.jsonl`이 존재하지만 JSON 행이 손상됐거나 schema·분모가 잘못됐으면 과거 `director.txt` fallback으로 덮어 성공시키지 않습니다. 보고를 오류로 끝냅니다. fallback은 새 원장이 아예 없는 과거 TLS 자료에만 적용합니다.
 
 입출력의 `requested`, `transferred`, `stream_begin`, `stream_end`는 요청 길이, 성공 길이, 반열린 바이트 구간입니다. `result`, `system_error`를 그대로 보관합니다. 순번과 구간은 호출자가 부여한 값을 보존합니다.
+
+I/O 반환 사건의 스냅샷은 반환 사건 공간 예약, 성공 바이트가 있을 때의 스트림 복사·첫 수신 순번 갱신·`KernelRx` 공간 예약 뒤에 한 번 읽습니다. 반환 사건과 `KernelRx`는 같은 스냅샷을 갖고, 사건 순번·연결·스트림 구간·커널 원시 시각은 그대로 보존합니다. 이 순서는 반환 바이트 캡처를 I/O 구간으로 분류하기 위한 것이며, 관측 비용 전체를 제거했다는 뜻이 아닙니다.
 
 커널 관측은 `raw_timestamp_ns`, `timestamp_id`, `timestamp_coverage_exact`를 별도로 담습니다. 커널 시각을 단조 시각으로 가장하거나 개별 바이트의 정확한 도착 시각으로 확대 해석하지 않습니다.
 

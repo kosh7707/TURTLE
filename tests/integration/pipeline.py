@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 
-from tls_transcript import validate_wire_hellos
+from tls_transcript import tls_records, validate_wire_hellos
 from report_attribution import (
     SERVER_WINDOW,
     SERVER_WINDOW_DEFINITION,
@@ -27,11 +27,40 @@ def check(condition, message):
         raise RuntimeError(message)
 
 
+def validate_tcp_read_policy(stream, events, connection, context):
+    records = tls_records(stream, f"{context} received")
+    receives = [
+        event for event in events
+        if event.get("connection") == connection and
+        event.get("kind") == "IO_RECV_RETURN" and
+        event.get("result") == 0 and event.get("transferred", 0) > 0
+    ]
+    check(records and receives, f"{context}: missing TLS records or successful receives")
+    completed = set()
+    for event in receives:
+        begin, end = event["stream_begin"], event["stream_end"]
+        matches = [record for record in records if record["begin"] <= begin < record["end"]]
+        check(len(matches) == 1, f"{context}: receive begins outside one TLS record")
+        record = matches[0]
+        boundary = record["header_end"] if begin < record["header_end"] else record["end"]
+        check(event["requested"] == boundary - begin,
+              f"{context}: receive did not request the exact header/body remainder")
+        check(end - begin == event["transferred"] and end <= boundary,
+              f"{context}: receive crossed a header, body, or next-record boundary")
+        if end == record["end"]:
+            completed.add(record["begin"])
+    check(len(completed) == len(records),
+          f"{context}: not every TLS record body has a successful completion return")
+
+
 def validate_role(raw, mode, interpret):
     rows = [json.loads(line) for line in raw.read_text().splitlines()]
     header, events = rows[0], rows[1:]
     check(header["valid"], header["invalid_reason"])
     check(not header["declaration"]["is_mock"], "mock used for real TLS test")
+    check(header["declaration"].get("read_ahead") is False and
+          bool(header["declaration"].get("read_ahead_note")),
+          "real adapter read-ahead policy is absent or unsupported")
     check(header["config"]["isolate"], "isolation was silently disabled")
     for conn in header["connections"]:
         socket = conn["socket"]
@@ -78,6 +107,9 @@ def validate_role(raw, mode, interpret):
         received = (prefix.parent / f"{prefix.name}.conn-{index}.received.bin").read_bytes()
         client_stream, server_stream = ((sent, received) if header["role"] == "client"
                                         else (received, sent))
+        validate_tcp_read_policy(
+            received, events, index, f"{header['role']} capture connection {index}"
+        )
         validate_wire_hellos(
             client_stream, server_stream,
             f"{header['role']} capture connection {index}",

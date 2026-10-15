@@ -57,18 +57,19 @@ struct Endpoint {
         module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
         check(module, "dlopen failed: " + std::string(path));
         auto entry = reinterpret_cast<AdapterEntry>(dlsym(module, adapter_entry_name));
-        check(entry, "adapter entry missing");
+        check(entry, "adapter ABI v2 entry turtle_adapter_v2 is missing");
         api = entry();
         check(api.version == adapter_api_version, "adapter API mismatch");
+        check(api.name && api.declaration && api.setup && api.open && api.handshake_step &&
+                  api.peer_verification && api.negotiated && api.app_send && api.app_recv &&
+                  api.error && api.close && api.save && api.teardown,
+              "adapter API function table is incomplete");
     }
 };
 } // namespace
 int main(int argc, char** argv) {
     try {
         check(argc >= 4, "usage: smoke CLIENT.so SERVER.so PKI_DIR [mutual] [native]");
-        Endpoint client, server;
-        client.load(argv[1]);
-        server.load(argv[2]);
         TlsConfig config;
         const std::string pki = argv[3];
         config.ca_file = pki + "/ca.pem";
@@ -85,6 +86,11 @@ int main(int argc, char** argv) {
                                     ++*static_cast<std::size_t*>(p);
                                 return true;
                             }};
+        // Adapters borrow configuration and host callback state until teardown.
+        // Declare endpoints last so their destructors release those borrows first.
+        Endpoint client, server;
+        client.load(argv[1]);
+        server.load(argv[2]);
         for (const auto* cipher : {"TLS_AES_256_GCM_SHA384",
                                   "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384"}) {
             auto unsupported = config;
@@ -94,13 +100,13 @@ int main(int argc, char** argv) {
                 Connection* pending = nullptr;
                 bool rejected = false;
                 std::size_t io_calls = 0;
+                Io probe;
                 try {
                     const auto role = endpoint == &client ? Role::Client : Role::Server;
                     unexpected = endpoint->api.setup(role, unsupported, services, {});
                     rejected = !unexpected;
                     if (unexpected) {
                         // Some adapters carry setup errors to the first operation.
-                        Io probe;
                         probe.context = &io_calls;
                         probe.send = [](void* p, const std::uint8_t*, std::size_t) noexcept {
                             ++*static_cast<std::size_t*>(p);

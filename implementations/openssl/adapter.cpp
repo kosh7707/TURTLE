@@ -146,6 +146,8 @@ Context* setup(Role role, const TlsConfig& config, const HostServices& services,
     }
     s->ssl = SSL_CTX_new(TLS_method());
     require(s->ssl, "SSL_CTX_new failed");
+    SSL_CTX_set_read_ahead(s->ssl, 0);
+    require(SSL_CTX_get_read_ahead(s->ssl) == 0, "read-ahead configuration failed");
     require(SSL_CTX_set_min_proto_version(s->ssl, TLS1_3_VERSION) == 1 &&
                 SSL_CTX_set_max_proto_version(s->ssl, TLS1_3_VERSION) == 1,
             "TLS1.3 configuration failed");
@@ -225,6 +227,10 @@ Declaration declaration(const Context* context) {
     d.key_log = true;
     d.plaintext_hook = true;
     d.context_description = "No resumption state retained; save returns empty bytes";
+    d.read_ahead = false;
+    d.read_ahead_note =
+        "Read-ahead is explicitly disabled and verified on the OpenSSL context; this setting "
+        "does not fix callback return counts";
     d.allocator_hooks = s.allocator_installed;
     d.memory_note =
         s.allocator_installed
@@ -267,7 +273,7 @@ Verification verification(Connection* connection) {
 } // namespace
 } // namespace turtle::openssl_adapter
 
-extern "C" turtle::ImplementationApi turtle_adapter_v1() {
+extern "C" turtle::ImplementationApi turtle_adapter_v2() {
     using namespace turtle;
     using namespace turtle::openssl_adapter;
     return {
