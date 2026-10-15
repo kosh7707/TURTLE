@@ -63,6 +63,10 @@ int main() {
     metadata.framework_reserved_bytes = buffer.reserved_bytes();
     metadata.pid = getpid();
     metadata.pinned_cpu = 2;
+    metadata.capabilities.perf_requested_scope = model::PerfScope::UserKernel;
+    metadata.capabilities.perf_status = model::PerfStatus::Unsupported;
+    metadata.capabilities.perf_failure_stage = model::PerfFailureStage::CyclesOpen;
+    metadata.capabilities.perf_error_number = 13;
     record::ServiceWriter writer(directory.string(), record::ServiceArtifact::CertificateLookup,
                                  1, metadata);
     record::ServiceConnectionInfo connection;
@@ -100,6 +104,11 @@ int main() {
     assert(header["initial_cache_bytes"] == 0);
     assert(header["cache_capacity"] == 16 && header["reference_capacity"] == 8);
     assert(header["framework_reserved_bytes"] == buffer.reserved_bytes());
+    assert(header["capabilities"]["perf_requested_scope"] == "user+kernel");
+    assert(header["capabilities"]["perf_status"] == "unsupported");
+    assert(header["capabilities"]["perf_effective_scope"].is_null());
+    assert(header["capabilities"]["perf_failure_stage"] == "cycles_open");
+    assert(header["capabilities"]["perf_error_number"] == 13);
     assert(!header.contains("declaration") && !header.contains("verification"));
     assert(row["record_kind"] == "event" && row["stream_id"] == "lookup-0");
     assert(row["monotonic_ns"] == 100 && row["heap"].is_null());

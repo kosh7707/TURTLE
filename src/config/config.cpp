@@ -56,6 +56,14 @@ model::Mode mode(const std::string& value) {
     throw std::invalid_argument("mode must be timing, memory, or trace");
 }
 
+model::PerfScope perf_scope(const std::string& value) {
+    if (value == "user")
+        return model::PerfScope::User;
+    if (value == "user+kernel")
+        return model::PerfScope::UserKernel;
+    throw std::invalid_argument("measurement.perf_scope must be user or user+kernel");
+}
+
 model::CacheMode cache_mode(const std::string& value) {
     if (value == "empty")
         return model::CacheMode::Empty;
@@ -145,7 +153,7 @@ void profile(model::RunConfig& run, const std::string& filename) {
              {"samples", "connections", "warmups", "batch", "seed", "timeout_ms",
               "failure_policy", "flush_grace_ms", "ca_cpu",
               "event_capacity", "stream_capacity", "keylog_capacity", "calibration_samples",
-              "mode", "perf", "kernel_timestamps", "channel_observer", "isolate", "pin_cores", "director_cpu",
+              "mode", "perf", "perf_scope", "kernel_timestamps", "channel_observer", "isolate", "pin_cores", "director_cpu",
               "client_cpu", "server_cpu"},
              "measurement");
         assign(m, "samples", run.samples);
@@ -160,6 +168,8 @@ void profile(model::RunConfig& run, const std::string& filename) {
         assign(m, "keylog_capacity", run.keylog_capacity);
         assign(m, "calibration_samples", run.calibration_samples);
         assign(m, "perf", run.perf);
+        if (m.contains("perf_scope"))
+            run.perf_scope = perf_scope(m.at("perf_scope").get<std::string>());
         assign(m, "kernel_timestamps", run.kernel_timestamps);
         assign(m, "channel_observer", run.channel_observer);
         assign(m, "isolate", run.isolate);
@@ -337,6 +347,9 @@ void validate(const model::RunConfig& run) {
             "timeout, application length, and buffer capacities must be positive");
     if (run.flush_grace_ms == 0 || run.flush_grace_ms > 5000)
         throw std::invalid_argument("flush_grace_ms must be 1..5000");
+    if (!run.perf && run.perf_scope == model::PerfScope::UserKernel)
+        throw std::invalid_argument(
+            "measurement.perf_scope user+kernel requires measurement.perf=true");
     if (run.ca_cpu < -1)
         throw std::invalid_argument("ca_cpu must be -1 or a non-negative CPU index");
     if (run.lookup.enabled && run.lookup.object_file.empty())

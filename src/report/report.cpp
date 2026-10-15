@@ -1,4 +1,5 @@
 #include "report/report.hpp"
+#include "report/perf_condition.hpp"
 #include "report/window.hpp"
 #include "report/network_evidence.hpp"
 #include <algorithm>
@@ -461,6 +462,9 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         const auto own_measurement_contract = measurement_contract_revision(header);
         const auto peer_measurement_contract =
             peer.verified ? measurement_contract_revision(peer.header) : Json(nullptr);
+        const auto own_perf = detail::perf_condition(header);
+        const auto peer_perf =
+            peer.verified ? detail::perf_condition(peer.header) : detail::PerfCondition{};
         Json dimensions = {
             {"role", header.at("role")},
             {"profile_hash", header.at("profile_hash")},
@@ -499,7 +503,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
              peer.verified ? peer.header.at("declaration").value("build_options", "") : ""},
             {"peer_measurement_contract_revision", peer_measurement_contract},
             {"peer_capabilities",
-             peer.verified ? peer.header.value("capabilities", Json::object()) : Json::object()},
+             peer.verified ? detail::stable_capabilities(peer.header) : Json::object()},
             {"is_mock", header.at("declaration").value("is_mock", false)},
             {"correction", "raw"},
             {"timing_interpretation",
@@ -524,6 +528,18 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
               "keylog_capacity", "calibration_samples", "connections"})
             if (header.at("config").contains(control))
                 dimensions["run_controls"][control] = header.at("config").at(control);
+        if (detail::has_explicit_perf_condition(header)) {
+            dimensions["run_controls"]["perf_scope"] =
+                own_perf.controls.at("perf_scope");
+            dimensions["perf_support"] = own_perf.support;
+        }
+        if (peer.verified && detail::has_explicit_perf_condition(peer.header)) {
+            dimensions["peer_run_controls"] = peer_perf.controls;
+            dimensions["peer_perf_support"] = peer_perf.support;
+        }
+        dimensions["automatic_comparison_identity_complete"] =
+            dimensions.at("automatic_comparison_identity_complete").get<bool>() &&
+            own_perf.complete && peer_perf.complete;
         for (const auto& p : parts) {
             // Positions share a process/context; never pool them as independent samples.
             dimensions["connection"] = p.at("connection");
@@ -535,11 +551,16 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             if (peer_measurement_contract.is_null())
                 group.comparison_exclusion_reasons.insert(
                     "peer_measurement_contract_revision_unknown");
+            if (!own_perf.complete)
+                group.comparison_exclusion_reasons.insert("perf_condition_unknown");
+            if (!peer_perf.complete)
+                group.comparison_exclusion_reasons.insert("peer_perf_condition_unknown");
             const bool metrics_admitted =
                 !network_required || network.integrity.value("eligible", false);
             group.automatic_comparison_eligible =
                 group.automatic_comparison_eligible && metrics_admitted &&
-                !own_measurement_contract.is_null() && !peer_measurement_contract.is_null();
+                !own_measurement_contract.is_null() && !peer_measurement_contract.is_null() &&
+                own_perf.complete && peer_perf.complete;
             const bool primary_available =
                 p.contains("primary_window") && p.at("primary_window").is_object() &&
                 p.at("primary_window").value("available", false) && p.contains("elapsed_ns") &&

@@ -24,6 +24,35 @@ const char* name(Mode value) noexcept {
     }
     return "unknown";
 }
+const char* name(PerfScope value) noexcept {
+    return value == PerfScope::User ? "user" : "user+kernel";
+}
+const char* name(PerfStatus value) noexcept {
+    switch (value) {
+    case PerfStatus::Disabled:
+        return "disabled";
+    case PerfStatus::Available:
+        return "available";
+    case PerfStatus::Unsupported:
+        return "unsupported";
+    }
+    return "unknown";
+}
+const char* name(PerfFailureStage value) noexcept {
+    switch (value) {
+    case PerfFailureStage::CyclesOpen:
+        return "cycles_open";
+    case PerfFailureStage::InstructionsOpen:
+        return "instructions_open";
+    case PerfFailureStage::Reset:
+        return "reset";
+    case PerfFailureStage::Enable:
+        return "enable";
+    case PerfFailureStage::InitialRead:
+        return "initial_read";
+    }
+    return "unknown";
+}
 const char* name(Direction value) noexcept {
     return value == Direction::Sent ? "sent" : "received";
 }

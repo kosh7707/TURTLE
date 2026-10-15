@@ -1,4 +1,5 @@
 #include "report/report.hpp"
+#include "report/perf_condition.hpp"
 #include "report/network_evidence.hpp"
 
 #include <algorithm>
@@ -287,10 +288,14 @@ Json endpoint_identity(const std::optional<Json>& header, std::string_view role)
     const auto& config = header->at("config");
     const auto& declaration = header->at("declaration");
     const char* adapter = role == "client" ? "client_adapter" : "server_adapter";
+    const auto perf = detail::perf_condition(*header);
     Json support = Json::object();
     const auto capabilities = header->value("capabilities", Json::object());
     for (const char* field : {"monotonic_clock", "thread_cpu_clock", "perf", "heap_tracking",
                               "affinity", "kernel_timestamp_configured"})
+        support[field] = capabilities.contains(field) ? capabilities.at(field) : Json(nullptr);
+    for (const char* field :
+         {"perf_requested_scope", "perf_status", "perf_effective_scope"})
         support[field] = capabilities.contains(field) ? capabilities.at(field) : Json(nullptr);
     return {{"role", role}, {"adapter", config.value(adapter, Json(nullptr))},
             {"library", declaration.value("library", Json(nullptr))},
@@ -302,6 +307,7 @@ Json endpoint_identity(const std::optional<Json>& header, std::string_view role)
             {"mode", header->value("mode", Json(nullptr))},
             {"pinned_cpu", header->value("pinned_cpu", Json(nullptr))},
             {"measurement_controls", {{"perf", config.value("perf", Json(nullptr))},
+                                       {"perf_scope", perf.controls.at("perf_scope")},
                                        {"isolate", config.value("isolate", Json(nullptr))},
                                        {"pin_cores", config.value("pin_cores", Json(nullptr))},
                                        {"kernel_timestamps", config.value("kernel_timestamps", Json(nullptr))},
@@ -331,9 +337,12 @@ bool endpoint_identity_complete(const Json& endpoint) {
         return false;
     for (const auto* object_name : {"measurement_controls", "support"})
         for (auto it = endpoint.at(object_name).begin(); it != endpoint.at(object_name).end(); ++it)
-            if (it.value().is_null())
+            if (it.value().is_null() &&
+                !(std::string_view(object_name) == "support" &&
+                  it.key() == "perf_effective_scope"))
                 return false;
-    return true;
+    return detail::complete_perf_condition(endpoint.at("measurement_controls"),
+                                            endpoint.at("support"));
 }
 
 Json value_or_null(const Json& object, std::string_view key) {
@@ -954,6 +963,16 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                 identity.at("server_endpoint").value("measurement_contract_revision",
                                                        Json(nullptr)).is_null())
                 missing_identity.push_back("server_measurement_contract_revision_unknown");
+            if (identity.at("client_endpoint").is_object() &&
+                !detail::complete_perf_condition(
+                    identity.at("client_endpoint").at("measurement_controls"),
+                    identity.at("client_endpoint").at("support")))
+                missing_identity.push_back("client_perf_condition_unknown");
+            if (identity.at("server_endpoint").is_object() &&
+                !detail::complete_perf_condition(
+                    identity.at("server_endpoint").at("measurement_controls"),
+                    identity.at("server_endpoint").at("support")))
+                missing_identity.push_back("server_perf_condition_unknown");
             if (!endpoint_identity_complete(identity.at("client_endpoint")) ||
                 !endpoint_identity_complete(identity.at("server_endpoint")))
                 missing_identity.push_back("endpoint_identity_incomplete");

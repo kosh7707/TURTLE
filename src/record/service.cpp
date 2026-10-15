@@ -108,6 +108,15 @@ Json capabilities_json(const model::Capabilities& value) {
     return {{"monotonic_clock", value.monotonic_clock},
             {"thread_cpu_clock", value.thread_cpu_clock},
             {"perf", value.perf},
+            {"perf_requested_scope", model::name(value.perf_requested_scope)},
+            {"perf_status", model::name(value.perf_status)},
+            {"perf_effective_scope",
+             value.perf_effective_scope ? Json(model::name(*value.perf_effective_scope))
+                                        : Json(nullptr)},
+            {"perf_failure_stage",
+             value.perf_failure_stage ? Json(model::name(*value.perf_failure_stage))
+                                      : Json(nullptr)},
+            {"perf_error_number", nullable(value.perf_error_number)},
             {"heap_tracking", value.heap_tracking},
             {"stack_tracking", value.stack_tracking},
             {"kernel_timestamp_configured", value.kernel_timestamp_configured},

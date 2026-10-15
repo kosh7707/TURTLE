@@ -488,8 +488,8 @@ int main() {
                                const std::string& profile, const std::string& library,
                                std::uint64_t batch = 1, int peer_cpu = 8,
                                const std::string& peer_version = "peer-version",
-                               bool include_peer = true, int own_contract_revision = 1,
-                               int peer_contract_revision = 1) {
+                               bool include_peer = true, int own_contract_revision = 2,
+                               int peer_contract_revision = 2) {
         auto candidate = header;
         if (own_contract_revision > 0)
             candidate["measurement_contract_revision"] = own_contract_revision;
@@ -500,7 +500,15 @@ int main() {
         candidate["config"]["server_adapter"] = peer_adapter;
         candidate["profile_hash"] = profile;
         candidate["pinned_cpu"] = 6;
-        candidate["capabilities"] = {{"perf", false}, {"affinity", true}};
+        candidate["config"]["perf"] = false;
+        candidate["config"]["perf_scope"] = "user";
+        candidate["capabilities"] = {{"perf", false}, {"affinity", true},
+                                      {"perf_requested_scope", "user"},
+                                      {"perf_status", "disabled"},
+                                      {"perf_effective_scope", nullptr},
+                                      {"perf_failure_stage", "fixture-stage"},
+                                      {"perf_error_number", 100 + batch},
+                                      {"perf_note", library + " diagnostic"}};
         candidate["declaration"]["library"] = library;
         candidate["declaration"]["version"] = library + "-version";
         candidate["declaration"]["build_options"] = library + "-build";
@@ -555,6 +563,17 @@ int main() {
     assert(candidate_dimensions.at("adapter-e")["peer_pinned_cpu"] == 10);
     assert(candidate_dimensions.at("adapter-f")["peer_library_version"] == "other-peer-version");
     assert(candidate_dimensions.at("adapter-g")["peer_verified"] == false);
+    assert(candidate_dimensions.at("adapter-a")["run_controls"]["perf_scope"] == "user");
+    assert(candidate_dimensions.at("adapter-a")["perf_support"] ==
+           J({{"perf_requested_scope", "user"}, {"perf_status", "disabled"},
+              {"perf_effective_scope", nullptr}}));
+    assert(candidate_dimensions.at("adapter-a")["peer_run_controls"]["perf_scope"] ==
+           "user");
+    assert(candidate_dimensions.at("adapter-a")["peer_perf_support"]["perf_status"] ==
+           "disabled");
+    assert(!candidate_dimensions.at("adapter-a")["peer_capabilities"].contains("perf_note"));
+    assert(!candidate_dimensions.at("adapter-a")["peer_capabilities"].contains(
+        "perf_failure_stage"));
     assert(candidates["comparisons"].size() == 1);
     assert(candidates["comparisons"][0]["method"] == "independent_percentile_bootstrap");
     assert(candidates["comparisons"][0]["interpretation"] ==
@@ -569,15 +588,34 @@ int main() {
     write_candidate(contract_dir, "current-b", "current-b", "fixed-peer", "same-profile",
                     "current-b");
     write_candidate(contract_dir, "revision-two", "revision-two", "fixed-peer",
-                    "same-profile", "revision-two", 1, 8, "peer-version", true, 2, 1);
+                    "same-profile", "revision-two", 1, 8, "peer-version", true, 3, 2);
     write_candidate(contract_dir, "peer-revision-two", "peer-revision-two", "fixed-peer",
-                    "same-profile", "peer-revision-two", 1, 8, "peer-version", true, 1, 2);
+                    "same-profile", "peer-revision-two", 1, 8, "peer-version", true, 2, 3);
     write_candidate(contract_dir, "legacy-own", "legacy-own", "fixed-peer", "same-profile",
-                    "legacy-own", 1, 8, "peer-version", true, 0, 1);
+                    "legacy-own", 1, 8, "peer-version", true, 0, 2);
     write_candidate(contract_dir, "legacy-peer", "legacy-peer", "fixed-peer", "same-profile",
-                    "legacy-peer", 1, 8, "peer-version", true, 1, 0);
+                    "legacy-peer", 1, 8, "peer-version", true, 2, 0);
+
+    auto rewrite_first_header = [](const std::filesystem::path& path, auto change) {
+        std::ifstream input(path);
+        std::string first;
+        std::getline(input, first);
+        const std::string rest{std::istreambuf_iterator<char>(input),
+                               std::istreambuf_iterator<char>()};
+        auto metadata = J::parse(first);
+        change(metadata);
+        std::ofstream(path) << metadata.dump() << '\n' << rest;
+    };
+    write_candidate(contract_dir, "legacy-perf", "legacy-perf", "fixed-peer", "same-profile",
+                    "legacy-perf");
+    rewrite_first_header(contract_dir / "legacy-perf" / "client.jsonl", [](J& metadata) {
+        metadata["config"].erase("perf_scope");
+        metadata["capabilities"].erase("perf_requested_scope");
+        metadata["capabilities"].erase("perf_status");
+        metadata["capabilities"].erase("perf_effective_scope");
+    });
     const auto contracts = summarize(contract_dir, dir / "measurement-contract-report");
-    assert(contracts["groups"].size() == 6);
+    assert(contracts["groups"].size() == 7);
     assert(contracts["comparisons"].size() == 1);
     for (const auto& group : contracts["groups"]) {
         const auto adapter = group["dimensions"]["client_adapter"].get<std::string>();
@@ -596,8 +634,77 @@ int main() {
                              group["comparison_exclusion_reasons"].end(),
                              "peer_measurement_contract_revision_unknown") !=
                    group["comparison_exclusion_reasons"].end());
+        } else if (adapter == "legacy-perf") {
+            assert(group["metrics"]["elapsed_ns"]["count"] == 1);
+            assert(group["automatic_comparison_eligible"] == false);
+            assert(std::find(group["comparison_exclusion_reasons"].begin(),
+                             group["comparison_exclusion_reasons"].end(),
+                             "perf_condition_unknown") !=
+                   group["comparison_exclusion_reasons"].end());
         }
     }
+
+    const auto unsupported_dir = dir / "unsupported-perf-candidates";
+    std::filesystem::create_directory(unsupported_dir);
+    for (const auto* name : {"first", "second"}) {
+        write_candidate(unsupported_dir, name, std::string("adapter-") + name, "fixed-peer",
+                        "same-profile", std::string("library-") + name);
+        for (const auto* role : {"client", "server"})
+            rewrite_first_header(unsupported_dir / name /
+                                     (std::string(role) + ".jsonl"),
+                                 [name](J& metadata) {
+                                     metadata["config"]["perf"] = true;
+                                     metadata["capabilities"]["perf_status"] = "unsupported";
+                                     metadata["capabilities"]["perf_note"] =
+                                         std::string("dynamic ") + name;
+                                     metadata["capabilities"]["perf_error_number"] =
+                                         std::string(name) == "first" ? 1 : 13;
+                                 });
+    }
+    const auto unsupported = summarize(unsupported_dir, dir / "unsupported-perf-report");
+    assert(unsupported["comparisons"].size() == 1);
+
+    const auto scope_dir = dir / "perf-scope-candidates";
+    std::filesystem::create_directory(scope_dir);
+    write_candidate(scope_dir, "user", "adapter-user", "fixed-peer", "same-profile",
+                    "library-user");
+    write_candidate(scope_dir, "kernel", "adapter-kernel", "fixed-peer", "same-profile",
+                    "library-kernel");
+    for (const auto* role : {"client", "server"}) {
+        rewrite_first_header(scope_dir / "user" / (std::string(role) + ".jsonl"),
+                             [](J& metadata) {
+                                 metadata["config"]["perf"] = true;
+                                 metadata["capabilities"]["perf"] = true;
+                                 metadata["capabilities"]["perf_status"] = "available";
+                                 metadata["capabilities"]["perf_effective_scope"] = "user";
+                             });
+        rewrite_first_header(scope_dir / "kernel" / (std::string(role) + ".jsonl"),
+                             [](J& metadata) {
+                                 metadata["config"]["perf"] = true;
+                                 metadata["config"]["perf_scope"] = "user+kernel";
+                                 metadata["capabilities"]["perf"] = true;
+                                 metadata["capabilities"]["perf_requested_scope"] =
+                                     "user+kernel";
+                                 metadata["capabilities"]["perf_status"] = "available";
+                                 metadata["capabilities"]["perf_effective_scope"] =
+                                     "user+kernel";
+                             });
+    }
+    const auto scopes = summarize(scope_dir, dir / "perf-scope-report");
+    assert(scopes["groups"].size() == 2 && scopes["comparisons"].empty());
+
+    const auto peer_perf_dir = dir / "peer-perf-candidates";
+    std::filesystem::create_directory(peer_perf_dir);
+    write_candidate(peer_perf_dir, "first", "adapter-first", "fixed-peer", "same-profile",
+                    "library-first");
+    write_candidate(peer_perf_dir, "second", "adapter-second", "fixed-peer", "same-profile",
+                    "library-second");
+    rewrite_first_header(peer_perf_dir / "second" / "server.jsonl", [](J& metadata) {
+        metadata["config"]["perf"] = true;
+        metadata["capabilities"]["perf_status"] = "unsupported";
+    });
+    const auto peer_perf = summarize(peer_perf_dir, dir / "peer-perf-report");
+    assert(peer_perf["groups"].size() == 2 && peer_perf["comparisons"].empty());
 
     const auto disjoint_dir = dir / "disjoint-batches";
     std::filesystem::create_directory(disjoint_dir);

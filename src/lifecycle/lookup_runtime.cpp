@@ -343,7 +343,7 @@ int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
     const std::size_t count = sockets.size();
     control::Waiter parent(control_fd);
     ChildProtocol protocol(parent);
-    measure::Meter meter(config.mode, config.perf);
+    measure::Meter meter(config.mode, config.perf, config.perf_scope);
     record::ServiceBuffer buffer({config.event_capacity, config.stream_capacity, count});
     ServiceCapture capture{
         meter, buffer, model::ParticipantKind::MockCa, sample, 0, 0, 0, 0, {}, nullptr};
@@ -409,6 +409,7 @@ int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
     std::string failure;
     std::optional<std::size_t> active_connection;
     try {
+        meter.require_requested_scope();
         if (config.isolate)
             control::isolate();
         send(parent, control::MessageKind::TcpReady, deadline, sample);

@@ -51,6 +51,15 @@ target_include_directories(turtle_capture_test PRIVATE ../../src ../../include)
 target_link_libraries(turtle_capture_test PRIVATE turtle_record)
 add_test(NAME lifecycle_capture_return_order COMMAND turtle_capture_test)
 
+add_executable(turtle_perf_scope_failure_test perf_scope_failure_test.cpp)
+target_include_directories(turtle_perf_scope_failure_test PRIVATE ../../third_party)
+target_link_libraries(turtle_perf_scope_failure_test PRIVATE turtle_lifecycle)
+target_link_options(turtle_perf_scope_failure_test PRIVATE "-Wl,--wrap=syscall")
+add_dependencies(turtle_perf_scope_failure_test turtle_mock)
+add_test(NAME lifecycle_perf_scope_failure_artifacts
+  COMMAND turtle_perf_scope_failure_test "${CMAKE_BINARY_DIR}/adapters")
+set_tests_properties(lifecycle_perf_scope_failure_artifacts PROPERTIES TIMEOUT 30)
+
 add_library(turtle_v1_only_adapter MODULE v1_only_adapter.cpp)
 set_target_properties(turtle_v1_only_adapter PROPERTIES PREFIX "" OUTPUT_NAME "v1_only"
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/adapters")

@@ -28,6 +28,12 @@
 
 `declaration.read_ahead`는 TLS 수신 선행 정책의 선택 불리언이고 `declaration.read_ahead_note`는 근거와 한계입니다. `false`는 현재 레코드의 필요 범위를 넘어 다음 레코드를 선행 수신하지 않는 정책입니다. 성공 `recv` 횟수를 두 번으로 고정하는 값이 아닙니다. 예전 원자료의 필드 부재와 `mock`의 `null`은 `false`로 바꾸지 않습니다.
 
+`config.perf_scope`는 요청한 성능 카운터 범위 `user` 또는 `user+kernel`입니다. TLS 머리글과 조회·모의 CA 서비스 머리글의 `capabilities`는 `perf_requested_scope`, `perf_status`, `perf_effective_scope`, `perf_failure_stage`, `perf_error_number`, `perf_note`를 가집니다. `perf_status`는 `disabled`, `available`, `unsupported` 중 하나이고 기존 `capabilities.perf`는 `available`일 때만 `true`입니다. `available`일 때만 실제 범위가 요청 범위와 같은 문자열이며, 나머지 두 상태의 실제 범위는 `null`입니다. 이 `null`은 알려진 비활성 또는 미지원이며 필드가 없는 구 자료의 알 수 없음과 다릅니다.
+
+미지원 설정은 `perf_failure_stage`에 `cycles_open`, `instructions_open`, `reset`, `enable`, `initial_read` 중 해당 단계를 남기고 `perf_error_number`에 errno를 남깁니다. 이 두 필드와 `perf_note`는 실패 진단이지 안정 실험 조건이 아닙니다. 비활성이면 실패 단계와 errno는 `null`입니다. 원자료 형식 1과 `measurement_contract_revision=2`는 이 필드 추가로 바뀌지 않습니다.
+
+`environment.perf_event_paranoid`는 정수 또는 `null`이고, 읽지 못했거나 정수가 아니었으면 `perf_event_paranoid_reason`을 남깁니다. `environment.cpu_topology[]`는 `cpu`, `package_id`, `core_id`, `thread_siblings`를 담습니다. `thread_siblings=null`은 목록 미관측, 빈 목록은 관측했지만 형제 없음입니다. 형제 항목은 `cpu`와 선택 `online`을 가지며 온라인 상태를 알 수 없으면 `online=null`입니다. 위상은 affinity 허용 범위 밖 형제도 포함합니다.
+
 `clock_start`, `clock_end`는 실제 시각과 단조 시각의 대응 관측입니다. `observation_level`, `incomplete`, `perf_complete`, 저장·복원한 상태 크기, 고정한 CPU도 남깁니다. 버퍼 공간이 부족하면 `capture_dropped`가 증가하고 표본은 무효로 저장됩니다. 넘친 데이터를 일부만 잘라 성공으로 표시하지 않습니다.
 
 `availability`는 `tls_stream`, `io_events`, `kernel_receive_events` 각각에 대해 `available` boolean과 `reason`을 가집니다. callback 경로의 stream·I/O는 available이며, native socket 경로는 세 항목 모두 `native_socket_io_not_observed` 이유로 unavailable입니다. callback에서도 kernel timestamp 설정을 준비하지 못했으면 `kernel_timestamps_not_configured`입니다. availability는 수집 통로의 지원·설정 상태이며 사건 발생 횟수가 아닙니다. 특히 `kernel_receive_events.available=true`만으로 실제 수신 timestamp가 있었다고 말하지 않습니다. `raw_timestamp_ns`가 있는 사건이 발생 증거입니다.

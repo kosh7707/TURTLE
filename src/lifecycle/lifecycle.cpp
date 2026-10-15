@@ -142,7 +142,7 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
         info.kernel_receive_events_reason = "channel_observer_disabled";
         info.incomplete.push_back("channel observer disabled; framework I/O bytes and receive events were not captured");
     }
-    measure::Meter meter(config.mode, config.perf);
+    measure::Meter meter(config.mode, config.perf, config.perf_scope);
     Capture capture{meter, buffer};
     control::Waiter parent(control_fd);
     ChildProtocol protocol(parent);
@@ -156,7 +156,13 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
     std::optional<model::ConnectionInfo> active_connection;
     try {
         info.environment = capability::inspect_environment();
+        const auto placement_warnings =
+            capability::cpu_selection_warnings(config, info.environment);
+        info.environment.warnings.insert(info.environment.warnings.end(),
+                                         placement_warnings.begin(),
+                                         placement_warnings.end());
         info.capabilities = meter.capabilities();
+        meter.require_requested_scope();
         if (config.pin_cores) {
             const int cpu = role == Role::Client ? config.client_cpu : config.server_cpu;
             std::string reason;
@@ -331,8 +337,10 @@ int tls_endpoint(const model::RunConfig& config, Role role, std::uint64_t sample
         writer.write_context(output); context.reset(); info.clock_end = measure::clock_pair();
         info.perf_complete = info.capabilities.perf;
         for (const auto& event : buffer.events())
-            if (!event.snapshot.cycles || !event.snapshot.instructions || !event.snapshot.perf_enabled ||
-                !event.snapshot.perf_running || *event.snapshot.perf_running < *event.snapshot.perf_enabled)
+            if (!event.snapshot.cycles || !event.snapshot.instructions ||
+                !event.snapshot.perf_enabled || !event.snapshot.perf_running ||
+                *event.snapshot.perf_running == 0 ||
+                *event.snapshot.perf_running < *event.snapshot.perf_enabled)
                 info.perf_complete = false;
         if (buffer.overflowed() || client_lookup.overflowed())
             throw std::runtime_error("capture buffer overflow");
@@ -802,6 +810,8 @@ int run_attempt(const model::RunConfig& config, std::uint64_t sample,
 
 int run(const model::RunConfig& input) {
     auto config = input;
+    if (!config.perf && config.perf_scope == model::PerfScope::UserKernel)
+        throw std::invalid_argument("perf scope user+kernel requires perf measurement");
     if (config.tls.cipher != "TLS_AES_128_GCM_SHA256")
         throw std::invalid_argument("TURTLE supports only TLS_AES_128_GCM_SHA256");
     if (config.connections == 0 || config.connections > 1025 || config.warmups > 1025 - config.connections)

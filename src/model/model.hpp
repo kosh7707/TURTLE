@@ -24,6 +24,9 @@ inline constexpr const char* lookup_scenario_name =
     "synthetic-lookup-plus-standard-tls";
 
 enum class Mode { Timing, Memory, Trace };
+enum class PerfScope { User, UserKernel };
+enum class PerfStatus { Disabled, Available, Unsupported };
+enum class PerfFailureStage { CyclesOpen, InstructionsOpen, Reset, Enable, InitialRead };
 enum class Direction { Sent, Received };
 enum class ParticipantKind { TlsClient, TlsServer, MockCa };
 enum class CacheMode { Empty, FixedSnapshot };
@@ -155,12 +158,29 @@ struct RunConfig {
     bool kernel_timestamps = true;
     bool channel_observer = true;
     bool perf = true;
+    PerfScope perf_scope = PerfScope::User;
     bool isolate = true;
     bool pin_cores = true;
     int director_cpu = -1;
     int client_cpu = -1;
     int server_cpu = -1;
     int ca_cpu = -1;
+};
+
+struct CpuSibling {
+    int cpu = -1;
+    // A disengaged value means sysfs did not expose whether this sibling was
+    // online. It must not be interpreted as offline.
+    std::optional<bool> online;
+};
+
+struct CpuTopology {
+    int cpu = -1;
+    std::optional<int> package_id;
+    std::optional<int> core_id;
+    // null means the sibling list could not be read; an empty vector means it
+    // was read and contained no siblings.
+    std::optional<std::vector<CpuSibling>> thread_siblings;
 };
 
 struct HeapSnapshot {
@@ -217,8 +237,11 @@ struct Environment {
     std::string boost;
     std::string environment_hash;
     bool wsl = false;
+    std::optional<int> perf_event_paranoid;
+    std::string perf_event_paranoid_reason;
     std::vector<int> allowed_cpus;
     std::vector<int> physical_cpus;
+    std::vector<CpuTopology> cpu_topology;
     double load_before = 0;
     std::vector<std::string> warnings;
 };
@@ -227,6 +250,11 @@ struct Capabilities {
     bool monotonic_clock = false;
     bool thread_cpu_clock = false;
     bool perf = false;
+    PerfScope perf_requested_scope = PerfScope::User;
+    PerfStatus perf_status = PerfStatus::Disabled;
+    std::optional<PerfScope> perf_effective_scope;
+    std::optional<PerfFailureStage> perf_failure_stage;
+    std::optional<int> perf_error_number;
     bool heap_tracking = false;
     bool stack_tracking = false;
     bool kernel_timestamp_configured = false;
@@ -336,6 +364,9 @@ struct SampleInfo {
 
 const char* name(Role value) noexcept;
 const char* name(Mode value) noexcept;
+const char* name(PerfScope value) noexcept;
+const char* name(PerfStatus value) noexcept;
+const char* name(PerfFailureStage value) noexcept;
 const char* name(Direction value) noexcept;
 const char* name(ParticipantKind value) noexcept;
 const char* name(CacheMode value) noexcept;

@@ -148,6 +148,12 @@ keylog/plaintext, perf·시계 읽기가 남으므로 이 차이는 관측자 �
 `missing_identity:endpoint_identity_incomplete`도 함께 남지만 설명용 분포와 분모는 삭제하지
 않습니다.
 
+성능 카운터 조건은 요청·상태·실제 범위를 함께 사용합니다. 일반 보고서의 새 명시 원자료는 `groups[].dimensions.run_controls.perf_scope`, `perf_support.{perf_requested_scope,perf_status,perf_effective_scope}`를 남깁니다. 상대 엔드포인트는 `peer_run_controls.{perf,perf_scope}`와 `peer_perf_support`의 같은 세 필드를 사용합니다. `disabled`은 `perf=false`와 실제 범위 `null`, `unsupported`는 `perf=true`와 실제 범위 `null`일 때 완전한 조건입니다. `available`은 `perf=true`이고 실제 범위가 요청 범위와 같아야 합니다.
+
+조회 보고서는 `joined_rows[].condition_identity.client_endpoint`와 `server_endpoint`의 `measurement_controls.{perf,perf_scope}` 및 `support.{perf_requested_scope,perf_status,perf_effective_scope}`에 같은 조건을 남깁니다. 조건 그룹도 이 엔드포인트 식별값을 그대로 가집니다. 실패 단계, errno, `perf_note`는 해당 실행의 진단이므로 일반·조회 조건 키에 넣지 않습니다. 따라서 요청·상태·실제 범위가 같고 다른 조건도 같은 자료는 진단 문구나 errno가 다르다는 이유로 별도 그룹이 되지 않습니다.
+
+구 원자료처럼 이 필드가 없으면 지원 상태를 알 수 없으므로 지표·표본·분포는 계속 보고하되 자동 비교에서만 제외합니다. 일반 보고서는 `perf_condition_unknown`과 `peer_perf_condition_unknown`을 남깁니다. 조회 보고서는 `missing_identity:client_perf_condition_unknown` 또는 `missing_identity:server_perf_condition_unknown`과 `missing_identity:endpoint_identity_incomplete`를 남깁니다. 알려진 `disabled`·`unsupported`의 실제 범위 `null`은 이 알 수 없음으로 취급하지 않습니다.
+
 상대 엔드포인트가 고정되었는지는 같은 표본 폴더의 반대 역할 원자료 머리글로 확인합니다.
 두 머리글의 표본 번호, 묶음 번호, 프로필이 맞아야 합니다. 비교 조건에는 양쪽에 실제로
 고정된 CPU 번호와 상대 어댑터의 라이브러리 이름, 버전, 빌드 옵션, 유효 여부, 계측 지원

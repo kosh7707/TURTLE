@@ -63,6 +63,23 @@ int main() {
                 "default connection count changed");
         require(parse({"turtle", "run"}).run.channel_observer,
                 "channel observer default must remain enabled");
+        require(parse({"turtle", "run"}).run.perf_scope ==
+                    turtle::model::PerfScope::User,
+                "perf scope default must remain user");
+        const auto perf_scope_path = (dir / "perf-scope-profile.json").string();
+        std::ofstream(perf_scope_path)
+            << R"({"measurement":{"perf":true,"perf_scope":"user+kernel"}})";
+        require(parse({"turtle", "run", "--profile", perf_scope_path}).run.perf_scope ==
+                    turtle::model::PerfScope::UserKernel,
+                "user+kernel perf scope was not applied");
+        std::ofstream(perf_scope_path)
+            << R"({"measurement":{"perf":false,"perf_scope":"user+kernel"}})";
+        require(rejects({"turtle", "run", "--profile", perf_scope_path}),
+                "disabled perf accepted a kernel-inclusive scope");
+        std::ofstream(perf_scope_path)
+            << R"({"measurement":{"perf_scope":"system"}})";
+        require(rejects({"turtle", "run", "--profile", perf_scope_path}),
+                "unknown perf scope was accepted");
         const auto observer_path = (dir / "observer-profile.json").string();
         std::ofstream(observer_path)
             << R"({"measurement":{"channel_observer":false}})";

@@ -55,6 +55,18 @@ int main(int argc, char** argv) {
         }
         require(rejected_cipher, "direct runtime accepted an out-of-scope cipher suite");
         config.tls.cipher = "TLS_AES_128_GCM_SHA256";
+        config.perf_scope = turtle::model::PerfScope::UserKernel;
+        bool rejected_disabled_kernel_scope = false;
+        try {
+            (void)turtle::lifecycle::run(config);
+        } catch (const std::invalid_argument&) {
+            rejected_disabled_kernel_scope = true;
+        }
+        require(rejected_disabled_kernel_scope,
+                "direct runtime accepted disabled perf with user+kernel scope");
+        require(!std::filesystem::exists(root / "normal"),
+                "contradictory direct perf request created run artifacts");
+        config.perf_scope = turtle::model::PerfScope::User;
         require(turtle::lifecycle::run(config) == 0, "normal lifecycle failed");
         std::set<long> pids;
         for (const char* directory : {"sample-000001", "sample-000002"})

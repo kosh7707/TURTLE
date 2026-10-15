@@ -41,7 +41,7 @@ Json ledger_summary(std::size_t requested, std::size_t started, std::size_t succ
 
 Json tls_header(std::uint64_t sample, bool valid = true) {
     return {{"type", "sample"}, {"schema", 1}, {"sample", sample}, {"batch", 1},
-            {"measurement_contract_revision", 1},
+            {"measurement_contract_revision", 2},
             {"role", "client"}, {"valid", valid}, {"profile_hash", "tls-profile"},
             {"environment_hash", "env"}, {"mode", "timing"}, {"pinned_cpu", 2},
             {"loaded_context_size", 0}, {"loaded_context_hash", ""},
@@ -49,7 +49,8 @@ Json tls_header(std::uint64_t sample, bool valid = true) {
             {"config", {{"scenario_name", "synthetic-lookup-plus-standard-tls"},
                          {"lookup", {{"enabled", true}, {"cache_mode", "empty"}}},
                          {"client_adapter", "fixture-client"}, {"server_adapter", "fixture-server"},
-                         {"perf", false}, {"isolate", true}, {"pin_cores", true},
+                         {"perf", false}, {"perf_scope", "user"},
+                         {"isolate", true}, {"pin_cores", true},
                          {"kernel_timestamps", false},
                          {"timeout_ms", 10000}, {"failure_policy", "fixed-attempts"},
                          {"flush_grace_ms", 500},
@@ -58,7 +59,12 @@ Json tls_header(std::uint64_t sample, bool valid = true) {
             {"declaration", {{"library", "fixture"}, {"version", "1"},
                               {"build_options", "default"}}},
             {"capabilities", {{"monotonic_clock", true}, {"thread_cpu_clock", true},
-                               {"perf", false}, {"heap_tracking", true}, {"affinity", true},
+                               {"perf", false}, {"perf_requested_scope", "user"},
+                               {"perf_status", "disabled"},
+                               {"perf_effective_scope", nullptr},
+                               {"perf_failure_stage", nullptr}, {"perf_error_number", nullptr},
+                               {"perf_note", "disabled by profile"},
+                               {"heap_tracking", true}, {"affinity", true},
                                {"kernel_timestamp_configured", false}}},
             {"observation_level", "L0"},
             {"connections", Json::array({{{"index", 0}, {"warmup", false},
@@ -318,9 +324,9 @@ int main() {
     assert(cold["condition_identity"]["client_endpoint"]["loaded_context"] ==
            Json({{"size", 0}, {"hash", ""}}));
     assert(cold["condition_identity"]["client_endpoint"]
-               ["measurement_contract_revision"] == 1);
+               ["measurement_contract_revision"] == 2);
     assert(cold["condition_identity"]["server_endpoint"]
-               ["measurement_contract_revision"] == 1);
+               ["measurement_contract_revision"] == 2);
     assert(cold["condition_identity"]["client_endpoint"]["measurement_controls"]
                ["channel_observer"] == true);
     assert(cold["condition_identity"]["server_endpoint"]["measurement_controls"]
@@ -348,7 +354,7 @@ int main() {
                     group["distributions"]["tls_elapsed_ns"]["count"] == 1;
     assert(legacy_client_distribution_retained);
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["measurement_contract_revision"] = 1;
+        header["measurement_contract_revision"] = 2;
     });
     rewrite_header(sample4 / "server.jsonl", [](Json& header) {
         header.erase("measurement_contract_revision");
@@ -364,19 +370,183 @@ int main() {
                      "missing_identity:server_measurement_contract_revision_unknown") !=
            legacy_server_row["comparison_exclusion_reasons"].end());
     rewrite_header(sample4 / "server.jsonl", [](Json& header) {
-        header["measurement_contract_revision"] = 1;
+        header["measurement_contract_revision"] = 2;
     });
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["measurement_contract_revision"] = 2;
+        header["measurement_contract_revision"] = 3;
     });
     const auto different_contract =
         turtle::report::summarize_lookup(root, root / "different-contract-report");
     assert(different_contract["joined_rows"][3]["condition_identity"] !=
            cold["condition_identity"]);
     assert(different_contract["joined_rows"][3]["condition_identity"]
-                             ["client_endpoint"]["measurement_contract_revision"] == 2);
+                             ["client_endpoint"]["measurement_contract_revision"] == 3);
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["measurement_contract_revision"] = 1;
+        header["measurement_contract_revision"] = 2;
+    });
+
+    const auto& cold_client = cold["condition_identity"]["client_endpoint"];
+    assert(cold_client["measurement_controls"]["perf_scope"] == "user");
+    assert(cold_client["support"]["perf_requested_scope"] == "user");
+    assert(cold_client["support"]["perf_status"] == "disabled");
+    assert(cold_client["support"]["perf_effective_scope"].is_null());
+    const auto& cold_server = cold["condition_identity"]["server_endpoint"];
+    assert(cold_server["measurement_controls"]["perf_scope"] == "user");
+    assert(cold_server["support"]["perf_requested_scope"] == "user");
+    assert(cold_server["support"]["perf_status"] == "disabled");
+    assert(cold_server["support"]["perf_effective_scope"].is_null());
+    assert(std::find(cold["comparison_exclusion_reasons"].begin(),
+                     cold["comparison_exclusion_reasons"].end(),
+                     "missing_identity:client_perf_condition_unknown") ==
+           cold["comparison_exclusion_reasons"].end());
+    assert(std::find(cold["comparison_exclusion_reasons"].begin(),
+                     cold["comparison_exclusion_reasons"].end(),
+                     "missing_identity:server_perf_condition_unknown") ==
+           cold["comparison_exclusion_reasons"].end());
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["config"].erase("perf_scope");
+        header["capabilities"].erase("perf_requested_scope");
+        header["capabilities"].erase("perf_status");
+        header["capabilities"].erase("perf_effective_scope");
+    });
+    const auto legacy_perf =
+        turtle::report::summarize_lookup(root, root / "legacy-perf-report");
+    const auto& legacy_perf_row = legacy_perf["joined_rows"][3];
+    assert(legacy_perf_row["condition_identity"]["client_endpoint"]
+                          ["measurement_controls"]["perf_scope"].is_null());
+    assert(legacy_perf_row["automatic_comparison_eligible"] == false);
+    assert(legacy_perf_row["descriptive_distribution_eligible"] == true);
+    assert(std::find(legacy_perf_row["comparison_exclusion_reasons"].begin(),
+                     legacy_perf_row["comparison_exclusion_reasons"].end(),
+                     "missing_identity:client_perf_condition_unknown") !=
+           legacy_perf_row["comparison_exclusion_reasons"].end());
+    bool legacy_perf_distribution_retained = false;
+    for (const auto& group : legacy_perf["condition_groups"])
+        for (const auto& reference : group["joined_rows"])
+            if (reference == 3)
+                legacy_perf_distribution_retained =
+                    group["distributions"]["tls_elapsed_ns"]["count"] == 1;
+    assert(legacy_perf_distribution_retained);
+
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["config"]["perf"] = true;
+        header["config"]["perf_scope"] = "user";
+        header["capabilities"]["perf"] = false;
+        header["capabilities"]["perf_requested_scope"] = "user";
+        header["capabilities"]["perf_status"] = "unsupported";
+        header["capabilities"]["perf_effective_scope"] = nullptr;
+        header["capabilities"]["perf_failure_stage"] = "cycles_open";
+        header["capabilities"]["perf_error_number"] = 2;
+        header["capabilities"]["perf_note"] = "first diagnostic";
+    });
+    const auto unsupported_perf =
+        turtle::report::summarize_lookup(root, root / "unsupported-perf-report");
+    const auto unsupported_identity =
+        unsupported_perf["joined_rows"][3]["condition_identity"];
+    assert(unsupported_identity["client_endpoint"]["support"]["perf_status"] ==
+           "unsupported");
+    assert(std::find(unsupported_perf["joined_rows"][3]["comparison_exclusion_reasons"].begin(),
+                     unsupported_perf["joined_rows"][3]["comparison_exclusion_reasons"].end(),
+                     "missing_identity:client_perf_condition_unknown") ==
+           unsupported_perf["joined_rows"][3]["comparison_exclusion_reasons"].end());
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["capabilities"]["perf_failure_stage"] = "initial_read";
+        header["capabilities"]["perf_error_number"] = 95;
+        header["capabilities"]["perf_note"] = "different diagnostic";
+    });
+    const auto changed_diagnostic =
+        turtle::report::summarize_lookup(root, root / "changed-perf-diagnostic-report");
+    assert(changed_diagnostic["joined_rows"][3]["condition_identity"] ==
+           unsupported_identity);
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["config"]["perf"] = false;
+        header["capabilities"]["perf_status"] = "disabled";
+        header["capabilities"]["perf_failure_stage"] = nullptr;
+        header["capabilities"]["perf_error_number"] = nullptr;
+        header["capabilities"]["perf_note"] = "disabled by profile";
+    });
+
+    auto set_available_perf = [&](const char* role, const char* scope) {
+        rewrite_header(sample4 / (std::string(role) + ".jsonl"), [scope](Json& header) {
+            header["config"]["perf"] = true;
+            header["config"]["perf_scope"] = scope;
+            header["capabilities"]["perf"] = true;
+            header["capabilities"]["perf_requested_scope"] = scope;
+            header["capabilities"]["perf_status"] = "available";
+            header["capabilities"]["perf_effective_scope"] = scope;
+            header["capabilities"]["perf_failure_stage"] = nullptr;
+            header["capabilities"]["perf_error_number"] = nullptr;
+            header["capabilities"]["perf_note"] = "fixture counter group available";
+        });
+    };
+    const auto perf_scope_runs = root / "perf-scope-runs";
+    auto copy_scope_run = [&](const char* name) {
+        const auto destination = perf_scope_runs / name;
+        std::filesystem::create_directories(destination);
+        std::filesystem::copy_file(root / "attempts.jsonl", destination / "attempts.jsonl");
+        for (const auto* sample : {"sample-1", "sample-4"})
+            std::filesystem::copy(root / sample, destination / sample,
+                                  std::filesystem::copy_options::recursive);
+    };
+    set_available_perf("client", "user");
+    set_available_perf("server", "user");
+    copy_scope_run("available-user");
+    set_available_perf("client", "user+kernel");
+    copy_scope_run("client-kernel");
+    set_available_perf("client", "user");
+    set_available_perf("server", "user+kernel");
+    copy_scope_run("server-kernel");
+
+    const auto perf_scopes = turtle::report::summarize_lookup(
+        perf_scope_runs, root / "perf-scope-matrix-report");
+    std::map<std::string, Json> successful_scope_rows;
+    for (const auto& row : perf_scopes["joined_rows"])
+        if (row.value("attempt_status", "") == "success" &&
+            row.value("connection", std::size_t(-1)) == 0)
+            successful_scope_rows.emplace(row.at("run_id").get<std::string>(), row);
+    assert(successful_scope_rows.size() == 3);
+    const auto& available_user = successful_scope_rows.at("available-user");
+    const auto& client_kernel = successful_scope_rows.at("client-kernel");
+    const auto& server_kernel = successful_scope_rows.at("server-kernel");
+    assert(available_user["condition_identity"] != client_kernel["condition_identity"]);
+    assert(available_user["condition_identity"] != server_kernel["condition_identity"]);
+    assert(client_kernel["condition_identity"] != server_kernel["condition_identity"]);
+    assert(client_kernel["condition_identity"]["client_endpoint"]["measurement_controls"]
+                        ["perf_scope"] == "user+kernel");
+    assert(client_kernel["condition_identity"]["server_endpoint"]["measurement_controls"]
+                        ["perf_scope"] == "user");
+    assert(server_kernel["condition_identity"]["client_endpoint"]["measurement_controls"]
+                        ["perf_scope"] == "user");
+    assert(server_kernel["condition_identity"]["server_endpoint"]["measurement_controls"]
+                        ["perf_scope"] == "user+kernel");
+    for (const auto* row : {&available_user, &client_kernel, &server_kernel}) {
+        assert((*row)["descriptive_distribution_eligible"] == true);
+        bool separate_group_with_distribution = false;
+        for (const auto& group : perf_scopes["condition_groups"])
+            if (group["condition_identity"] == (*row)["condition_identity"])
+                separate_group_with_distribution =
+                    group["joined_rows"].size() == 1 &&
+                    group["distributions"]["tls_elapsed_ns"]["count"] == 1 &&
+                    group["automatic_comparison_eligible"] ==
+                        (*row)["automatic_comparison_eligible"];
+        assert(separate_group_with_distribution);
+    }
+
+    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
+        header["config"]["perf"] = false;
+        header["config"]["perf_scope"] = "user";
+        header["capabilities"]["perf"] = false;
+        header["capabilities"]["perf_requested_scope"] = "user";
+        header["capabilities"]["perf_status"] = "disabled";
+        header["capabilities"]["perf_effective_scope"] = nullptr;
+    });
+    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
+        header["config"]["perf"] = false;
+        header["config"]["perf_scope"] = "user";
+        header["capabilities"]["perf"] = false;
+        header["capabilities"]["perf_requested_scope"] = "user";
+        header["capabilities"]["perf_status"] = "disabled";
+        header["capabilities"]["perf_effective_scope"] = nullptr;
     });
     std::filesystem::rename(saved_provenance_path, provenance_path);
     for (const auto* role : {"client", "server"})

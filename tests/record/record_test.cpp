@@ -69,6 +69,19 @@ int main() {
         info.config.failure_policy = model::FailurePolicy::FixedAttempts;
         info.config.ca_cpu = 11;
         info.config.channel_observer = false;
+        info.config.perf_scope = model::PerfScope::UserKernel;
+        info.capabilities.perf = true;
+        info.capabilities.perf_requested_scope = model::PerfScope::UserKernel;
+        info.capabilities.perf_status = model::PerfStatus::Available;
+        info.capabilities.perf_effective_scope = model::PerfScope::UserKernel;
+        info.environment.perf_event_paranoid = 2;
+        model::CpuTopology topology;
+        topology.cpu = 4;
+        topology.package_id = 0;
+        topology.core_id = 2;
+        topology.thread_siblings =
+            std::vector<model::CpuSibling>{{4, true}, {5, std::nullopt}};
+        info.environment.cpu_topology.push_back(std::move(topology));
         info.config.lookup.enabled = true;
         info.config.lookup.cache_mode = model::CacheMode::FixedSnapshot;
         info.config.lookup.object_file = "/input/server-chain.pem";
@@ -142,6 +155,15 @@ int main() {
     assert(config["failure_policy"] == "fixed-attempts" && config["flush_grace_ms"] == 700);
     assert(config["ca_cpu"] == 11);
     assert(config["channel_observer"] == false);
+    assert(config["perf_scope"] == "user+kernel");
+    assert(sample["capabilities"]["perf_requested_scope"] == "user+kernel");
+    assert(sample["capabilities"]["perf_status"] == "available");
+    assert(sample["capabilities"]["perf_effective_scope"] == "user+kernel");
+    assert(sample["capabilities"]["perf_failure_stage"].is_null());
+    assert(sample["capabilities"]["perf_error_number"].is_null());
+    assert(sample["environment"]["perf_event_paranoid"] == 2);
+    assert(sample["environment"]["cpu_topology"][0]["thread_siblings"][1]["online"]
+               .is_null());
     assert(config["lookup"]["enabled"] == true);
     assert(config["lookup"]["cache_mode"] == "fixed-snapshot");
     assert(config["lookup"]["object_file"] == "/input/server-chain.pem");
@@ -173,6 +195,10 @@ int main() {
     ordinary_input >> ordinary_sample;
     assert(ordinary_sample["config"]["scenario_name"] == "standard-tls");
     assert(ordinary_sample["config"]["channel_observer"] == true);
+    assert(ordinary_sample["config"]["perf_scope"] == "user");
+    assert(ordinary_sample["capabilities"]["perf_status"] == "disabled");
+    assert(ordinary_sample["capabilities"]["perf_effective_scope"].is_null());
+    assert(ordinary_sample["environment"]["perf_event_paranoid"].is_null());
     assert(ordinary_sample["config"]["lookup"]["enabled"] == false);
     assert(ordinary_sample["config"]["lookup"]["object_file"].is_null());
     assert(ordinary_sample["config"]["lookup"]["snapshot_file"].is_null());

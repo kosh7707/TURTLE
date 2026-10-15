@@ -24,13 +24,18 @@ class HeapTracker {
 
 class Meter {
   public:
-    explicit Meter(model::Mode mode, bool request_perf = true);
+    explicit Meter(model::Mode mode, bool request_perf = true,
+                   model::PerfScope requested_scope = model::PerfScope::User);
     ~Meter();
     Meter(const Meter&) = delete;
     Meter& operator=(const Meter&) = delete;
     model::Snapshot read(bool reset_heap_interval = true) noexcept;
     Allocator allocator() noexcept;
     const model::Capabilities& capabilities() const noexcept;
+    // Explicit user+kernel requests are strict. Call this inside the owning
+    // execution's artifact-producing failure boundary after capabilities have
+    // been copied to the raw record.
+    void require_requested_scope() const;
     model::Calibration calibrate(std::size_t repetitions);
 
   private:

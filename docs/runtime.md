@@ -14,6 +14,29 @@
 
 지휘 프로세스는 역할 프로세스를 만든 뒤에만 자기 CPU를 고정합니다. 다음 표본을 만들기 전에 원래 허용 CPU 집합을 복원하므로 자식이 지휘 프로세스의 한 코어 제한을 물려받지 않습니다. 역할 프로세스는 자기 CPU를 별도로 고정합니다.
 
+### CPU 위상과 배치 한계
+
+환경 기록은 커널 판, `perf_event_paranoid`, 허용·물리 CPU 목록과 CPU별 package/core ID, `thread_siblings` 목록을 담습니다. `perf_event_paranoid`를 읽지 못하면 값은 `null`이고 이유를 따로 남깁니다. 형제 목록의 `null`은 sysfs 목록을 읽지 못함, 빈 목록은 읽었지만 형제가 없음을 뜻합니다. 각 형제의 `online`도 알 수 없으면 `null`입니다. 형제가 현재 affinity 허용 범위 밖에 있어도 물리 자원 공유 정보이므로 목록에서 제외하지 않습니다.
+
+CPU 고정을 켜면 기존처럼 지휘·클라이언트·서버·필요한 CA가 서로 다른 것으로 확인한 물리 코어를 사용합니다. 같은 물리 코어를 요청하는 실행은 경고로 완화하지 않고 거절합니다. 선택한 CPU의 온라인 또는 상태 미상 형제가 있으면 그 형제의 유휴 상태는 확인하지 못했고 코어 전용 사용도 보장하지 못했음을 경고합니다. `--no-affinity`는 역할 배치 자체가 확인되지 않은 조건입니다. WSL과 같은 가상화 환경의 위상은 게스트에 보인 정보일 뿐 호스트 물리 코어 전용을 증명하지 않습니다. 설정 단계의 위상 확인과 CPU 고정도 실행 전체의 독점 사용을 보장하지 않습니다.
+
+환경 식별값은 이런 위상·형제 온라인 상태·`perf_event_paranoid` 같은 안정 사실을 포함합니다. 경고 문구, 읽기 실패 이유, 순간 부하와 관측 시각은 그룹을 불필요하게 나누지 않도록 환경 식별값에 넣지 않습니다.
+
+### 성능 카운터 범위와 상태
+
+`measurement.perf_scope`는 `user` 또는 `user+kernel`이고 기본값은 `user`입니다. 둘 다 `pid=0`, `cpu=-1`, `inherit=0`, `exclude_hv=1`로 해당 역할 스레드만 셩니다. `user`는 `exclude_kernel=1`, `user+kernel`은 `exclude_kernel=0`입니다. `user+kernel`이라도 다른 스레드·전체 시스템·하이퍼바이저 비용을 포함하지 않습니다. `CLOCK_THREAD_CPUTIME_ID`로 읽는 스레드 CPU 시간은 이 성능 카운터 범위 선택과 별개입니다.
+
+원자료는 요청 `perf_requested_scope`, 상태 `perf_status`, 실제 `perf_effective_scope`를 따로 남깁니다. `available`일 때만 실제 범위가 요청과 같은 문자열이며, `disabled`·`unsupported`의 실제 범위는 `null`입니다. 두 `null`은 알려진 비활성·미지원 상태이며 필드가 없는 구 자료의 알 수 없음과 다릅니다. 미지원은 `cycles_open`, `instructions_open`, `reset`, `enable`, `initial_read` 중 실패 단계와 errno, 설명을 따로 남깁니다.
+
+- `perf=false`, `user`: 요청 범위는 남기고 `disabled`, 실제 범위 `null`로 정상 실행합니다.
+- `perf=false`, `user+kernel`: 서로 모순되는 설정이므로 실행 자료를 만들기 전에 거절합니다.
+- `perf=true`, `user`: 카운터를 열지 못하면 `unsupported`, 실제 범위 `null`로 남기고 시간 측정과 정상 TLS를 계속합니다.
+- `perf=true`, `user+kernel`: 요청을 적용하지 못하면 측정 정보를 원자료에 복사한 뒤 엔드포인트를 이유 있는 실패로 끝내고 attempt 원장에도 남깁니다. `user`로 낮추어 다시 시도하지 않습니다.
+
+두 카운터·그룹 초기화·초기 읽기까지 성공해야 `available`입니다. 실행 중 읽기는 여전히 사건별 `null`이 될 수 있고, `enabled=running=0`은 실제 계수 성공의 근거가 아닙니다. `perf_complete`는 필요 카운터가 모두 있고 `running>0`이며 `running<enabled`가 아닌 사건에서만 유지됩니다. 프로그램은 호스트의 `perf_event_paranoid`나 capability를 바꾸지 않고 실제 그룹 설정 결과를 사용합니다.
+
+현재 WSL 환경에서 `user+kernel` 하드웨어 카운터 성공을 확인했다고 주장하지 않습니다. 설정 속성과 각 실패 단계, 파일 설명자 정리, 엄격한 요청 거절은 결정적 시스템 호출 대역 시험으로 확인합니다. 호스트의 실제 계수가 가능할 때만 실제 카운터 값을 근거로 삼습니다.
+
 조회 시나리오에서는 표본마다 TLS 서버, TLS 클라이언트, 모의 CA 세 자식을 소유합니다. 클라이언트의 조회 TCP와 TLS TCP는 서로 다른 준비 연결이며, 모의 CA는 TLS `Role`에 포함되지 않습니다. 기준 PEM 객체는 지휘 프로세스가 실행 시작 때 한 번 읽어 불변 snapshot으로 보유합니다. 클라이언트는 연결마다 캐시를 같은 empty/fixed snapshot으로 직접 복원한 뒤 조회하고, `USABLE_OBJECT`가 된 뒤에만 TLS를 시작합니다. 이 객체는 stock TLS 인증서 입력을 대체하지 않습니다.
 
 `lookup.enabled=false`이면 조회 객체나 CA 입력을 요구하지 않고 TLS 서버와 클라이언트 두 자식만 만듭니다. attempt 원장 참여자와 필수 결과 파일도 이 두 역할뿐이며 CA·lookup 결과를 빈 파일이나 가짜 성공으로 만들지 않습니다. `lookup.enabled=true`의 기존 세 자식 계약은 그대로 유지합니다.

@@ -121,6 +121,7 @@ Json config_json(const model::RunConfig& v) {
             {"kernel_timestamps", v.kernel_timestamps},
             {"channel_observer", v.channel_observer},
             {"perf", v.perf},
+            {"perf_scope", model::name(v.perf_scope)},
             {"isolate", v.isolate},
             {"pin_cores", v.pin_cores},
             {"director_cpu", v.director_cpu},
@@ -146,6 +147,22 @@ Json declaration_json(const Declaration& v) {
             {"read_ahead_note", v.read_ahead_note},
             {"memory_note", v.memory_note}};
 }
+Json cpu_topology_json(const std::vector<model::CpuTopology>& topology) {
+    Json result = Json::array();
+    for (const auto& entry : topology) {
+        Json siblings = nullptr;
+        if (entry.thread_siblings) {
+            siblings = Json::array();
+            for (const auto& sibling : *entry.thread_siblings)
+                siblings.push_back({{"cpu", sibling.cpu}, {"online", nullable(sibling.online)}});
+        }
+        result.push_back({{"cpu", entry.cpu},
+                          {"package_id", nullable(entry.package_id)},
+                          {"core_id", nullable(entry.core_id)},
+                          {"thread_siblings", std::move(siblings)}});
+    }
+    return result;
+}
 Json environment_json(const model::Environment& v) {
     return {{"kernel", v.kernel},
             {"cpu_model", v.cpu_model},
@@ -154,8 +171,13 @@ Json environment_json(const model::Environment& v) {
             {"boost", v.boost},
             {"environment_hash", v.environment_hash},
             {"wsl", v.wsl},
+            {"perf_event_paranoid", nullable(v.perf_event_paranoid)},
+            {"perf_event_paranoid_reason",
+             v.perf_event_paranoid_reason.empty() ? Json(nullptr)
+                                                  : Json(v.perf_event_paranoid_reason)},
             {"allowed_cpus", v.allowed_cpus},
             {"physical_cpus", v.physical_cpus},
+            {"cpu_topology", cpu_topology_json(v.cpu_topology)},
             {"load_before", v.load_before},
             {"warnings", v.warnings}};
 }
@@ -163,6 +185,14 @@ Json capabilities_json(const model::Capabilities& v) {
     return {{"monotonic_clock", v.monotonic_clock},
             {"thread_cpu_clock", v.thread_cpu_clock},
             {"perf", v.perf},
+            {"perf_requested_scope", model::name(v.perf_requested_scope)},
+            {"perf_status", model::name(v.perf_status)},
+            {"perf_effective_scope",
+             v.perf_effective_scope ? Json(model::name(*v.perf_effective_scope))
+                                    : Json(nullptr)},
+            {"perf_failure_stage",
+             v.perf_failure_stage ? Json(model::name(*v.perf_failure_stage)) : Json(nullptr)},
+            {"perf_error_number", nullable(v.perf_error_number)},
             {"heap_tracking", v.heap_tracking},
             {"stack_tracking", v.stack_tracking},
             {"kernel_timestamp_configured", v.kernel_timestamp_configured},
