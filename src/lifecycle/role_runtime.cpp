@@ -59,6 +59,28 @@ bool plaintext(void* p, bool outgoing, unsigned type, const std::uint8_t* bytes,
     auto& c = *static_cast<TlsCapture*>(p);
     return c.buffer.append_plaintext(c.connection, outgoing, type, {bytes, size});
 }
+
+void configure_io_observation(model::SampleInfo& info, const model::RunConfig& config) {
+    if (!config.tls.framework_io) {
+        info.observation_level = "library-only";
+        info.tls_stream_available = false;
+        info.tls_stream_reason = "native_socket_io_not_observed";
+        info.io_events_available = false;
+        info.io_events_reason = "native_socket_io_not_observed";
+        info.kernel_receive_events_available = false;
+        info.kernel_receive_events_reason = "native_socket_io_not_observed";
+        info.incomplete.push_back("native socket I/O has no framework byte or kernel capture");
+    } else if (!config.channel_observer) {
+        info.observation_level = "observer-disabled";
+        info.tls_stream_available = false;
+        info.tls_stream_reason = "channel_observer_disabled";
+        info.io_events_available = false;
+        info.io_events_reason = "channel_observer_disabled";
+        info.kernel_receive_events_available = false;
+        info.kernel_receive_events_reason = "channel_observer_disabled";
+        info.incomplete.push_back("channel observer disabled; framework I/O bytes and receive events were not captured");
+    }
+}
 } // namespace
 
 std::vector<std::uint8_t> load_serialized_context(const model::RunConfig& config, Role role) {
@@ -82,34 +104,20 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
     record::Buffer buffer({config.event_capacity, config.stream_capacity,
                            config.keylog_capacity, count});
     model::SampleInfo info;
-    info.sample = sample; info.batch = config.batch; info.role = role; info.pid = ::getpid();
+    info.sample = sample;
+    info.batch = config.batch;
+    info.role = role;
+    info.pid = ::getpid();
     info.config = config;
-    if (!config.tls.framework_io) {
-        info.observation_level = "library-only";
-        info.tls_stream_available = false;
-        info.tls_stream_reason = "native_socket_io_not_observed";
-        info.io_events_available = false;
-        info.io_events_reason = "native_socket_io_not_observed";
-        info.kernel_receive_events_available = false;
-        info.kernel_receive_events_reason = "native_socket_io_not_observed";
-        info.incomplete.push_back("native socket I/O has no framework byte or kernel capture");
-    } else if (!config.channel_observer) {
-        info.observation_level = "observer-disabled";
-        info.tls_stream_available = false;
-        info.tls_stream_reason = "channel_observer_disabled";
-        info.io_events_available = false;
-        info.io_events_reason = "channel_observer_disabled";
-        info.kernel_receive_events_available = false;
-        info.kernel_receive_events_reason = "channel_observer_disabled";
-        info.incomplete.push_back("channel observer disabled; framework I/O bytes and receive events were not captured");
-    }
+    configure_io_observation(info, config);
     measure::Meter meter(config.mode, config.perf, config.perf_scope);
     TlsCapture capture{meter, buffer};
     control::Waiter parent(control_fd);
     ChildProtocol protocol(parent);
     std::vector<std::unique_ptr<control::WaitSet>> wait_sets;
     std::vector<model::SocketSettings> settings;
-    wait_sets.reserve(count); settings.reserve(count);
+    wait_sets.reserve(count);
+    settings.reserve(count);
     detail::ClientLookupRuntime client_lookup(config, meter, sample, directory, control_fd,
                                               reference, initial, std::move(lookup_sockets));
     bool valid = true;

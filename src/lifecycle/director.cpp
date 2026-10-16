@@ -97,6 +97,141 @@ model::ArtifactStatus inspect_artifact(const std::filesystem::path& path, bool s
 
 struct ChildControl { pid_t pid = -1; int fd = -1; std::unique_ptr<control::Waiter> waiter; };
 
+record::AttemptEntry make_attempt_entry(const model::RunConfig& config, std::uint64_t sample,
+                                        bool has_reference) {
+    record::AttemptEntry entry;
+    entry.attempt_id = sample;
+    entry.requested_count = config.samples;
+    entry.flush_grace_ms = config.flush_grace_ms;
+    entry.participants = {model::ParticipantKind::TlsServer, model::ParticipantKind::TlsClient};
+    if (has_reference) entry.participants.push_back(model::ParticipantKind::MockCa);
+    entry.artifact_names = {"server.jsonl", "client.jsonl"};
+    if (has_reference) {
+        entry.artifact_names.push_back(record::lookup_filename);
+        entry.artifact_names.push_back(record::ca_filename);
+    }
+    entry.artifact_status.assign(entry.artifact_names.size(), model::ArtifactStatus::Missing);
+    entry.connections.resize(config.warmups + config.connections);
+    std::iota(entry.connections.begin(), entry.connections.end(), 0);
+    return entry;
+}
+
+void await_namespace_ready(std::span<ChildControl> children, control::Deadline deadline) {
+    for (auto& child : children) {
+        auto namespace_ready = control::receive_message(*child.waiter, deadline);
+        if (namespace_ready.kind != control::MessageKind::NamespaceReady)
+            throw std::runtime_error("participant namespace acknowledgement missing");
+    }
+}
+
+void forward_listener_addresses(std::span<ChildControl> children, bool has_reference,
+                                control::Deadline deadline) {
+    auto server_address = control::receive_message(*children[0].waiter, deadline);
+    if (server_address.kind != control::MessageKind::ReadyAddress)
+        throw std::runtime_error("server address missing");
+    control::send_message(*children[1].waiter, server_address, deadline);
+    if (has_reference) {
+        auto ca_address = control::receive_message(*children[2].waiter, deadline);
+        if (ca_address.kind != control::MessageKind::ReadyAddress)
+            throw std::runtime_error("CA address missing");
+        control::send_message(*children[1].waiter, ca_address, deadline);
+    }
+}
+
+void await_tcp_ready(std::span<ChildControl> children, control::Deadline deadline) {
+    for (auto& child : children) {
+        auto ready = control::receive_message(*child.waiter, deadline);
+        if (ready.kind == control::MessageKind::Failed)
+            throw std::runtime_error(ready.reason.empty()
+                                         ? "participant TCP_READY failed without a diagnostic"
+                                         : ready.reason);
+        if (ready.kind != control::MessageKind::TcpReady)
+            throw std::runtime_error("participant TCP_READY missing");
+    }
+}
+
+void coordinate_connection_releases_and_lookup_forwarding(
+    std::span<ChildControl> children, std::size_t connection_count, bool has_reference,
+    std::uint64_t sample, control::Deadline deadline) {
+    const std::size_t child_count = children.size();
+    const std::size_t expected = child_count * connection_count;
+    std::size_t completions = 0;
+    std::vector<std::vector<bool>> completed(child_count, std::vector<bool>(connection_count));
+    std::vector<std::array<bool, 2>> opened(connection_count);
+    while (completions < expected) {
+        pollfd descriptors[3]{};
+        for (std::size_t i = 0; i < child_count; ++i) {
+            descriptors[i].fd = children[i].fd;
+            descriptors[i].events = POLLIN;
+        }
+        const auto remaining_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (remaining_ns <= 0)
+            throw std::runtime_error("attempt deadline exceeded");
+        const auto remaining_ms = (remaining_ns + 999999) / 1000000;
+        const int poll_result = ::poll(descriptors, child_count, static_cast<int>(remaining_ms));
+        if (poll_result < 0) {
+            if (errno == EINTR)
+                continue;
+            throw std::system_error(errno, std::generic_category(),
+                                    "participant control poll failed");
+        }
+        if (poll_result == 0) {
+            if (std::chrono::steady_clock::now() >= deadline)
+                throw std::runtime_error("attempt deadline exceeded");
+            continue;
+        }
+        for (std::size_t i = 0; i < child_count; ++i) if (descriptors[i].revents) {
+            auto message = control::receive_message(*children[i].waiter, deadline);
+            if (message.kind == control::MessageKind::TcpReady && i < 2) {
+                if (message.connection >= connection_count || opened[message.connection][i])
+                    throw std::runtime_error("duplicate endpoint open readiness");
+                opened[message.connection][i] = true;
+                if (opened[message.connection][0] && opened[message.connection][1]) {
+                    send(*children[0].waiter, control::MessageKind::Start, deadline, sample,
+                         message.connection);
+                    send(*children[1].waiter, control::MessageKind::Start, deadline, sample,
+                         message.connection);
+                }
+            } else if (message.kind == control::MessageKind::ConnectionComplete) {
+                if (message.connection >= connection_count || completed[i][message.connection])
+                    throw std::runtime_error("duplicate connection completion");
+                completed[i][message.connection] = true;
+                ++completions;
+                bool release = true;
+                for (std::size_t participant = 0; participant < child_count; ++participant)
+                    release = release && completed[participant][message.connection];
+                if (release)
+                    for (auto& child : children)
+                        send(*child.waiter, control::MessageKind::Start, deadline, sample,
+                             message.connection);
+            } else if (i == 1 && has_reference &&
+                       (message.kind == control::MessageKind::ResponseComplete ||
+                        message.kind == control::MessageKind::LookupSkipped))
+                control::send_message(*children[2].waiter, message, deadline);
+            else if (message.kind == control::MessageKind::Failed)
+                throw std::runtime_error(message.reason.empty()
+                    ? "participant reported execution failure" : message.reason);
+            else throw std::runtime_error("unexpected participant message");
+        }
+    }
+}
+
+void flush_participants(std::span<ChildControl> children, std::uint64_t sample,
+                        control::Deadline grace) {
+    for (auto& child : children)
+        send(*child.waiter, control::MessageKind::Flush, grace, sample, 0, false, {}, 0,
+             monotonic_ns(grace));
+    for (auto& child : children) {
+        const auto message = control::receive_message(*child.waiter, grace);
+        if (message.kind == control::MessageKind::Failed)
+            throw std::runtime_error(message.reason.empty()
+                ? "participant flush failed without a diagnostic" : message.reason);
+        if (message.kind != control::MessageKind::Flushed)
+            throw std::runtime_error("participant flush incomplete");
+    }
+}
+
 control::ReapResult terminate_and_reap(std::span<ChildControl> children,
                                         control::Deadline deadline) {
     std::vector<pid_t> pids;
@@ -239,7 +374,6 @@ int run_attempt(const model::RunConfig& config, std::uint64_t sample,
     bool cleanup_started = false;
     bool scenario_started = false;
     bool scenario_ended = false;
-    std::size_t completions = 0;
     try {
         if (!ok) throw std::runtime_error("fork failed");
         if (config.pin_cores) {
@@ -247,30 +381,11 @@ int run_attempt(const model::RunConfig& config, std::uint64_t sample,
             if (!capability::pin_to_cpu(config.director_cpu, reason))
                 throw std::runtime_error("director CPU affinity failed: " + reason);
         }
-        for (auto& child : children) {
-            auto namespace_ready = control::receive_message(*child.waiter, deadline);
-            if (namespace_ready.kind != control::MessageKind::NamespaceReady)
-                throw std::runtime_error("participant namespace acknowledgement missing");
-        }
+        await_namespace_ready(children, deadline);
         ledger.failure_phase = model::FailurePhase::Listener;
-        auto server_address = control::receive_message(*children[0].waiter, deadline);
-        if (server_address.kind != control::MessageKind::ReadyAddress) throw std::runtime_error("server address missing");
-        control::send_message(*children[1].waiter, server_address, deadline);
-        if (reference) {
-            auto ca_address = control::receive_message(*children[2].waiter, deadline);
-            if (ca_address.kind != control::MessageKind::ReadyAddress) throw std::runtime_error("CA address missing");
-            control::send_message(*children[1].waiter, ca_address, deadline);
-        }
+        forward_listener_addresses(children, reference != nullptr, deadline);
         ledger.failure_phase = model::FailurePhase::TcpReady;
-        for (auto& child : children) {
-            auto ready = control::receive_message(*child.waiter, deadline);
-            if (ready.kind == control::MessageKind::Failed)
-                throw std::runtime_error(ready.reason.empty()
-                                             ? "participant TCP_READY failed without a diagnostic"
-                                             : ready.reason);
-            if (ready.kind != control::MessageKind::TcpReady)
-                throw std::runtime_error("participant TCP_READY missing");
-        }
+        await_tcp_ready(children, deadline);
         if (config.network_handoff) {
             auto ack = control::exchange_phase(config.network_handoff->phase_control_fd, sample,
                 control::Phase::Setup, control::PhaseEdge::End, deadline);
@@ -283,63 +398,8 @@ int run_attempt(const model::RunConfig& config, std::uint64_t sample,
         for (auto& child : children) send(*child.waiter, control::MessageKind::Start, deadline, sample);
         ledger.failure_phase = model::FailurePhase::Scenario;
         const std::size_t connection_count = config.warmups + config.connections;
-        const std::size_t expected = child_count * connection_count;
-        std::vector<std::vector<bool>> completed(child_count,
-                                                  std::vector<bool>(connection_count));
-        std::vector<std::array<bool, 2>> opened(connection_count);
-        while (completions < expected) {
-            pollfd descriptors[3]{};
-            for (std::size_t i = 0; i < child_count; ++i) { descriptors[i].fd = children[i].fd; descriptors[i].events = POLLIN; }
-            const auto remaining_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                deadline - std::chrono::steady_clock::now()).count();
-            if (remaining_ns <= 0)
-                throw std::runtime_error("attempt deadline exceeded");
-            const auto remaining_ms = (remaining_ns + 999999) / 1000000;
-            const int poll_result = ::poll(descriptors, child_count, static_cast<int>(remaining_ms));
-            if (poll_result < 0) {
-                if (errno == EINTR)
-                    continue;
-                throw std::system_error(errno, std::generic_category(),
-                                        "participant control poll failed");
-            }
-            if (poll_result == 0) {
-                if (std::chrono::steady_clock::now() >= deadline)
-                    throw std::runtime_error("attempt deadline exceeded");
-                continue;
-            }
-            for (std::size_t i = 0; i < child_count; ++i) if (descriptors[i].revents) {
-                auto message = control::receive_message(*children[i].waiter, deadline);
-                if (message.kind == control::MessageKind::TcpReady && i < 2) {
-                    if (message.connection >= connection_count || opened[message.connection][i])
-                        throw std::runtime_error("duplicate endpoint open readiness");
-                    opened[message.connection][i] = true;
-                    if (opened[message.connection][0] && opened[message.connection][1]) {
-                        send(*children[0].waiter, control::MessageKind::Start, deadline, sample,
-                             message.connection);
-                        send(*children[1].waiter, control::MessageKind::Start, deadline, sample,
-                             message.connection);
-                    }
-                } else if (message.kind == control::MessageKind::ConnectionComplete) {
-                    if (message.connection >= connection_count || completed[i][message.connection])
-                        throw std::runtime_error("duplicate connection completion");
-                    completed[i][message.connection] = true;
-                    ++completions;
-                    bool release = true;
-                    for (std::size_t participant = 0; participant < child_count; ++participant)
-                        release = release && completed[participant][message.connection];
-                    if (release)
-                        for (auto& child : children)
-                            send(*child.waiter, control::MessageKind::Start, deadline, sample,
-                                 message.connection);
-                } else if (i == 1 && reference && (message.kind == control::MessageKind::ResponseComplete ||
-                                                  message.kind == control::MessageKind::LookupSkipped))
-                    control::send_message(*children[2].waiter, message, deadline);
-                else if (message.kind == control::MessageKind::Failed)
-                    throw std::runtime_error(message.reason.empty()
-                        ? "participant reported execution failure" : message.reason);
-                else throw std::runtime_error("unexpected participant message");
-            }
-        }
+        coordinate_connection_releases_and_lookup_forwarding(
+            children, connection_count, reference != nullptr, sample, deadline);
         if (config.network_handoff) {
             auto ack = control::exchange_phase(config.network_handoff->phase_control_fd, sample,
                 control::Phase::Scenario, control::PhaseEdge::End, deadline);
@@ -354,17 +414,7 @@ int run_attempt(const model::RunConfig& config, std::uint64_t sample,
         }
         ledger.failure_phase = model::FailurePhase::Flush;
         grace = std::chrono::steady_clock::now() + std::chrono::milliseconds(config.flush_grace_ms);
-        for (auto& child : children)
-            send(*child.waiter, control::MessageKind::Flush, grace, sample, 0, false, {}, 0,
-                 monotonic_ns(grace));
-        for (auto& child : children) {
-            const auto message = control::receive_message(*child.waiter, grace);
-            if (message.kind == control::MessageKind::Failed)
-                throw std::runtime_error(message.reason.empty()
-                    ? "participant flush failed without a diagnostic" : message.reason);
-            if (message.kind != control::MessageKind::Flushed)
-                throw std::runtime_error("participant flush incomplete");
-        }
+        flush_participants(children, sample, grace);
         ok = true;
     } catch (const std::exception& error) {
         ok = false;
@@ -489,18 +539,7 @@ int run(const model::RunConfig& input) {
     bool failed = false;
     bool fatal = false;
     for (std::uint64_t sample = 1; sample <= config.samples; ++sample) {
-        record::AttemptEntry entry; entry.attempt_id = sample; entry.requested_count = config.samples;
-        entry.flush_grace_ms = config.flush_grace_ms;
-        entry.participants = {model::ParticipantKind::TlsServer, model::ParticipantKind::TlsClient};
-        if (reference) entry.participants.push_back(model::ParticipantKind::MockCa);
-        entry.artifact_names = {"server.jsonl", "client.jsonl"};
-        if (reference) {
-            entry.artifact_names.push_back(record::lookup_filename);
-            entry.artifact_names.push_back(record::ca_filename);
-        }
-        entry.artifact_status.assign(entry.artifact_names.size(), model::ArtifactStatus::Missing);
-        entry.connections.resize(config.warmups + config.connections);
-        std::iota(entry.connections.begin(), entry.connections.end(), 0);
+        auto entry = make_attempt_entry(config, sample, static_cast<bool>(reference));
         if (fatal || (failed && config.failure_policy == model::FailurePolicy::FailFast)) {
             ledger.push_back(entry); continue;
         }
