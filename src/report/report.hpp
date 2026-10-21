@@ -22,5 +22,6 @@ Comparison compare(std::span<const double> a, std::span<const double> b, std::ui
 nlohmann::json partition(const nlohmann::json& header, const std::vector<nlohmann::json>& events);
 nlohmann::json summarize_lookup(const std::filesystem::path& input,
                                 const std::filesystem::path& output);
-nlohmann::json summarize(const std::filesystem::path& input, const std::filesystem::path& output);
+nlohmann::json summarize(const std::filesystem::path& input, const std::filesystem::path& output,
+                         bool repeated_context = false);
 } // namespace turtle::report

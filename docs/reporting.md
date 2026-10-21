@@ -180,6 +180,25 @@ primary `elapsed_ns`가 없는 그룹은 기존 자동 비교·묶음에 계속 
 이 결과는 탐색적인 비교 후보일 뿐입니다. 두 구현이 같은 동작을 한다거나 결과가 서로
 같다는 것을 판정하지 않습니다.
 
+### 반복 컨텍스트 대표값 보기
+
+`turtle-report INPUT OUTPUT --repeated-context`는 기존 `summary.json`, 분포와 조회 보고를 같은 입력의 기본 호출과 동일하게 만들고 `repeated-context-summary.json`만 추가합니다. 플래그가 없는 기본 호출에는 새 원장·study 탐색이나 거절 조건도 적용하지 않습니다. 새 파일은 `type=turtle-repeated-context-summary`, `schema=1`, `aggregation_policy=context-stq2-v1`, `estimand=stq2_of_context_stq2`입니다. 최상위의 `selection_scope`, `studies`, `runs`, `contexts`, `groups`, `batch_diagnostics`, `comparisons`는 항상 존재합니다. `selection_scope`는 `study_root`, `run_root`, `partial`, `mixed` 가운데 하나입니다. 알 수 없거나 사용할 수 없는 단일 값은 `null`, 실제 0은 숫자 `0`, 빈 배열은 `[]`로 구별합니다.
+
+한 컨텍스트는 정규화한 run-root, sample ID, 역할의 조합입니다. 각 컨텍스트에서 `W=measurement.warmups` 뒤의 연결 번호 W부터 W+K-1까지 정확히 `K=measurement.connections`개인 측정 연결의 기본 `primary_window` `elapsed_ns` 또는 `thread_cpu_ns`를 순서대로 보존하고 기존 통계 함수의 StQ2를 계산합니다. 첫 측정 연결도 자동으로 버리지 않으며, StQ의 순위 가중치가 0인 경우와 준비 연결 제외는 서로 다른 일입니다. K=1은 원자료를 보존하지만 `insufficient_connections`로 반복 대표값에서 제외합니다. 정확한 K개 값이 없거나 값이 음수·비유한이면 해당 지표의 `inner_statistics`는 `null`입니다. v1은 이 두 지표만 지원합니다.
+
+같은 조건·역할·batch에 속한 context의 inner StQ2들을 모아 `outer_statistics`를 만듭니다. 따라서 이는 모든 연결을 한 배열에 합친 pooled StQ도, 위치별 중앙값을 다시 취한 median-of-medians도 아닙니다. 기존 연결 위치별 진단과 첫 연결 원자료는 그대로 남습니다. `P`개 새 프로세스 context와 context마다 `K`개 연결을 실행했다면 추론 단위 수는 `P`이지 `P×K`가 아닙니다.
+
+자동 비교에는 부모 시도의 성공뿐 아니라 다음 조건이 모두 필요합니다.
+
+- 선택한 입력이 하나의 `study.json`으로 확인된 study 이름공간이며 그 목록에 적힌 모든 run과 발견한 run·원장·원자료가 맞아야 합니다.
+- 양 역할의 전체 실행 범위와 비교하려는 지표의 컨텍스트 완결성이 확인되어야 합니다. 일부 성공값만 골라 전체 run의 비교로 승격하지 않습니다.
+- 역할, 상대 엔드포인트, 프로필, K, warmups, 기한과 정리 유예, 측정 계약, `timing` mode, observer/perf, 실제 소켓·네트워크 조건 및 집계 정책이 같아야 합니다. 공통 `technique.name`의 문자열은 제한하지 않으며 기존 `lookup.enabled`와 시나리오 판정으로 표준 TLS 여부를 구별합니다.
+- 각 후보에 적격 context가 2개 이상 있어야 합니다. 이는 구간을 계산하기 위한 최소 조건일 뿐 통계적 충분성, 정상상태 또는 독립성을 보장하지 않습니다.
+
+차이와 95퍼센트 구간은 context 대표값을 재표집하는 `independent_context_percentile_bootstrap`이며, 관측한 batch 안에서 context가 독립이라는 가정에 조건부인 탐색 결과입니다. batch마다 따로 계산하고 여러 batch를 합친 CI는 만들지 않습니다. `batch_diagnostics`에는 batch별 StQ2와 범위만 남깁니다. 새 프로세스 실행도 독립성을 스스로 증명하지 않으며, 구간이 겹치거나 겹치지 않는다는 사실을 동등성·정상상태 판정으로 바꾸지 않습니다.
+
+부분 선택과 누락·실패·불완전 컨텍스트는 상태와 이유를 남기며, 완결한 나머지 컨텍스트의 값도 성공 조건부 기술통계일 뿐 자동 비교에는 쓰지 않습니다. 원장이 없는 legacy 자료는 `parent_status_unverified`로 표시하고 새 보기의 적격 통계에서 제외하되 기존 위치별 결과를 보존합니다. 단일 run은 확인 가능한 기술통계만 만들 수 있습니다. 조회 또는 조회가 섞인 입력은 `unsupported_lookup_scenario`로 표시하며 해당 컨텍스트를 v1 통계·비교에서 제외합니다. 원장이 손상됐으면 opt-in 호출 자체가 실패하며, 없는 값을 0이나 성공으로 만들지 않습니다.
+
 ### 순수 TLS의 격리 네트워크 조건
 
 조회 원자료가 없는 일반 TLS 실행도 네트워크 인계가 있으면 요청 정책과 실제 적용 정책을 모두 안정 그룹 키에 넣습니다. 요청 식별값은 역할 원자료의 `network_handoff.net_profile`, 실제 식별값은 출처 기록에서 변동값을 제거한 토폴로지·활성 경로·qdisc 적용값 재조회·MTU·offload 조건입니다. 따라서 0ms와 20ms 또는 클라이언트와 서버 역할은 서로 다른 그룹이며, CA 경로가 없는 세 이름공간 토폴로지는 조회용 네 이름공간 토폴로지와 섞이지 않습니다.

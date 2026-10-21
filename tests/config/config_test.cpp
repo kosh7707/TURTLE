@@ -61,6 +61,30 @@ int main() {
                 "capabilities action");
         require(parse({"turtle", "run"}).run.connections == 1,
                 "default connection count changed");
+        const auto profiles = std::filesystem::path(__FILE__).parent_path().parent_path()
+                                  .parent_path() / "examples/profiles";
+        const auto repeated_profile = (profiles / "repeated-context.json").string();
+        const auto repeated = parse({"turtle", "run", "--profile", repeated_profile}).run;
+        const auto standard =
+            parse({"turtle", "run", "--profile", (profiles / "server-auth.json").string()}).run;
+        require(repeated.connections == 16 && repeated.warmups == 0 &&
+                    repeated.timeout_ms == 30000,
+                "repeated-context pilot settings were not parsed");
+        require(repeated.tls.cipher == standard.tls.cipher &&
+                    repeated.tls.group == standard.tls.group &&
+                    repeated.tls.signature == standard.tls.signature &&
+                    repeated.tls.ca_file == standard.tls.ca_file &&
+                    repeated.tls.server_certificate == standard.tls.server_certificate &&
+                    repeated.tls.server_key == standard.tls.server_key &&
+                    repeated.tls.mutual_auth == standard.tls.mutual_auth &&
+                    repeated.tls.tickets == standard.tls.tickets &&
+                    repeated.tls.framework_io == standard.tls.framework_io &&
+                    repeated.tls.application_bytes == standard.tls.application_bytes &&
+                    !repeated.lookup.enabled,
+                "repeated-context pilot changed the standard TLS workload");
+        require(parse({"turtle", "run", "--profile", repeated_profile, "--connections", "4"})
+                        .run.connections == 4,
+                "explicit connection count did not override the pilot profile");
         require(parse({"turtle", "run"}).run.channel_observer,
                 "channel observer default must remain enabled");
         require(parse({"turtle", "run"}).run.perf_scope ==

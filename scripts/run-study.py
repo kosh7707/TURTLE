@@ -24,11 +24,22 @@ def main():
     parser.add_argument("--samples", type=int, default=10)
     parser.add_argument("--batches", type=int, default=3)
     parser.add_argument("--warmups", type=int, default=0)
+    parser.add_argument("--connections", type=int,
+                        help="measured connections per process (profile/default when omitted)")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--repeated-context", action="store_true",
+                        help="ask the final reporter for the repeated-context view")
     parser.add_argument("--no-affinity", action="store_true", help="explicitly relax the three-physical-core requirement")
     args = parser.parse_args()
     if args.samples <= 0 or args.batches <= 0:
         parser.error("samples and batches must be positive")
+    if args.warmups < 0 or args.warmups > 1024:
+        parser.error("warmups must be between 0 and 1024")
+    if args.connections is not None:
+        if args.connections <= 0 or args.connections > 1025:
+            parser.error("connections must be between 1 and 1025")
+        if args.warmups + args.connections > 1025:
+            parser.error("warmups plus connections must not exceed 1025")
     build, pki, output = args.build.resolve(), args.pki.resolve(), args.output.resolve()
     libraries = args.libraries.split(",")
     modes = args.modes.split(",")
@@ -56,6 +67,19 @@ def main():
     configurations = list(itertools.product(pairs, modes, auth))
     rng = random.Random(args.seed)
     manifest = {"schema": 1, "seed": args.seed, "batches": args.batches,
+                "requested_policy": {
+                    "samples_per_run": args.samples,
+                    "batches": args.batches,
+                    "warmups": args.warmups,
+                    "connections": args.connections,
+                    "profile": str(args.profile.resolve()) if args.profile else None,
+                    "libraries": libraries,
+                    "modes": modes,
+                    "auth": list(auth),
+                    "pairing": "cross" if args.cross else "self",
+                    "repeated_context": args.repeated_context,
+                    "raw_resolved_config_is_authoritative": True,
+                },
                 "note": "randomized batches; no invalid-sample replacement; not a publication-quality result", "runs": []}
 
     def save():
@@ -72,6 +96,8 @@ def main():
                        "--seed", str(args.seed), f"--{auth_type}-auth"]
             if args.profile:
                 command += ["--profile", str(args.profile.resolve())]
+            if args.connections is not None:
+                command += ["--connections", str(args.connections)]
             if args.no_affinity:
                 command.append("--no-affinity")
             entry = {"batch": batch, "order": position, "command": command,
@@ -88,7 +114,10 @@ def main():
                 if raw.name not in ("client.jsonl", "server.jsonl"):
                     continue
                 subprocess.run([build / "turtle-interpret", raw, raw.with_suffix(".decoded.json")], check=True)
-    subprocess.run([build / "turtle-report", output, output / "report"], check=True)
+    report_command = [build / "turtle-report", output, output / "report"]
+    if args.repeated_context:
+        report_command.append("--repeated-context")
+    subprocess.run(report_command, check=True)
     print(f"Study artifacts: {output}")
 
 

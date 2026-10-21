@@ -1,5 +1,13 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(TURTLE_OPENSSL_PROGRAM openssl REQUIRED)
+add_test(NAME study_runner_contracts COMMAND ${Python3_EXECUTABLE} -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/study.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run-study.py")
+set_tests_properties(study_runner_contracts PROPERTIES TIMEOUT 30)
+add_test(NAME repeated_context_report_contracts COMMAND ${Python3_EXECUTABLE} -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/repeated_context.py"
+  "$<TARGET_FILE:turtle-report>")
+set_tests_properties(repeated_context_report_contracts PROPERTIES TIMEOUT 60)
 set(test_pki "${CMAKE_BINARY_DIR}/pki")
 add_test(NAME local_test_certificates
   COMMAND ${CMAKE_COMMAND} -E env "OPENSSL=${TURTLE_OPENSSL_PROGRAM}"

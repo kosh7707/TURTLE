@@ -7,3 +7,8 @@ add_test(NAME lookup_report COMMAND turtle_lookup_report_test)
 add_executable(turtle_window_test window_test.cpp)
 target_link_libraries(turtle_window_test PRIVATE turtle_report)
 add_test(NAME report_window COMMAND turtle_window_test)
+
+add_executable(turtle_repeated_context_test repeated_context_test.cpp)
+target_link_libraries(turtle_repeated_context_test PRIVATE turtle_report)
+add_test(NAME report_repeated_context COMMAND turtle_repeated_context_test
+  "$<TARGET_FILE:turtle-report>")

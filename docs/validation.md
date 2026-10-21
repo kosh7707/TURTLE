@@ -495,3 +495,36 @@ G009는 부분 선언에서 `perf_effective_scope`가 없으면 보고서에서�
 증거 검사기의 첫 실행은 실제 선언이 있는 `model.hpp` 대신 `sample.hpp`를 확인해 실패했고, 실제 TLS 검사기의 첫 실행은 기록값 `TLS1.3` 대신 `TLSv1.3`을 기대해 실패했습니다. 두 검사기만 바로잡아 두 번째 실행에서 통과했으며 제품 소스와 TLS 산출물은 바꾸지 않았습니다. 실패 기록도 최종 증거에 보존했습니다.
 
 지휘자 전용 `completed`·`opened` 벡터와 `server_address` 메시지는 보조 함수 반환 때 더 일찍 파괴될 수 있습니다. 이 승인된 예외를 모든 C++ 지역 변수의 수명이나 실제 실행 시간값이 같다는 주장으로 넓히지 않습니다. 이번 자료는 기능·구조 검증이며 성능 우열이나 개선율을 주장하지 않습니다. 정식 시험에서 기존 손실 0의 `pure_tls_netem_actual`과 `localhost`의 새 실제 TLS 연결은 실행했습니다. N05 손실 실험은 다시 실행하지 않았고, 오프라인 재생 자체는 네트워크나 `netem`을 사용하지 않았습니다.
+
+## 2026년 10월 19일 반복 컨텍스트 — R3 정리 전 검증
+
+이 절은 세 단계를 구별합니다. 변경 전 기준선은 `artifacts/repeated-context-20261019/baseline/READY_TO_EDIT.json`, 구현·수리 뒤 정리 전 후보는 `pre-cleaner-r3/verification.json`입니다. 이 R3 기록 시점에는 정리 뒤 후보가 아직 검증 전이었습니다. 따라서 아래 R3 통과를 뒤에 기록한 최종 코드 관문이나 전체 목표 완료로 해석하지 않습니다.
+
+변경 전 기준선은 경고를 오류로 처리한 Release 제품·Debug 시험 빌드에서 세 어댑터를 연결했고, 소켓을 쓰지 않는 시험 10개를 3회씩 총 30회 통과했습니다. 11개 모듈 경계와 자체 시험, 셸 구문도 통과했습니다. 반면 제어 소켓 시험은 모든 확인 형식의 `AF_UNIX socketpair`가 `EPERM`이어서 환경 차단으로 남았고 IPv4/TCP·netem·N05 실행은 하지 않았습니다. 이 30회는 새 반복 컨텍스트 기능이나 실제 TLS 다중 연결의 성공 증거가 아닙니다. 기준선 판정 파일의 SHA-256은 `f779f80aa6d3d32d559251f0c6740a2770afec05b17badcf61e85568fbf46228`입니다.
+
+읽기 전용 R1 독립 검토는 raw만 있는 미등재 하위 run 누락, 부분·혼합 선택의 비교 차단 누락, 상대 경로 부분 입력의 상위원장·정규화 식별 손실이라는 세 결함을 발견해 R2를 차단했습니다. 그 뒤 독립 회귀 시험이 세 결함을 R2에서 재현했으며 `r2-contract-red.log`가 이 실패를 보존합니다. 세 수리 뒤 같은 독립 black-box 시험은 R3에서 14개 사례를 20회씩 총 280회 통과했습니다. 이 시험은 합성 측정 기록을 쓰는 소켓 없는 reporter 계약 시험이며 실제 TLS 실행이 아닙니다.
+
+정리 전 R3 후보의 근거는 다음과 같습니다.
+
+| 근거 | 직접 확인한 내용 |
+|---|---|
+| `pre-cleaner-r3/verification.json` | 경고를 오류로 처리한 세 어댑터 Release·Debug 빌드, 선택 CTest 13개를 20회씩 총 **260회**, 생산 번역 단위 27개의 cppcheck·clang-tidy, 모듈 11개와 자체 시험, 공개·보고 헤더 4개의 독립 컴파일, Python AST·셸 구문·diff 검사가 통과했습니다. 이는 83개 전체 시험 통과 주장이 아닙니다. SHA-256은 `5e5a539a77f50927082b19949f028bbd5c70ea6783f332ac60bdb59b00b93d8e`입니다. |
+| `independent-contract-tests/r3/verification-r3.json` | 고정 peer 비교, batch 분리, 부분 선택, 원장과 coverage, 결측, 중복 연결과 R1 회귀를 포함한 14개 독립 CLI 사례를 20회씩 총 **280회** 통과했습니다. SHA-256은 `8d4df509b18ce842bccea6127d5fbc0f028aba139c22e8cddf082cfc38ae8d7c`입니다. |
+| `pre-cleaner-r3/offline-audit.json` | 공식 보존 원자료 8묶음은 승인해 보존한 출력과, 추가 4묶음은 변경 전 reporter로 같은 입력에서 새로 동결한 기준선과 비교했습니다. 총 12묶음을 기본 보고 두 번과 opt-in 보고 한 번씩 재생해 기존 산출물 바이트가 각각의 기준선과 같고 opt-in은 새 sidecar만 추가함을 확인했습니다. 과거 `cross_combined` 보고서는 이전 schema라 공식 8묶음의 승인 출력으로 대신 쓰지 않았습니다. 입력과 보호한 사용자 검토 문서·PDF·`Zone.Identifier`의 해시는 전후 같았습니다. SHA-256은 `1009b3b7da3287b3c5b5d4a0cdeebd8e0f9631fed49b986ee3ce352db4aa5960`입니다. |
+| 독립 검토 | R3 코드 검토는 APPROVE, 구조 검토는 CLEAR였습니다. 이 판정은 정리 전 고정 후보에 대한 것이며 최종 후보의 소유·결정은 리더에게 있습니다. |
+
+편집 도중 수행한 첫 정적 검사는 소스 수리가 겹친 임시 const iterator 컴파일 오류로 실패했습니다. 실패 로그 `pre-cleaner-gate/static.log`를 지우지 않았고, 고정된 R2나 R3 결과로 바꾸지 않았습니다. 수리가 끝난 안정 R3 후보에서 정적 검사를 처음부터 다시 실행해 위 표처럼 통과했습니다.
+
+최종 제한 탐지 `final-environment-probe.json`에서는 IPv4 stream socket 생성이 계속 `EPERM`이었습니다. Python의 `AF_UNIX socketpair` 생성 자체는 성공했지만, 이는 프레임워크 IPC나 제어 시험의 성공 증거가 아니며 앞선 기준선의 `control_ready_barrier` 실패를 소급해 바꾸지 않습니다. 실제 TCP 실행은 하지 않았습니다. 따라서 새 K=16 프로필의 실제 TCP 다중 연결, 새 성능 수치와 논문 결론은 확인하지 않았습니다. 보존 원자료 재생과 memory BIO 시험을 새 framework live TLS 성공으로 대신하지 않으며 N05도 다시 실행하지 않았습니다. 검증 빌드와 출력은 전용 `artifacts/repeated-context-20261019/` 아래에 두어 기본 `build` 산출물을 바꾸지 않았고 `.git`에도 쓰지 않았습니다. 이 R3 기록 시점의 종료 상태는 **R3 정리 전 통과, 최종 검증 대기**였습니다.
+
+### 정리 뒤 최종 코드 관문
+
+제한된 정리는 사용하지 않는 내부 필드와 그 값을 쓰던 두 곳, 의미 없는 경로 래퍼, 중간 그룹 벡터와 index 전용 반복문만 삭제했습니다. `cleaner/equivalence.json`에서 보존 원자료 12묶음의 새 sidecar와 기존 산출물이 정리 전후 모두 바이트 단위로 같았습니다. 동결한 최종 reporter의 SHA-256은 `d0eef755d6fe820d94d9be7fc3f400fcbf583d23ef393c8cc651fac8159efa4a`입니다.
+
+| 근거 | 최종 확인 내용 |
+|---|---|
+| `post-cleaner-final/core-verification.json` | 세 어댑터를 포함한 경고 오류 Release·Debug 빌드, 선택 CTest 13개×20회=**260회**, 실제 Release reporter를 쓴 합성 CLI 사례 14개×20회=**280회**, 생산 번역 단위 27개의 cppcheck·clang-tidy, 모듈 11개와 자체 시험, 헤더 4개 독립 컴파일, Python AST 3개·셸 구문·diff 검사가 통과했습니다. 측정 hot path·어댑터·계약 파일 50개도 변하지 않았습니다. 이는 83개 전체 시험이나 `scripts/check.sh` 전체 통과 주장이 아닙니다. 총괄 파일의 SHA-256은 `e8747d51dbb7f579c8c410a1c4c064443089c1e9abe1fe6cdf8631790c744823`입니다. |
+| `cleaner/equivalence.json`, 최종 `offline-audit.json` | 공식 8묶음은 승인 출력, 추가 4묶음은 같은 입력의 변경 전 동결 기준선과 비교했습니다. 각 12묶음에서 기본 보고 두 번과 opt-in 보고를 실행해 기존 파일은 모두 바이트 단위로 같고 opt-in만 sidecar를 추가함을 확인했습니다. 입력과 보호 파일도 바뀌지 않았습니다. 정리 전후 동등성 파일의 SHA-256은 `ccd29ba3399acd70a6e0133df520a260e6ff2f51fd88c30ccc2fcfbe7425d428`입니다. |
+| 독립 최종 검토 | 동결한 20개 파일과 reporter를 다시 대조한 코드 검토는 APPROVE, 구조 검토는 CLEAR였고 미해결 지적은 없었습니다. 검토 근거의 SHA-256은 `a50e045812efe2ee8fa8eda2ce184d3530ace003ecedf52d2afc7a688db33313`입니다. |
+
+`clang-format`은 설치되어 있지 않아 호출이 종료 코드 127이었으며 포맷 검증을 통과했다고 주장하지 않습니다. 최종 제어 시험도 `ready signal failed`로 종료 코드 1이었고, 같은 계열의 `AF_UNIX socketpair` 뒤 `send(MSG_NOSIGNAL)` 탐지는 `EPERM`이었습니다. socketpair 생성만 가능한 사실은 제어 통신이나 TCP 성공이 아닙니다. IPv4 생성도 계속 `EPERM`이어서 live TCP·새 K=16 실제 TLS·N05를 실행하지 않았고 성능 결론을 만들지 않았습니다. 커밋도 생성하지 않았습니다. 이 제한 아래 **반복 컨텍스트 기능의 지원되는 정리 뒤 코드 관문과 독립 검토는 통과**했으며, native goal 상태의 최종 결정은 리더가 소유합니다.

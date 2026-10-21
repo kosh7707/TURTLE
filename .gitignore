@@ -8,6 +8,7 @@
 /results/
 /artifacts/
 /pki/
+*.keys.log
 *.profraw
 *.gcda
 *.gcno

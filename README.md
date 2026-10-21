@@ -60,6 +60,39 @@ scripts/make-pki.sh pki/default
 
 준비 연결과 여러 측정 연결은 `--warmups 1 --connections 2`처럼 지정합니다. 메모리 계측은 `--mode memory`, 상호 인증은 `--mutual-auth`를 사용합니다.
 
+### 한 컨텍스트 안의 반복 보기
+
+기본 보고서는 연결 위치별 진단을 그대로 유지합니다. 같은 역할 프로세스와 TLS 컨텍스트에서 실행한 측정 연결들의 대표값을 별도로 보려면 현재 소스로 `build/turtle-report`를 다시 빌드한 뒤 opt-in 플래그를 사용합니다.
+
+```sh
+./build/turtle-report results/study results/study/report --repeated-context
+```
+
+이 호출은 기존 보고 파일을 바꾸지 않고 `repeated-context-summary.json`을 하나 더 만듭니다. 각 표본·역할의 측정 연결 `K`개에서 StQ2를 먼저 계산하고, 같은 것으로 확인한 study·batch·실행 조건 안에서 그 컨텍스트 대표값의 분포를 만듭니다. 첫 측정 연결도 원자료와 계산 입력에 남으며 자동으로 버리지 않습니다. 다만 순위 가중치가 0일 수 있습니다. 준비 연결을 두지 않는 `warmups=0`을 권장합니다.
+
+다음 프로필은 `connections=16`, `warmups=0`, `timeout_ms=30000`인 **작은 pilot 예시**입니다. 이 값이 정상상태, 독립성 또는 논문용 표본 충분성을 보장하지 않습니다.
+
+```sh
+# 같은 라이브러리 self-pair의 실행별 기술통계
+python3 scripts/run-study.py --build build --pki pki/default \
+  --profile examples/profiles/repeated-context.json \
+  --samples 10 --batches 3 --warmups 0 --modes timing \
+  --repeated-context \
+  --output results/repeated-context-self
+
+# 상대 엔드포인트를 고정할 수 있는 cross-pair 비교 후보도 생성
+python3 scripts/run-study.py --build build --pki pki/default \
+  --profile examples/profiles/repeated-context.json \
+  --libraries openssl,mbedtls --cross --auth server \
+  --samples 10 --batches 3 --warmups 0 --modes timing \
+  --repeated-context \
+  --output results/repeated-context-cross
+```
+
+실행기에 `--connections N`을 쓰면 그 값만 `turtle run`에 전달합니다. 생략하면 프로필 값이나 `turtle`의 기본값 1을 덮어쓰지 않습니다. 반복 보기의 비교는 전체 실행 coverage와 지표 완결성, 하나로 확인된 study 이름공간을 요구하며, 배치별 탐색 결과만 냅니다. 자세한 단위와 지원 경계는 [보고서와 비교 조건](docs/reporting.md)을 확인하십시오.
+
+현재 검증 환경의 소켓 권한 제약 때문에 이 새 프로필의 실제 TCP 다중 연결 실행은 확인하지 못했습니다. 기존의 비소켓 기준 시험 반복은 새 실제 TLS 실행이나 논문용 성능 결론의 근거가 아닙니다.
+
 ### 세 라이브러리 빌드
 
 ```sh

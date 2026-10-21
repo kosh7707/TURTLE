@@ -1,4 +1,5 @@
-add_library(turtle_report report.cpp window.cpp lookup_report.cpp network_evidence.cpp)
+add_library(turtle_report report.cpp window.cpp lookup_report.cpp network_evidence.cpp
+  repeated_context.cpp)
 target_compile_features(turtle_report PUBLIC cxx_std_20)
 target_include_directories(turtle_report PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party")
 add_executable(turtle-report main.cpp)
