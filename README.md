@@ -12,12 +12,12 @@ TLS 구현체가 메시지 생성, 인증서 검증과 암호 연산을 맡고, 
 
 | 역할 | 시작 | 끝 |
 |---|---|---|
-| 클라이언트 `primary_window` | 첫 핸드셰이크 호출 시작 | 전체 퐁 수신 호출 완료 |
-| 서버 `primary_window` | 첫 성공 수신 반환 | 전체 퐁 송신 호출 완료 |
+| 클라이언트 `primary_window` | 첫 핸드셰이크 호출 시작 | 선택한 시나리오 완료 |
+| 서버 `primary_window` | 첫 성공 TLS 수신 반환 | 선택한 시나리오 완료 |
 
-보고서는 두 주 구간을 바꾸지 않고 공통 호출 경계, ClientHello→Finished 송신 경계와 레코드 연산 귀속도 추가로 계산합니다. 이 보기는 **어느 I/O 경계 사이에서 작업했는지**를 보여 줄 뿐 메시지의 독립 비용이나 순수 암호 연산 시간을 뜻하지 않습니다. 정확한 경계와 포함 범위는 [실행과 계측 경계](docs/runtime.md)와 [보고서의 측정 구간](docs/reporting.md)에 있습니다.
+현재 개정 3은 순수 핸드셰이크, 서버 Ping, Finished와 Ping 결합, 클라이언트 요청·서버 응답을 구별합니다. 보고서는 공통 호출 경계, ClientHello→Finished 송신 경계와 레코드 연산 귀속도 추가로 계산합니다. 이 보기는 **어느 I/O 경계 사이에서 작업했는지**를 보여 줄 뿐 메시지의 독립 비용이나 순수 암호 연산 시간을 뜻하지 않습니다. 정확한 경계와 포함 범위는 [실행과 계측 경계](docs/design/runtime.md)와 [보고서의 측정 구간](docs/analysis/reporting.md)에 있습니다.
 
-표본마다 서버와 클라이언트를 새 프로세스로 만들고, 한 역할 프로세스 안에서는 준비 연결 뒤 여러 측정 연결을 차례로 실행할 수 있습니다. 측정 연결은 순서별로 분리해 같은 위치끼리 요약합니다. 연결 셋업과 TCP 연결 시간은 주 구간 밖에 둡니다.
+표본마다 서버와 클라이언트를 새 프로세스로 만들고, 한 역할 프로세스 안에서는 준비 연결 뒤 여러 측정 연결을 차례로 실행할 수 있습니다. 측정 연결은 순서별로 분리해 같은 위치끼리 요약합니다. 시행마다 새 TCP를 만들고 연결 셋업·TCP 시간은 별도 구간으로 남깁니다. 클라이언트 TCP 시작과 연결 준비 시작에서 각각 ClientFinished 소켓 제출까지의 구간도 제공합니다.
 
 ## 2. 어디까지 보이는가
 
@@ -28,6 +28,9 @@ TLS 구현체가 메시지 생성, 인증서 검증과 암호 연산을 맡고, 
 | 힙 | 메모리 모드에서 라이브러리 할당 훅이 본 요청 바이트의 현재값과 구간 최고값입니다. 전체 프로세스 RSS나 스택이 아닙니다. |
 | 바이트·I/O | 콜백 경로에서 성공한 송수신의 TLS 스트림과 함수 경계를 기록합니다. TCP/IP 패킷 경계가 아닙니다. 라이브러리 직접 소켓 경로에서는 보이지 않는 값을 0으로 만들지 않습니다. |
 | 커널 수신 시각 | 콜백 `recvmsg`의 `SO_TIMESTAMPNS` 부가정보입니다. 각 바이트의 정확한 도착 시각이나 송신·NIC 시각이 아닙니다. |
+| 커널 송신 시각 | 추적 실행의 `--tx-timestamps`로 스케줄러 진입·소프트웨어 송신·누적 ACK 시각을 수집합니다. 송신 요청의 마지막 바이트 ID이며 세그먼트별 시각은 아닙니다. |
+| 손실·재전송 | 선택한 tc/eBPF 경로에서 지정 바이트를 포함한 최초 패킷 제거, netem의 실제 qdisc 제거와 커널 재전송을 각각 기록합니다. 패킷 중첩으로 추정한 재전송량과 구별합니다. |
+| CPU 표본 | 별도 `scripts/cpu-profile.py` 실행의 `perf.data`와 함수·모듈 period 비중입니다. 주 스레드의 구간별 표본이며 총 CPU 시간·계수와 구별합니다. |
 | 레코드·메시지 | 키 로그와 스트림으로 레코드를 해독하고 메시지 종류와 레코드 범위를 붙입니다. 암호문과 평문의 위치를 혼동하지 않습니다. |
 | 라이브러리 평문 알림 | 추적 모드에서 어댑터가 제공할 때 남기는 **시각 없는 메시지 대조 기준**입니다. 종류·순서 대조용이며 메시지 시간이나 비용을 만들 수 없습니다. |
 
@@ -35,7 +38,7 @@ TLS 구현체가 메시지 생성, 인증서 검증과 암호 연산을 맡고, 
 
 OpenSSL 라이브러리 직접 소켓 경로는 TLS 기능을 확인할 수 있지만 프레임워크 스트림과 I/O 분해가 없습니다. 라이브러리 직접 소켓을 쓰는 서버는 첫 수신 경계를 볼 수 없어 `primary_window`를 만들 수 없습니다. 이 프로젝트에는 서버의 계측 없는 외부 기준선이 없습니다.
 
-원자료 형식은 `schema=1`, 현재 측정 의미는 `measurement_contract_revision=2`, 모듈 바이너리 계약은 adapter ABI 2입니다. 세 값은 서로 다른 호환성 축입니다. 자세한 필드와 미계측 표시는 [원자료 형식](docs/record-format.md)을 따릅니다.
+원자료 형식은 `schema=2`, 현재 측정 의미는 `measurement_contract_revision=3`, 모듈 바이너리 계약은 adapter ABI 3입니다. 기존 schema 1 자료의 의미와 해석은 보존합니다. 세 값은 서로 다른 호환성 축입니다. 자세한 필드와 미계측 표시는 [원자료 형식](docs/analysis/record-format.md)을 따릅니다.
 
 ## 3. 어떻게 실행하는가
 
@@ -89,9 +92,9 @@ python3 scripts/run-study.py --build build --pki pki/default \
   --output results/repeated-context-cross
 ```
 
-실행기에 `--connections N`을 쓰면 그 값만 `turtle run`에 전달합니다. 생략하면 프로필 값이나 `turtle`의 기본값 1을 덮어쓰지 않습니다. 반복 보기의 비교는 전체 실행 coverage와 지표 완결성, 하나로 확인된 study 이름공간을 요구하며, 배치별 탐색 결과만 냅니다. 자세한 단위와 지원 경계는 [보고서와 비교 조건](docs/reporting.md)을 확인하십시오.
+실행기에 `--connections N`을 쓰면 그 값만 `turtle run`에 전달합니다. 생략하면 프로필 값이나 `turtle`의 기본값 1을 덮어쓰지 않습니다. 반복 보기의 비교는 전체 실행 coverage와 지표 완결성, 하나로 확인된 study 이름공간을 요구하며, 배치별 탐색 결과만 냅니다. 자세한 단위와 지원 경계는 [보고서와 비교 조건](docs/analysis/reporting.md)을 확인하십시오.
 
-현재 검증 환경의 소켓 권한 제약 때문에 이 새 프로필의 실제 TCP 다중 연결 실행은 확인하지 못했습니다. 기존의 비소켓 기준 시험 반복은 새 실제 TLS 실행이나 논문용 성능 결론의 근거가 아닙니다.
+현재 WSL에서는 실제 TCP 다중 연결과 세 라이브러리의 네 시나리오를 확인했습니다. 이 기능 검증은 네이티브 Linux의 성능 결론이 아닙니다.
 
 ### 세 라이브러리 빌드
 
@@ -106,7 +109,7 @@ cmake --build build --parallel 4
   --pki pki/default --mutual-auth --samples 10 --output results/cross
 ```
 
-고정 판은 OpenSSL 3.5.4, wolfSSL 5.8.2-stable, Mbed TLS 3.6.4입니다. 의존성 스크립트는 SHA-256 또는 커밋을 확인하며 운영체제 패키지를 설치하지 않습니다. adapter ABI 2의 진입점은 `turtle_adapter_v2`입니다. v1 모듈을 읽는 호환 계층이 없으므로 코어와 모든 어댑터를 함께 다시 빌드해야 합니다. 세 구현의 정확한 지원 범위는 [공통 어댑터 설명](implementations/common/README.md)을 확인하십시오.
+고정 판은 OpenSSL 3.5.4, wolfSSL 5.8.2-stable, Mbed TLS 3.6.4입니다. 의존성 스크립트는 SHA-256 또는 커밋을 확인하며 운영체제 패키지를 설치하지 않습니다. adapter ABI 3의 진입점은 `turtle_adapter_v3`입니다. v1·v2 모듈을 읽는 호환 계층이 없으므로 코어와 모든 어댑터를 함께 다시 빌드해야 합니다. 세 구현의 정확한 지원 범위는 [공통 어댑터 설명](implementations/common/README.md)을 확인하십시오.
 
 ### 반복 시험과 연구 실행
 
@@ -119,7 +122,7 @@ python3 scripts/run-study.py --build build --pki pki/default \
   --samples 10 --batches 3 --cross --output results/study
 ```
 
-시험 반복은 기능 검증이지 논문용 성능 표본이 아닙니다. 보존한 검증 결과와 실패 이력은 [검증 기록](docs/validation.md)에만 모읍니다.
+시험 반복은 기능 검증이지 논문용 성능 표본이 아닙니다. 보존한 검증 결과와 실패 이력은 [검증 기록](docs/project/validation.md)에만 모읍니다.
 
 ### 고정한 조회·netem 보조 경로
 
@@ -130,24 +133,37 @@ python3 scripts/netem-study.py run --build build --profile PROFILE.json \
   --net-profile NET.json --samples 8 --output RESULTS
 ```
 
-이 보조 경로는 현재 [모의 CA와 격리 netem 실행](docs/mock-ca.md)에 적힌 범위로 고정했습니다. 기존 손실 조건을 확장하거나 새 네트워크 실험을 이번 목표에 추가하지 않습니다.
+기존 조회 경로는 [모의 CA와 격리 netem 실행](docs/experiments/mock-ca.md)을 따릅니다. 원본 패킷 보존, [TCP 바이트 분석](docs/analysis/tcp-analysis.md), 방향별 속도·초기 혼잡 윈도를 지원합니다. `examples/networks/tls-1mbit-cwnd4.json`은 네트워크 schema 2 예시이며 기존 schema 1도 유지합니다.
+
+네트워크 schema 3은 지정 위치의 최초 패킷 제거와 커널 재전송·qdisc 제거 수집을 추가합니다. 이 선택 경로에는 관리자 권한, Clang BPF target, 커널 BTF와 libbpf가 필요합니다. `scripts/kernel-loss-study.py`로 세 라이브러리의 무손실·지정 손실·랜덤 손실 복구를 검증합니다. [빌드·실행 절차와 관측 한계](docs/analysis/tcp-analysis.md#지정-바이트-손실과-커널-재전송)를 따릅니다.
+
+### 새 프로토타입과 논문 기법
+
+`--scenario handshake|server-ping|finished-ping|client-request`, `--send-policy native|server-hello-first`, `--client-bytes`, `--server-bytes`로 실행을 선택합니다. 상세 내부 구간은 `--mode trace`에서 기록합니다. 라이브러리별 실제 관측 위치와 차이는 [프로토타입 계약](docs/design/prototype.md)에 있습니다.
+
+`JOBS=4 scripts/build-bithac.sh`와 `-DTURTLE_WITH_BITHAC=ON`으로 저자 코드의 기준/캐시 쌍을 추가합니다. `scripts/bithac-study.py`는 첫 연결의 캐시 준비와 이후 재사용을 구별해 시간·추적·메모리 자료와 표를 만듭니다. [출처와 재현 절차](docs/experiments/research-reproduction.md)를 따릅니다.
+
+`JOBS=4 scripts/build-mlkem.sh`와 `-DTURTLE_WITH_MLKEM=ON`으로 같은 wolfSSL 기반의 `mlkem-c`·`mlkem-avx2` 쌍을 추가합니다. 실제 C/AVX2 분기를 추적하고 ML-KEM 이외의 라이브러리 오브젝트가 같은지 검사합니다. [비교 조건과 재생성 절차](docs/experiments/mlkem-comparison.md)를 따릅니다. ARM 최적화 쌍은 아직 없습니다.
+
+CPU 함수·모듈 표본은 [CPU 프로파일링](docs/analysis/cpu-profiling.md)의 별도 수집기로 실행합니다. `--cpu-profile` 표지가 있는 원자료는 일반 시간 비교에서 제외하며 실제 수집 증거는 `perf.data`로 보존합니다.
 
 ## 4. 무엇을 지원하지 않는가
 
 - 한 호스트 안의 로컬 TCP만 실행합니다. 원격 두 호스트 실행기나 호스트 사이 하드웨어 비교는 없습니다.
 - 서버의 계측 없는 외부 기준선이 없으며, 관측자 켬/끔 차이로 전체 계측 비용을 복원하지 않습니다.
-- 스택 최고 사용량, 커널 송신 시각, NIC 하드웨어 시각, eBPF와 일반 패킷 캡처를 제공하지 않습니다.
-- 실제 인증서 압축·생략·캐싱 연구 기법, OCSP/ACME 운영 서비스와 원 논문 재현은 구현하지 않았습니다.
+- 스택 최고 사용량, NIC 하드웨어 시각과 CPU 호출 스택·코어별 귀속은 미지원입니다. 커널 재전송·소프트웨어 송신·ACK와 원본 pcap의 관측 위치는 구별합니다.
+- 저자 BiTHaC의 실제 캐싱 비교 쌍과 upstream ML-KEM C/AVX2 비교를 제공합니다. 인증서 압축, OCSP/ACME 운영 서비스, 후보 AVX-512 논문 구현과 논문 성능 수치의 재현은 아직 제공하지 않습니다.
 - 강건성·공격·잘못된 인증서 거절·타이밍 누출·보안 성질 증명은 연구 범위가 아닙니다.
 - WSL의 기능·구조 진단값을 물리 Linux의 성능 순위나 논문 결론으로 쓰지 않습니다.
 
-현재 상태와 별도 결정이 필요한 범위는 [구현 상태](docs/PROGRESS.md), 주장 가능한 범위는 [논문 메모](docs/paper-notes.md)에 정리했습니다.
+현재 상태와 남은 작업은 [구현 계획](docs/project/implementation-plan.md), 실제 검증 결과와 해석 한계는 [구현 보고서](docs/project/implementation-report.md)에 정리했습니다.
 
 ## 문서 안내
 
-- [구조와 코드 읽기 순서](docs/architecture.md), [어댑터 작성 안내](docs/adapter-guide.md)
-- [실행과 계측 경계](docs/runtime.md), [원자료 형식](docs/record-format.md), [보고서와 비교 조건](docs/reporting.md)
-- [구현 결정](docs/DECISIONS.md), [검증 기록](docs/validation.md)
-- [최초 인계 문서](docs/design-history.md)는 현재 구현 설명이 아니라 설계 이력입니다.
+- [전체 문서 안내와 읽기 순서](docs/README.md)
+- [구조와 코드 읽기 순서](docs/design/architecture.md), [어댑터 작성 안내](docs/design/adapter-guide.md)
+- [실행과 계측 경계](docs/design/runtime.md), [원자료 형식](docs/analysis/record-format.md), [보고서와 비교 조건](docs/analysis/reporting.md)
+- [구현 결정](docs/project/DECISIONS.md), [검증 기록](docs/project/validation.md)
+- [로컬 구현·검증 보고서](docs/project/implementation-report.md)는 실제 TLS·손실 복구·논문 기법 검증 결과와 재생성 명령을 모읍니다.
 
 시험 인증서와 개인키, TLS 키 로그는 실험용입니다. 원자료에는 통신을 해독할 수 있는 비밀값이 있으므로 실제 서비스의 키나 트래픽을 사용하지 마십시오. TURTLE 자체의 배포 라이선스는 아직 정하지 않았습니다. 포함한 외부 코드의 라이선스는 `third_party/`에 보존합니다.

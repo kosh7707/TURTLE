@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
         return 2;
     auto entry = reinterpret_cast<turtle::AdapterEntry>(dlsym(module, turtle::adapter_entry_name));
     if (!entry) {
-        std::cerr << "adapter ABI v2 entry turtle_adapter_v2 is missing\n";
+        std::cerr << "adapter ABI v3 entry turtle_adapter_v3 is missing\n";
         dlclose(module);
         return 2;
     }

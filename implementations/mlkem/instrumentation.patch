@@ -1,0 +1,1729 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2e3c99b..7155fcf 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2411,6 +2411,21 @@ else()
+     add_library(wolfssl STATIC ${LIB_SOURCES})
+ endif()
+ 
++# TURTLE comparison: enable optimization only in the two ML-KEM translation units.
++# Assembly and CPUID support are compiled identically in both builds. AES, ECC,
++# SHA-256 and the generic SHA-3 objects keep the same build definitions.
++option(TURTLE_MLKEM_AVX2 "Use upstream ML-KEM AVX2 dispatch" OFF)
++if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
++    message(FATAL_ERROR "This ML-KEM comparison pair is x86_64 only")
++endif()
++enable_language(ASM)
++target_sources(wolfssl PRIVATE wolfcrypt/src/wc_mlkem_asm.S wolfcrypt/src/sha3_asm.S)
++set(_turtle_mlkem_flags USE_INTEL_SPEEDUP HAVE_INTEL_AVX1 HAVE_INTEL_AVX2)
++if(NOT TURTLE_MLKEM_AVX2)
++    list(APPEND _turtle_mlkem_flags WC_MLKEM_NO_ASM)
++endif()
++set_source_files_properties(wolfcrypt/src/wc_mlkem.c wolfcrypt/src/wc_mlkem_poly.c
++    PROPERTIES COMPILE_DEFINITIONS "${_turtle_mlkem_flags}")
+ add_library(wolfssl::wolfssl ALIAS wolfssl)
+ 
+ if (NOT "$ENV{ARIA_DIR}" STREQUAL "")
+diff --git a/src/tls.c b/src/tls.c
+index c6c8111..cf9746b 100644
+--- a/src/tls.c
++++ b/src/tls.c
+@@ -8389,6 +8389,29 @@ static int TLSX_KeyShare_GenEccKey(WOLFSSL *ssl, KeyShareEntry* kse)
+     return ret;
+ }
+ 
++#ifdef WOLFSSL_HAVE_MLKEM
++/* Full KEM API spans and actual polynomial dispatch use the connection callback. */
++static void turtle_kem_span(WOLFSSL* ssl, int op, int end, int type, int result)
++{
++#ifdef OPENSSL_EXTRA
++    if (ssl->protoMsgCb != NULL)
++        ssl->protoMsgCb(0, 0x5455, (op << 16) | (end << 8) | type,
++                       &result, sizeof(result), ssl, ssl->protoMsgCtx);
++#endif
++}
++static void turtle_kem_poly(void* context, int op, int end, int backend)
++{
++    turtle_kem_span((WOLFSSL*)context, op, end, backend, 0);
++}
++static void turtle_kem_attach(WOLFSSL* ssl, KyberKey* key)
++{
++#ifdef OPENSSL_EXTRA
++    key->turtle_trace = ssl->protoMsgCb != NULL ? turtle_kem_poly : NULL;
++    key->turtle_trace_ctx = ssl;
++#endif
++}
++#endif
++
+ #ifdef WOLFSSL_HAVE_MLKEM
+ #if defined(WOLFSSL_MLKEM_CACHE_A) && \
+     !defined(WOLFSSL_TLSX_PQC_MLKEM_STORE_PRIV_KEY)
+@@ -8611,7 +8634,10 @@ static int TLSX_KeyShare_GenPqcKeyClient(WOLFSSL *ssl, KeyShareEntry* kse)
+     }
+ 
+     if (ret == 0) {
++        turtle_kem_attach(ssl, kem);
++        turtle_kem_span(ssl, 6, 0, 0, 0);
+         ret = wc_KyberKey_MakeKey(kem, ssl->rng);
++        turtle_kem_span(ssl, 6, 1, 0, ret);
+         if (ret != 0) {
+             WOLFSSL_MSG("Kyber keygen failure");
+         }
+@@ -9582,8 +9608,11 @@ static int TLSX_KeyShare_ProcessPqcClient_ex(WOLFSSL* ssl,
+ #endif
+ 
+     if (ret == 0) {
++        turtle_kem_attach(ssl, kem);
++        turtle_kem_span(ssl, 8, 0, 0, 0);
+         ret = wc_KyberKey_Decapsulate(kem, ssOutput,
+                                       keyShareEntry->ke, ctSz);
++        turtle_kem_span(ssl, 8, 1, 0, ret);
+         if (ret != 0) {
+             WOLFSSL_MSG("wc_KyberKey decapsulation failure.");
+             ret = BAD_FUNC_ARG;
+@@ -10281,8 +10310,11 @@ static int TLSX_KeyShare_HandlePqcKeyServer(WOLFSSL* ssl,
+         ret = wc_KyberKey_DecodePublicKey(kemKey, clientData, pubSz);
+     }
+     if (ret == 0) {
++        turtle_kem_attach(ssl, kemKey);
++        turtle_kem_span(ssl, 7, 0, 0, 0);
+         ret = wc_KyberKey_Encapsulate(kemKey, ciphertext,
+                                       ssOutput, ssl->rng);
++        turtle_kem_span(ssl, 7, 1, 0, ret);
+         if (ret != 0) {
+             WOLFSSL_MSG("wc_KyberKey encapsulation failure.");
+         }
+diff --git a/src/tls13.c b/src/tls13.c
+index b860c19..7b258d9 100644
+--- a/src/tls13.c
++++ b/src/tls13.c
+@@ -2550,7 +2550,55 @@ static int Tls13IntegrityOnly_Encrypt(WOLFSSL* ssl, byte* output,
+  * asyncOkay If non-zero can return WC_PENDING_E, otherwise blocks on crypto
+  * returns 0 on success, otherwise failure.
+  */
+-static int EncryptTls13(WOLFSSL* ssl, byte* output, const byte* input,
++static void turtle_span(WOLFSSL* ssl, int op, int end, int type, int result)
++{
++#ifdef OPENSSL_EXTRA
++    if (ssl->protoMsgCb != NULL)
++        ssl->protoMsgCb(0, 0x5455, (op << 16) | (end << 8) | (type & 255),
++                       &result, sizeof(result), ssl, ssl->protoMsgCtx);
++#endif
++}
++
++/* 스택에 소유한 생성 구간입니다. 레코드 처리나 I/O 전에 닫습니다. */
++typedef struct {
++    WOLFSSL* ssl;
++    int type;
++    int active;
++} TurtleGeneration;
++static void turtle_generation_begin(TurtleGeneration* span)
++{
++    if (!span->active) {
++        span->active = 1;
++        turtle_span(span->ssl, 0, 0, span->type, 0);
++    }
++}
++static void turtle_generation_end(TurtleGeneration* span, int result)
++{
++    if (span->active) {
++        turtle_span(span->ssl, 0, 1, span->type, result);
++        span->active = 0;
++    }
++}
++static int turtle_generation_return(TurtleGeneration* span, int result)
++{
++    turtle_generation_end(span, result);
++    return result;
++}
++static int turtle_send_after_generation(TurtleGeneration* span, WOLFSSL* ssl)
++{
++    turtle_generation_end(span, 0);
++    return SendBuffered(ssl);
++}
++
++void wolfSSL_turtle_enable_ping(WOLFSSL* ssl) { ssl->turtle_ping_enabled = 1; }
++int wolfSSL_turtle_write_ready(WOLFSSL* ssl)
++{
++    return ssl != NULL && ssl->options.side == WOLFSSL_SERVER_END &&
++        ssl->options.tls1_3 && ssl->options.acceptState >= TLS13_ACCEPT_FINISHED_SENT &&
++        !ssl->options.handShakeDone;
++}
++
++static int EncryptTls13_turtle_body(WOLFSSL* ssl, byte* output, const byte* input,
+                         word16 sz, const byte* aad, word16 aadSz, int asyncOkay)
+ {
+     int    ret    = 0;
+@@ -2818,6 +2866,16 @@ static int EncryptTls13(WOLFSSL* ssl, byte* output, const byte* input,
+ 
+     return ret;
+ }
++static int EncryptTls13(WOLFSSL* ssl, byte* output, const byte* input,
++                        word16 sz, const byte* aad, word16 aadSz, int asyncOkay)
++{
++    int turtle_result;
++    turtle_span(ssl, 2, 0, 0, 0);
++    turtle_result = EncryptTls13_turtle_body(ssl, output, input, sz, aad, aadSz, asyncOkay);
++    turtle_span(ssl, 2, 1, 0, turtle_result);
++    return turtle_result;
++}
++
+ 
+ #if defined(HAVE_CHACHA) && defined(HAVE_POLY1305)
+ /* Decrypt with ChaCha20 and check authentication tag with Poly1305.
+@@ -2944,7 +3002,7 @@ static int Tls13IntegrityOnly_Decrypt(WOLFSSL* ssl, byte* output,
+  * aadSz   The size of the addition authentication data.
+  * returns 0 on success, otherwise failure.
+  */
+-int DecryptTls13(WOLFSSL* ssl, byte* output, const byte* input, word16 sz,
++int DecryptTls13_turtle_body(WOLFSSL* ssl, byte* output, const byte* input, word16 sz,
+                  const byte* aad, word16 aadSz)
+ {
+     int    ret    = 0;
+@@ -3190,6 +3248,16 @@ int DecryptTls13(WOLFSSL* ssl, byte* output, const byte* input, word16 sz,
+ 
+     return ret;
+ }
++int DecryptTls13(WOLFSSL* ssl, byte* output, const byte* input, word16 sz,
++                 const byte* aad, word16 aadSz)
++{
++    int turtle_result;
++    turtle_span(ssl, 3, 0, 0, 0);
++    turtle_result = DecryptTls13_turtle_body(ssl, output, input, sz, aad, aadSz);
++    turtle_span(ssl, 3, 1, 0, turtle_result);
++    return turtle_result;
++}
++
+ 
+ /* Persistable BuildTls13Message arguments */
+ typedef struct BuildMsg13Args {
+@@ -3445,6 +3513,14 @@ exit_buildmsg:
+ 
+     return ret;
+ }
++static int turtle_build_after_generation(TurtleGeneration* span,
++    WOLFSSL* ssl, byte* output, int outSz, const byte* input, int inSz,
++    int type, int hashOutput, int sizeOnly, int asyncOkay)
++{
++    turtle_generation_end(span, 0);
++    return BuildTls13Message(ssl, output, outSz, input, inSz, type, hashOutput, sizeOnly, asyncOkay);
++}
++
+ 
+ #if !defined(NO_WOLFSSL_CLIENT) || (!defined(NO_WOLFSSL_SERVER) && \
+     (defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)) && \
+@@ -4282,8 +4358,9 @@ typedef struct Sch13Args {
+ #endif
+ } Sch13Args;
+ 
+-int SendTls13ClientHello(WOLFSSL* ssl)
++int SendTls13ClientHello_turtle_body(WOLFSSL* ssl)
+ {
++    TurtleGeneration turtle_generation = { ssl, 1, 0 };
+     int ret;
+ #ifdef WOLFSSL_ASYNC_CRYPT
+     Sch13Args* args = NULL;
+@@ -4294,11 +4371,12 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+     byte major, tls12minor;
+     const Suites* suites;
+ 
++    turtle_generation_begin(&turtle_generation);
+     WOLFSSL_START(WC_FUNC_CLIENT_HELLO_SEND);
+     WOLFSSL_ENTER("SendTls13ClientHello");
+ 
+     if (ssl == NULL) {
+-        return BAD_FUNC_ARG;
++        return turtle_generation_return(&turtle_generation, BAD_FUNC_ARG);
+     }
+ 
+     ssl->options.buildingMsg = 1;
+@@ -4323,13 +4401,13 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+             ssl->options.resuming = 0;
+             ssl->version.major = ssl->session->version.major;
+             ssl->version.minor = ssl->session->version.minor;
+-            return SendClientHello(ssl);
++            return turtle_generation_return(&turtle_generation, SendClientHello(ssl));
+         }
+         else
+     #endif
+         {
+             WOLFSSL_ERROR_VERBOSE(VERSION_ERROR);
+-            return VERSION_ERROR;
++            return turtle_generation_return(&turtle_generation, VERSION_ERROR);
+         }
+     }
+ #endif
+@@ -4337,7 +4415,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+     suites = WOLFSSL_SUITES(ssl);
+     if (suites == NULL) {
+         WOLFSSL_MSG("Bad suites pointer in SendTls13ClientHello");
+-        return SUITES_ERROR;
++        return turtle_generation_return(&turtle_generation, SUITES_ERROR);
+     }
+ 
+ #ifdef WOLFSSL_ASYNC_CRYPT
+@@ -4346,7 +4424,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+                 XMALLOC(sizeof(struct WOLFSSL_ASYNC), ssl->heap,
+                         DYNAMIC_TYPE_ASYNC);
+         if (ssl->async == NULL)
+-            return MEMORY_E;
++            return turtle_generation_return(&turtle_generation, MEMORY_E);
+         ssl->async->freeArgs = NULL;
+     }
+     args = (Sch13Args*)ssl->async->args;
+@@ -4355,7 +4433,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+     if (ret != WC_NO_ERR_TRACE(WC_NO_PENDING_E)) {
+         /* Check for error */
+         if (ret < 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+     }
+     else
+ #endif
+@@ -4411,7 +4489,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+     {
+     /* Auto populate extensions supported unless user defined. */
+     if ((ret = TLSX_PopulateExtensions(ssl, 0)) != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     /* Advance state and proceed */
+     ssl->options.asyncState = TLS_ASYNC_FINALIZE;
+@@ -4435,14 +4513,14 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+         TLSX_Remove(&ssl->extensions, TLSX_EARLY_DATA, ssl->heap);
+     if (ssl->earlyData != no_early_data &&
+         (ret = TLSX_EarlyData_Use(ssl, 0, 0)) < 0) {
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     }
+ #endif
+ #ifdef WOLFSSL_QUIC
+     if (WOLFSSL_IS_QUIC(ssl) && IsAtLeastTLSv1_3(ssl->version)) {
+         ret = wolfSSL_quic_add_transport_extensions(ssl, client_hello);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+     }
+ #endif
+ 
+@@ -4451,11 +4529,11 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+     if (ssl->options.useEch == 1 && !ssl->options.disableECH) {
+         TLSX* echX = TLSX_Find(ssl->extensions, TLSX_ECH);
+         if (echX == NULL)
+-            return WOLFSSL_FATAL_ERROR;
++            return turtle_generation_return(&turtle_generation, WOLFSSL_FATAL_ERROR);
+ 
+         args->ech = (WOLFSSL_ECH*)echX->data;
+         if (args->ech == NULL)
+-            return WOLFSSL_FATAL_ERROR;
++            return turtle_generation_return(&turtle_generation, WOLFSSL_FATAL_ERROR);
+ 
+         /* only prepare if we have a chance at acceptance */
+         if (ssl->options.echAccepted || args->ech->innerCount == 0) {
+@@ -4466,7 +4544,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+             /* get size for inner */
+             ret = TLSX_GetRequestSize(ssl, client_hello, &args->length);
+             if (ret != 0)
+-                return ret;
++                return turtle_generation_return(&turtle_generation, ret);
+ 
+             /* set the type to outer */
+             args->ech->type = 0;
+@@ -4489,7 +4567,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+         /* Include length of TLS extensions. */
+         ret = TLSX_GetRequestSize(ssl, client_hello, &args->length);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ 
+         /* Total message size. */
+         args->sendSz =
+@@ -4507,16 +4585,16 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+              * without a cookie */
+             ret = TLSX_KeyShare_Empty(ssl);
+             if (ret != 0)
+-                return ret;
++                return turtle_generation_return(&turtle_generation, ret);
+             args->length = lenWithoutExts;
+             ret = TLSX_GetRequestSize(ssl, client_hello, &args->length);
+             if (ret != 0)
+-                return ret;
++                return turtle_generation_return(&turtle_generation, ret);
+             args->sendSz = (int)(args->length +
+                     DTLS_HANDSHAKE_HEADER_SZ + DTLS_RECORD_HEADER_SZ);
+             if (args->sendSz > maxFrag) {
+                 WOLFSSL_MSG("Can't fit first CH in one fragment.");
+-                return BUFFER_ERROR;
++                return turtle_generation_return(&turtle_generation, BUFFER_ERROR);
+             }
+             WOLFSSL_MSG("Sending empty key share so we don't fragment CH1");
+         }
+@@ -4525,7 +4603,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+ 
+     /* Check buffers are big enough and grow if needed. */
+     if ((ret = CheckAvailableSize(ssl, args->sendSz)) != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     /* Get position in output buffer to write new message to. */
+     args->output = GetOutputBuffer(ssl);
+@@ -4541,13 +4619,13 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+     ssl->chVersion = ssl->version;
+ 
+     if (ssl->arrays == NULL) {
+-        return BAD_FUNC_ARG;
++        return turtle_generation_return(&turtle_generation, BAD_FUNC_ARG);
+     }
+     /* Client Random */
+     if (ssl->options.connectState == CONNECT_BEGIN) {
+         ret = wc_RNG_GenerateBlock(ssl->rng, args->output + args->idx, RAN_LEN);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ 
+         /* Store random for possible second ClientHello. */
+         XMEMCPY(ssl->arrays->clientRandom, args->output + args->idx, RAN_LEN);
+@@ -4571,7 +4649,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+             /* We have a cookie saved, so the server sent us an
+              * HelloVerifyRequest, it means it is a v1.2 server */
+             if (!ssl->options.downgrade)
+-                return VERSION_ERROR;
++                return turtle_generation_return(&turtle_generation, VERSION_ERROR);
+             XMEMCPY(args->output + args->idx, ssl->arrays->cookie,
+                 ssl->arrays->cookieSz);
+             args->idx += ssl->arrays->cookieSz;
+@@ -4616,7 +4694,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+             (byte*)XMALLOC(args->ech->innerClientHelloLen - args->ech->hpke->Nt,
+             ssl->heap, DYNAMIC_TYPE_TMP_BUFFER);
+         if (args->ech->innerClientHello == NULL)
+-            return MEMORY_E;
++            return turtle_generation_return(&turtle_generation, MEMORY_E);
+         /* set the padding bytes to 0 */
+         XMEMSET(args->ech->innerClientHello + args->ech->innerClientHelloLen -
+             args->ech->hpke->Nt - args->ech->paddingLen, 0,
+@@ -4633,7 +4711,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+         ret = wc_RNG_GenerateBlock(ssl->rng, args->output +
+             args->clientRandomOffset, RAN_LEN);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+         /* copy the new client random */
+         XMEMCPY(ssl->arrays->clientRandom, args->output +
+             args->clientRandomOffset, RAN_LEN);
+@@ -4643,7 +4721,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+             (RECORD_HEADER_SZ + HANDSHAKE_HEADER_SZ), client_hello,
+             &args->length);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+         /* set the type to outer */
+         args->ech->type = 0;
+     }
+@@ -4654,7 +4732,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+     ret = TLSX_WriteRequest(ssl, args->output + args->idx, client_hello,
+         &args->length);
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     args->idx += args->length;
+ 
+@@ -4667,7 +4745,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+             (word32)(args->sendSz - (RECORD_HEADER_SZ + HANDSHAKE_HEADER_SZ)));
+ 
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+     }
+ #endif
+ 
+@@ -4701,7 +4779,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+         }
+     }
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     ssl->options.clientState = CLIENT_HELLO_COMPLETE;
+ 
+@@ -4711,15 +4789,15 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+         ret = AddPacketInfo(ssl, "ClientHello", handshake, args->output,
+                       args->sendSz, WRITE_PROTO, 0, ssl->heap);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+     }
+ #endif
+ 
+     ssl->options.buildingMsg = 0;
+ #ifdef WOLFSSL_DTLS13
+     if (ssl->options.dtls) {
+-        ret = Dtls13HandshakeSend(ssl, args->output, (word16)args->sendSz,
+-                                  (word16)args->idx, client_hello, 0);
++        ret = (turtle_generation_end(&turtle_generation, 0), Dtls13HandshakeSend(ssl, args->output, (word16)args->sendSz,
++                                  (word16)args->idx, client_hello, 0));
+         break;
+     }
+ #endif /* WOLFSSL_DTLS13 */
+@@ -4739,7 +4817,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+      * and is therefore unable to group here */
+     if (ssl->earlyData == no_early_data || WOLFSSL_IS_QUIC(ssl))
+ #endif
+-        ret = SendBuffered(ssl);
++        ret = turtle_send_after_generation(&turtle_generation, ssl);
+ 
+     break;
+     }
+@@ -4755,8 +4833,17 @@ int SendTls13ClientHello(WOLFSSL* ssl)
+     WOLFSSL_LEAVE("SendTls13ClientHello", ret);
+     WOLFSSL_END(WC_FUNC_CLIENT_HELLO_SEND);
+ 
+-    return ret;
++    return turtle_generation_return(&turtle_generation, ret);
+ }
++int SendTls13ClientHello(WOLFSSL* ssl)
++{
++    int turtle_result;
++    turtle_span(ssl, 4, 0, 1, 0);
++    turtle_result = SendTls13ClientHello_turtle_body(ssl);
++    turtle_span(ssl, 4, 1, 1, turtle_result);
++    return turtle_result;
++}
++
+ 
+ #if defined(WOLFSSL_DTLS13) && !defined(WOLFSSL_NO_CLIENT)
+ static int Dtls13ClientDoDowngrade(WOLFSSL* ssl)
+@@ -5041,7 +5128,7 @@ typedef struct Dsh13Args {
+ #endif
+ } Dsh13Args;
+ 
+-int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
++int DoTls13ServerHello_turtle_body(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
+                        word32 helloSz, byte* extMsgType)
+ {
+     int ret;
+@@ -5621,6 +5708,15 @@ int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
+ 
+     return ret;
+ }
++int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
++                       word32 helloSz, byte* extMsgType)
++{
++    int turtle_result;
++    turtle_span(ssl, 1, 0, 2, 0);
++    turtle_result = DoTls13ServerHello_turtle_body(ssl, input, inOutIdx, helloSz, extMsgType);
++    turtle_span(ssl, 1, 1, 2, turtle_result);
++    return turtle_result;
++}
+ 
+ /* handle processing TLS 1.3 encrypted_extensions (8) */
+ /* Parse and handle an EncryptedExtensions message.
+@@ -5635,7 +5731,7 @@ int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
+  * totalSz   The length of the current handshake message.
+  * returns 0 on success and otherwise failure.
+  */
+-static int DoTls13EncryptedExtensions(WOLFSSL* ssl, const byte* input,
++static int DoTls13EncryptedExtensions_turtle_body(WOLFSSL* ssl, const byte* input,
+                                       word32* inOutIdx, word32 totalSz)
+ {
+     int    ret;
+@@ -5694,6 +5790,16 @@ static int DoTls13EncryptedExtensions(WOLFSSL* ssl, const byte* input,
+ 
+     return ret;
+ }
++static int DoTls13EncryptedExtensions(WOLFSSL* ssl, const byte* input,
++                                      word32* inOutIdx, word32 totalSz)
++{
++    int turtle_result;
++    turtle_span(ssl, 1, 0, 8, 0);
++    turtle_result = DoTls13EncryptedExtensions_turtle_body(ssl, input, inOutIdx, totalSz);
++    turtle_span(ssl, 1, 1, 8, turtle_result);
++    return turtle_result;
++}
++
+ 
+ #ifndef NO_CERTS
+ /* handle processing TLS v1.3 certificate_request (13) */
+@@ -5708,7 +5814,7 @@ static int DoTls13EncryptedExtensions(WOLFSSL* ssl, const byte* input,
+  * size      The length of the current handshake message.
+  * returns 0 on success and otherwise failure.
+  */
+-static int DoTls13CertificateRequest(WOLFSSL* ssl, const byte* input,
++static int DoTls13CertificateRequest_turtle_body(WOLFSSL* ssl, const byte* input,
+                                      word32* inOutIdx, word32 size)
+ {
+     word16      len;
+@@ -5814,6 +5920,16 @@ static int DoTls13CertificateRequest(WOLFSSL* ssl, const byte* input,
+ 
+     return ret;
+ }
++static int DoTls13CertificateRequest(WOLFSSL* ssl, const byte* input,
++                                     word32* inOutIdx, word32 size)
++{
++    int turtle_result;
++    turtle_span(ssl, 1, 0, 13, 0);
++    turtle_result = DoTls13CertificateRequest_turtle_body(ssl, input, inOutIdx, size);
++    turtle_span(ssl, 1, 1, 13, turtle_result);
++    return turtle_result;
++}
++
+ #endif /* !NO_CERTS */
+ #endif /* !NO_WOLFSSL_CLIENT */
+ 
+@@ -6712,7 +6828,7 @@ static void FreeDch13Args(WOLFSSL* ssl, void* pArgs)
+ 
+ }
+ 
+-int DoTls13ClientHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
++int DoTls13ClientHello_turtle_body(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
+                        word32 helloSz)
+ {
+     int ret;
+@@ -7327,6 +7443,15 @@ exit_dch:
+ 
+     return ret;
+ }
++int DoTls13ClientHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
++                       word32 helloSz)
++{
++    int turtle_result;
++    turtle_span(ssl, 1, 0, 1, 0);
++    turtle_result = DoTls13ClientHello_turtle_body(ssl, input, inOutIdx, helloSz);
++    turtle_span(ssl, 1, 1, 1, turtle_result);
++    return turtle_result;
++}
+ 
+ /* Send TLS v1.3 ServerHello message to client.
+  * Only a server will send this message.
+@@ -7335,8 +7460,9 @@ exit_dch:
+  * returns 0 on success, otherwise failure.
+  */
+ /* handle generation of TLS 1.3 server_hello (2) */
+-int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
++int SendTls13ServerHello_turtle_body(WOLFSSL* ssl, byte extMsgType)
+ {
++    TurtleGeneration turtle_generation = { ssl, 2, 0 };
+     int    ret;
+     byte*  output;
+     word16 length;
+@@ -7349,6 +7475,7 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
+     word16 acceptLabelSz = ECH_ACCEPT_CONFIRMATION_LABEL_SZ;
+ #endif
+ 
++    turtle_generation_begin(&turtle_generation);
+     WOLFSSL_START(WC_FUNC_SERVER_HELLO_SEND);
+     WOLFSSL_ENTER("SendTls13ServerHello");
+ 
+@@ -7361,7 +7488,7 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
+             ) {
+         WOLFSSL_MSG("wolfSSL Sending HelloRetryRequest");
+         if ((ret = RestartHandshakeHash(ssl)) < 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+     }
+ 
+     ssl->options.buildingMsg = 1;
+@@ -7377,12 +7504,12 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
+              SUITE_LEN + COMP_LEN;
+     ret = TLSX_GetResponseSize(ssl, extMsgType, &length);
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     sendSz = (int)(idx + length);
+ 
+     /* Check buffers are big enough and grow if needed. */
+     if ((ret = CheckAvailableSize(ssl, sendSz)) != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     /* Get position in output buffer to write new message to. */
+     output = GetOutputBuffer(ssl);
+@@ -7397,7 +7524,7 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
+     if (extMsgType == server_hello) {
+         /* Generate server random. */
+         if ((ret = wc_RNG_GenerateBlock(ssl->rng, output + idx, RAN_LEN)) != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+     }
+     else {
+         /* HelloRetryRequest message has fixed value for random. */
+@@ -7439,7 +7566,7 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
+     /* Extensions */
+     ret = TLSX_WriteResponse(ssl, output + idx, extMsgType, NULL);
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+ #ifdef WOLFSSL_SEND_HRR_COOKIE
+     if (ssl->options.sendCookie && extMsgType == hello_retry_request) {
+@@ -7471,7 +7598,7 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
+             if (ssl->ctx->echConfigs != NULL && !ssl->options.disableECH) {
+                 echX = TLSX_Find(ssl->extensions, TLSX_ECH);
+                 if (echX == NULL)
+-                    return WOLFSSL_FATAL_ERROR;
++                    return turtle_generation_return(&turtle_generation, WOLFSSL_FATAL_ERROR);
+                 /* use hrr offset */
+                 if (extMsgType == hello_retry_request) {
+                     acceptOffset =
+@@ -7510,7 +7637,7 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
+     }
+ 
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+ #if defined(WOLFSSL_CALLBACKS) || defined(OPENSSL_EXTRA)
+     if (ssl->hsInfoOn)
+@@ -7519,7 +7646,7 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
+         ret = AddPacketInfo(ssl, "ServerHello", handshake, output, sendSz,
+                       WRITE_PROTO, 0, ssl->heap);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+     }
+     #endif
+ 
+@@ -7529,26 +7656,35 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
+     ssl->options.buildingMsg = 0;
+ #ifdef WOLFSSL_DTLS13
+     if (ssl->options.dtls) {
+-        ret = Dtls13HandshakeSend(ssl, output, (word16)sendSz, (word16)sendSz,
+-            (enum HandShakeType)extMsgType, 0);
++        ret = (turtle_generation_end(&turtle_generation, 0), Dtls13HandshakeSend(ssl, output, (word16)sendSz, (word16)sendSz,
++            (enum HandShakeType)extMsgType, 0));
+ 
+         WOLFSSL_LEAVE("SendTls13ServerHello", ret);
+         WOLFSSL_END(WC_FUNC_SERVER_HELLO_SEND);
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     }
+ #endif /* WOLFSSL_DTLS13 */
+ 
+     ssl->buffers.outputBuffer.length += (word32)sendSz;
+ 
+     if (!ssl->options.groupMessages || extMsgType != server_hello)
+-        ret = SendBuffered(ssl);
++        ret = turtle_send_after_generation(&turtle_generation, ssl);
+ 
+     WOLFSSL_LEAVE("SendTls13ServerHello", ret);
+     WOLFSSL_END(WC_FUNC_SERVER_HELLO_SEND);
+ 
+-    return ret;
++    return turtle_generation_return(&turtle_generation, ret);
++}
++int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
++{
++    int turtle_result;
++    turtle_span(ssl, 4, 0, 2, 0);
++    turtle_result = SendTls13ServerHello_turtle_body(ssl, extMsgType);
++    turtle_span(ssl, 4, 1, 2, turtle_result);
++    return turtle_result;
+ }
+ 
++
+ /* handle generation of TLS 1.3 encrypted_extensions (8) */
+ /* Send the rest of the extensions encrypted under the handshake key.
+  * This message is always encrypted in TLS v1.3.
+@@ -7557,8 +7693,9 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
+  * ssl  The SSL/TLS object.
+  * returns 0 on success, otherwise failure.
+  */
+-static int SendTls13EncryptedExtensions(WOLFSSL* ssl)
++static int SendTls13EncryptedExtensions_turtle_body(WOLFSSL* ssl)
+ {
++    TurtleGeneration turtle_generation = { ssl, 8, 0 };
+     int    ret;
+     byte*  output;
+     word16 length = 0;
+@@ -7583,35 +7720,35 @@ static int SendTls13EncryptedExtensions(WOLFSSL* ssl)
+ 
+ #if defined(HAVE_SUPPORTED_CURVES) && !defined(WOLFSSL_NO_SERVER_GROUPS_EXT)
+     if ((ret = TLSX_SupportedCurve_CheckPriority(ssl)) != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ #endif
+ 
+     /* Derive the handshake secret now that we are at first message to be
+      * encrypted under the keys.
+      */
+     if ((ret = DeriveHandshakeSecret(ssl)) != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     if ((ret = DeriveTls13Keys(ssl, handshake_key,
+                                ENCRYPT_AND_DECRYPT_SIDE, 1)) != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     /* Setup encrypt/decrypt keys for following messages. */
+ #ifdef WOLFSSL_EARLY_DATA
+     if ((ret = SetKeysSide(ssl, ENCRYPT_SIDE_ONLY)) != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     if (ssl->earlyData != process_early_data) {
+         if ((ret = SetKeysSide(ssl, DECRYPT_SIDE_ONLY)) != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+     }
+ #else
+     if ((ret = SetKeysSide(ssl, ENCRYPT_AND_DECRYPT_SIDE)) != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ #endif
+ #ifdef WOLFSSL_QUIC
+     if (IsAtLeastTLSv1_3(ssl->version) && WOLFSSL_IS_QUIC(ssl)) {
+         ret = wolfSSL_quic_add_transport_extensions(ssl, encrypted_extensions);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+     }
+ #endif
+ 
+@@ -7623,14 +7760,15 @@ static int SendTls13EncryptedExtensions(WOLFSSL* ssl)
+         ret = Dtls13SetEpochKeys(
+             ssl, epochHandshake, ENCRYPT_AND_DECRYPT_SIDE);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ 
+     }
+ #endif /* WOLFSSL_DTLS13 */
+ 
++    turtle_generation_begin(&turtle_generation);
+     ret = TLSX_GetResponseSize(ssl, encrypted_extensions, &length);
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     sendSz = (int)(idx + length);
+     /* Encryption always on. */
+@@ -7639,7 +7777,7 @@ static int SendTls13EncryptedExtensions(WOLFSSL* ssl)
+     /* Check buffers are big enough and grow if needed. */
+     ret = CheckAvailableSize(ssl, sendSz);
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     /* Get position in output buffer to write new message to. */
+     output = GetOutputBuffer(ssl);
+@@ -7649,7 +7787,7 @@ static int SendTls13EncryptedExtensions(WOLFSSL* ssl)
+ 
+     ret = TLSX_WriteResponse(ssl, output + idx, encrypted_extensions, NULL);
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     idx += length;
+ 
+ #if defined(WOLFSSL_CALLBACKS) || defined(OPENSSL_EXTRA)
+@@ -7659,15 +7797,15 @@ static int SendTls13EncryptedExtensions(WOLFSSL* ssl)
+         ret = AddPacketInfo(ssl, "EncryptedExtensions", handshake, output,
+                       sendSz, WRITE_PROTO, 0, ssl->heap);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+     }
+ #endif
+ 
+ #ifdef WOLFSSL_DTLS13
+     if (ssl->options.dtls) {
+         ssl->options.buildingMsg = 0;
+-        ret = Dtls13HandshakeSend(ssl, output, (word16)sendSz, (word16)idx,
+-                                  encrypted_extensions, 1);
++        ret = (turtle_generation_end(&turtle_generation, 0), Dtls13HandshakeSend(ssl, output, (word16)sendSz, (word16)idx,
++                                  encrypted_extensions, 1));
+ 
+         if (ret == 0)
+             ssl->options.serverState = SERVER_ENCRYPTED_EXTENSIONS_COMPLETE;
+@@ -7675,31 +7813,40 @@ static int SendTls13EncryptedExtensions(WOLFSSL* ssl)
+         WOLFSSL_LEAVE("SendTls13EncryptedExtensions", ret);
+         WOLFSSL_END(WC_FUNC_ENCRYPTED_EXTENSIONS_SEND);
+ 
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     }
+ #endif /* WOLFSSL_DTLS13 */
+ 
+     /* This handshake message is always encrypted. */
+-    sendSz = BuildTls13Message(ssl, output, sendSz, output + RECORD_HEADER_SZ,
++    sendSz = turtle_build_after_generation(&turtle_generation, ssl, output, sendSz, output + RECORD_HEADER_SZ,
+                                (int)(idx - RECORD_HEADER_SZ),
+                                handshake, 1, 0, 0);
+     if (sendSz < 0)
+-        return sendSz;
++        return turtle_generation_return(&turtle_generation, sendSz);
+ 
+     ssl->buffers.outputBuffer.length += (word32)sendSz;
+     ssl->options.buildingMsg = 0;
+     ssl->options.serverState = SERVER_ENCRYPTED_EXTENSIONS_COMPLETE;
+ 
+     if (!ssl->options.groupMessages)
+-        ret = SendBuffered(ssl);
++        ret = turtle_send_after_generation(&turtle_generation, ssl);
+ 
+ 
+     WOLFSSL_LEAVE("SendTls13EncryptedExtensions", ret);
+     WOLFSSL_END(WC_FUNC_ENCRYPTED_EXTENSIONS_SEND);
+ 
+-    return ret;
++    return turtle_generation_return(&turtle_generation, ret);
++}
++static int SendTls13EncryptedExtensions(WOLFSSL* ssl)
++{
++    int turtle_result;
++    turtle_span(ssl, 4, 0, 8, 0);
++    turtle_result = SendTls13EncryptedExtensions_turtle_body(ssl);
++    turtle_span(ssl, 4, 1, 8, turtle_result);
++    return turtle_result;
+ }
+ 
++
+ #ifndef NO_CERTS
+ /* handle generation TLS v1.3 certificate_request (13) */
+ /* Send the TLS v1.3 CertificateRequest message.
+@@ -7714,6 +7861,7 @@ static int SendTls13EncryptedExtensions(WOLFSSL* ssl)
+ static int SendTls13CertificateRequest(WOLFSSL* ssl, byte* reqCtx,
+                                        word32 reqCtxLen)
+ {
++    TurtleGeneration turtle_generation = { ssl, 13, 0 };
+     byte*   output;
+     int    ret;
+     int    sendSz;
+@@ -7723,25 +7871,26 @@ static int SendTls13CertificateRequest(WOLFSSL* ssl, byte* reqCtx,
+     SignatureAlgorithms* sa;
+ 
+     WOLFSSL_START(WC_FUNC_CERTIFICATE_REQUEST_SEND);
++    turtle_generation_begin(&turtle_generation);
+     WOLFSSL_ENTER("SendTls13CertificateRequest");
+ 
+     ssl->options.buildingMsg = 1;
+ 
+     if (ssl->options.side != WOLFSSL_SERVER_END)
+-        return SIDE_ERROR;
++        return turtle_generation_return(&turtle_generation, SIDE_ERROR);
+ 
+     /* Get the length of the hashSigAlgo buffer */
+     InitSuitesHashSigAlgo(NULL, SIG_ALL, 1, ssl->buffers.keySz,
+         &hashSigAlgoSz);
+     sa = TLSX_SignatureAlgorithms_New(ssl, hashSigAlgoSz, ssl->heap);
+     if (sa == NULL)
+-        return MEMORY_ERROR;
++        return turtle_generation_return(&turtle_generation, MEMORY_ERROR);
+     InitSuitesHashSigAlgo(sa->hashSigAlgo, SIG_ALL, 1, ssl->buffers.keySz,
+         &hashSigAlgoSz);
+     ret = TLSX_Push(&ssl->extensions, TLSX_SIGNATURE_ALGORITHMS, sa, ssl->heap);
+     if (ret != 0) {
+         TLSX_SignatureAlgorithms_FreeAll(sa, ssl->heap);
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     }
+ 
+     i = RECORD_HEADER_SZ + HANDSHAKE_HEADER_SZ;
+@@ -7753,7 +7902,7 @@ static int SendTls13CertificateRequest(WOLFSSL* ssl, byte* reqCtx,
+     reqSz = (word16)(OPAQUE8_LEN + reqCtxLen);
+     ret = TLSX_GetRequestSize(ssl, certificate_request, &reqSz);
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     sendSz = (int)(i + reqSz);
+     /* Always encrypted and make room for padding. */
+@@ -7761,7 +7910,7 @@ static int SendTls13CertificateRequest(WOLFSSL* ssl, byte* reqCtx,
+ 
+     /* Check buffers are big enough and grow if needed. */
+     if ((ret = CheckAvailableSize(ssl, sendSz)) != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     /* Get position in output buffer to write new message to. */
+     output = GetOutputBuffer(ssl);
+@@ -7780,29 +7929,29 @@ static int SendTls13CertificateRequest(WOLFSSL* ssl, byte* reqCtx,
+     reqSz = 0;
+     ret = TLSX_WriteRequest(ssl, output + i, certificate_request, &reqSz);
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     i += reqSz;
+ 
+ #ifdef WOLFSSL_DTLS13
+     if (ssl->options.dtls) {
+         ssl->options.buildingMsg = 0;
+         ret =
+-            Dtls13HandshakeSend(ssl, output, (word16)sendSz, (word16)i,
+-                                certificate_request, 1);
++            (turtle_generation_end(&turtle_generation, 0), Dtls13HandshakeSend(ssl, output, (word16)sendSz, (word16)i,
++                                certificate_request, 1));
+ 
+         WOLFSSL_LEAVE("SendTls13CertificateRequest", ret);
+         WOLFSSL_END(WC_FUNC_CERTIFICATE_REQUEST_SEND);
+ 
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     }
+ #endif /* WOLFSSL_DTLS13 */
+ 
+     /* Always encrypted. */
+-    sendSz = BuildTls13Message(ssl, output, sendSz, output + RECORD_HEADER_SZ,
++    sendSz = turtle_build_after_generation(&turtle_generation, ssl, output, sendSz, output + RECORD_HEADER_SZ,
+                                (int)(i - RECORD_HEADER_SZ), handshake, 1, 0, 0);
+     if (sendSz < 0)
+-        return sendSz;
++        return turtle_generation_return(&turtle_generation, sendSz);
+ 
+     #if defined(WOLFSSL_CALLBACKS) || defined(OPENSSL_EXTRA)
+         if (ssl->hsInfoOn)
+@@ -7811,19 +7960,19 @@ static int SendTls13CertificateRequest(WOLFSSL* ssl, byte* reqCtx,
+             ret = AddPacketInfo(ssl, "CertificateRequest", handshake, output,
+                           sendSz, WRITE_PROTO, 0, ssl->heap);
+             if (ret != 0)
+-                return ret;
++                return turtle_generation_return(&turtle_generation, ret);
+         }
+     #endif
+ 
+     ssl->buffers.outputBuffer.length += (word32)sendSz;
+     ssl->options.buildingMsg = 0;
+     if (!ssl->options.groupMessages)
+-        ret = SendBuffered(ssl);
++        ret = turtle_send_after_generation(&turtle_generation, ssl);
+ 
+     WOLFSSL_LEAVE("SendTls13CertificateRequest", ret);
+     WOLFSSL_END(WC_FUNC_CERTIFICATE_REQUEST_SEND);
+ 
+-    return ret;
++    return turtle_generation_return(&turtle_generation, ret);
+ }
+ #endif /* NO_CERTS */
+ #endif /* NO_WOLFSSL_SERVER */
+@@ -8630,8 +8779,9 @@ static word32 AddCertExt(WOLFSSL* ssl, byte* cert, word32 len, word16 extSz,
+  * ssl  The SSL/TLS object.
+  * returns 0 on success, otherwise failure.
+  */
+-static int SendTls13Certificate(WOLFSSL* ssl)
++static int SendTls13Certificate_turtle_body(WOLFSSL* ssl)
+ {
++    TurtleGeneration turtle_generation = { ssl, 11, 0 };
+     int    ret = 0;
+     word32 certSz, certChainSz, headerSz, listSz, payloadSz;
+     word16 extSz[MAX_CERT_EXTENSIONS];
+@@ -8656,6 +8806,7 @@ static int SendTls13Certificate(WOLFSSL* ssl)
+     WOLFSSL_START(WC_FUNC_CERTIFICATE_SEND);
+     WOLFSSL_ENTER("SendTls13Certificate");
+ 
++    turtle_generation_begin(&turtle_generation);
+     XMEMSET(extSz, 0, sizeof(extSz));
+ 
+     ssl->options.buildingMsg = 1;
+@@ -8694,7 +8845,7 @@ static int SendTls13Certificate(WOLFSSL* ssl)
+     else {
+         if (!ssl->buffers.certificate || !ssl->buffers.certificate->buffer) {
+             WOLFSSL_MSG("Send Cert missing certificate buffer");
+-            return NO_CERT_ERROR;
++            return turtle_generation_return(&turtle_generation, NO_CERT_ERROR);
+         }
+         /* Certificate Data */
+         certSz = ssl->buffers.certificate->length;
+@@ -8713,7 +8864,7 @@ static int SendTls13Certificate(WOLFSSL* ssl)
+             ret = WriteCSRToBuffer(ssl, &ssl->buffers.certExts[0], &extSz[0],
+                     1 /* +1 for leaf */ + ssl->buffers.certChainCnt);
+             if (ret < 0)
+-                return ret;
++                return turtle_generation_return(&turtle_generation, ret);
+             totalextSz += ret;
+             ret = 0; /* Clear to signal no error */
+         }
+@@ -8758,6 +8909,7 @@ static int SendTls13Certificate(WOLFSSL* ssl)
+         word32 fragSz = 0;
+         word32 i = RECORD_HEADER_SZ;
+         int    sendSz = RECORD_HEADER_SZ;
++        turtle_generation_begin(&turtle_generation);
+ 
+ #ifdef WOLFSSL_DTLS13
+         if (ssl->options.dtls) {
+@@ -8800,7 +8952,7 @@ static int SendTls13Certificate(WOLFSSL* ssl)
+ 
+         /* Check buffers are big enough and grow if needed. */
+         if ((ret = CheckAvailableSize(ssl, sendSz)) != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ 
+         /* Get position in output buffer to write new message to. */
+         output = GetOutputBuffer(ssl);
+@@ -8888,7 +9040,7 @@ static int SendTls13Certificate(WOLFSSL* ssl)
+ 
+         if ((int)i - RECORD_HEADER_SZ < 0) {
+             WOLFSSL_MSG("Send Cert bad inputSz");
+-            return BUFFER_E;
++            return turtle_generation_return(&turtle_generation, BUFFER_E);
+         }
+ 
+ #ifdef WOLFSSL_DTLS13
+@@ -8896,19 +9048,19 @@ static int SendTls13Certificate(WOLFSSL* ssl)
+             /* DTLS1.3 uses a separate variable and logic for fragments */
+             ssl->options.buildingMsg = 0;
+             ssl->fragOffset = 0;
+-            ret = Dtls13HandshakeSend(ssl, output, (word16)sendSz, (word16)i,
+-                                      certificate, 1);
++            ret = (turtle_generation_end(&turtle_generation, 0), Dtls13HandshakeSend(ssl, output, (word16)sendSz, (word16)i,
++                                      certificate, 1));
+         }
+         else
+ #endif /* WOLFSSL_DTLS13 */
+         {
+             /* This message is always encrypted. */
+-            sendSz = BuildTls13Message(ssl, output, sendSz,
++            sendSz = turtle_build_after_generation(&turtle_generation, ssl, output, sendSz,
+                 output + RECORD_HEADER_SZ, (int)(i - RECORD_HEADER_SZ),
+                 handshake, 1,
+                 0, 0);
+             if (sendSz < 0)
+-                return sendSz;
++                return turtle_generation_return(&turtle_generation, sendSz);
+ 
+ #if defined(WOLFSSL_CALLBACKS) || defined(OPENSSL_EXTRA)
+             if (ssl->hsInfoOn)
+@@ -8917,14 +9069,14 @@ static int SendTls13Certificate(WOLFSSL* ssl)
+                 ret = AddPacketInfo(ssl, "Certificate", handshake, output,
+                               sendSz, WRITE_PROTO, 0, ssl->heap);
+                 if (ret != 0)
+-                    return ret;
++                    return turtle_generation_return(&turtle_generation, ret);
+             }
+ #endif
+ 
+             ssl->buffers.outputBuffer.length += (word32)sendSz;
+             ssl->options.buildingMsg = 0;
+             if (!ssl->options.groupMessages)
+-                ret = SendBuffered(ssl);
++                ret = turtle_send_after_generation(&turtle_generation, ssl);
+         }
+     }
+ 
+@@ -8947,9 +9099,18 @@ static int SendTls13Certificate(WOLFSSL* ssl)
+     WOLFSSL_LEAVE("SendTls13Certificate", ret);
+     WOLFSSL_END(WC_FUNC_CERTIFICATE_SEND);
+ 
+-    return ret;
++    return turtle_generation_return(&turtle_generation, ret);
++}
++static int SendTls13Certificate(WOLFSSL* ssl)
++{
++    int turtle_result;
++    turtle_span(ssl, 4, 0, 11, 0);
++    turtle_result = SendTls13Certificate_turtle_body(ssl);
++    turtle_span(ssl, 4, 1, 11, turtle_result);
++    return turtle_result;
+ }
+ 
++
+ #if (!defined(NO_RSA) || defined(HAVE_ECC) || defined(HAVE_ED25519) || \
+      defined(HAVE_ED448) || defined(HAVE_FALCON) || \
+      defined(HAVE_DILITHIUM)) && \
+@@ -9005,8 +9166,9 @@ static void FreeScv13Args(WOLFSSL* ssl, void* pArgs)
+  * ssl  The SSL/TLS object.
+  * returns 0 on success, otherwise failure.
+  */
+-static int SendTls13CertificateVerify(WOLFSSL* ssl)
++static int SendTls13CertificateVerify_turtle_body(WOLFSSL* ssl)
+ {
++    TurtleGeneration turtle_generation = { ssl, 15, 0 };
+     int ret = 0;
+ #ifndef NO_RSA
+     /* Use this as a temporary buffer for RSA signature verification. */
+@@ -9023,6 +9185,7 @@ static int SendTls13CertificateVerify(WOLFSSL* ssl)
+     int recordLayerHdrExtra;
+ #endif /* WOLFSSL_DTLS13 */
+ 
++    turtle_generation_begin(&turtle_generation);
+     WOLFSSL_START(WC_FUNC_CERTIFICATE_VERIFY_SEND);
+     WOLFSSL_ENTER("SendTls13CertificateVerify");
+ 
+@@ -9086,7 +9249,7 @@ static int SendTls13CertificateVerify(WOLFSSL* ssl)
+                 wolfssl_priv_der_unblind(ssl->buffers.key,
+                     ssl->buffers.keyMask);
+             #endif
+-                return 0;  /* sent blank cert, can't verify */
++                return turtle_generation_return(&turtle_generation, 0);  /* sent blank cert, can't verify */
+             }
+ 
+             args->sendSz = WC_MAX_CERT_VERIFY_SZ + MAX_MSG_EXTRA;
+@@ -9722,9 +9885,9 @@ static int SendTls13CertificateVerify(WOLFSSL* ssl)
+ #ifdef WOLFSSL_DTLS13
+             if (ssl->options.dtls) {
+                 ssl->options.buildingMsg = 0;
+-                ret = Dtls13HandshakeSend(ssl, args->output,
++                ret = (turtle_generation_end(&turtle_generation, 0), Dtls13HandshakeSend(ssl, args->output,
+                     WC_MAX_CERT_VERIFY_SZ + MAX_MSG_EXTRA + MAX_MSG_EXTRA,
+-                    (word16)args->sendSz, certificate_verify, 1);
++                    (word16)args->sendSz, certificate_verify, 1));
+                 if (ret != 0)
+                     goto exit_scv;
+ 
+@@ -9733,7 +9896,7 @@ static int SendTls13CertificateVerify(WOLFSSL* ssl)
+ #endif /* WOLFSSL_DTLS13 */
+ 
+             /* This message is always encrypted. */
+-            ret = BuildTls13Message(ssl, args->output,
++            ret = turtle_build_after_generation(&turtle_generation, ssl, args->output,
+                                     WC_MAX_CERT_VERIFY_SZ + MAX_MSG_EXTRA,
+                                     args->output + RECORD_HEADER_SZ,
+                                     args->sendSz - RECORD_HEADER_SZ, handshake,
+@@ -9762,7 +9925,7 @@ static int SendTls13CertificateVerify(WOLFSSL* ssl)
+             ssl->buffers.outputBuffer.length += (word32)args->sendSz;
+             ssl->options.buildingMsg = 0;
+             if (!ssl->options.groupMessages)
+-                ret = SendBuffered(ssl);
++                ret = turtle_send_after_generation(&turtle_generation, ssl);
+             break;
+         }
+         default:
+@@ -9786,7 +9949,7 @@ exit_scv:
+ #ifdef WOLFSSL_ASYNC_CRYPT
+     /* Handle async operation */
+     if (ret == WC_NO_ERR_TRACE(WC_PENDING_E)) {
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     }
+ #endif /* WOLFSSL_ASYNC_CRYPT */
+ 
+@@ -9802,8 +9965,17 @@ exit_scv:
+         WOLFSSL_ERROR_VERBOSE(ret);
+     }
+ 
+-    return ret;
++    return turtle_generation_return(&turtle_generation, ret);
++}
++static int SendTls13CertificateVerify(WOLFSSL* ssl)
++{
++    int turtle_result;
++    turtle_span(ssl, 4, 0, 15, 0);
++    turtle_result = SendTls13CertificateVerify_turtle_body(ssl);
++    turtle_span(ssl, 4, 1, 15, turtle_result);
++    return turtle_result;
+ }
++
+ #endif
+ #endif /* !NO_WOLFSSL_CLIENT || !NO_WOLFSSL_SERVER */
+ 
+@@ -9818,7 +9990,7 @@ exit_scv:
+  * totalSz   The length of the current handshake message.
+  * returns 0 on success and otherwise failure.
+  */
+-static int DoTls13Certificate(WOLFSSL* ssl, byte* input, word32* inOutIdx,
++static int DoTls13Certificate_turtle_body(WOLFSSL* ssl, byte* input, word32* inOutIdx,
+                               word32 totalSz)
+ {
+     int ret = 0;
+@@ -9857,6 +10029,16 @@ static int DoTls13Certificate(WOLFSSL* ssl, byte* input, word32* inOutIdx,
+ 
+     return ret;
+ }
++static int DoTls13Certificate(WOLFSSL* ssl, byte* input, word32* inOutIdx,
++                              word32 totalSz)
++{
++    int turtle_result;
++    turtle_span(ssl, 1, 0, 11, 0);
++    turtle_result = DoTls13Certificate_turtle_body(ssl, input, inOutIdx, totalSz);
++    turtle_span(ssl, 1, 1, 11, turtle_result);
++    return turtle_result;
++}
++
+ #endif
+ 
+ #if !defined(NO_RSA) || defined(HAVE_ECC) || defined(HAVE_ED25519) || \
+@@ -10024,7 +10206,7 @@ static int decodeFalconKey(WOLFSSL* ssl, int level)
+  * totalSz   The length of the current handshake message.
+  * returns 0 on success and otherwise failure.
+  */
+-static int DoTls13CertificateVerify(WOLFSSL* ssl, byte* input,
++static int DoTls13CertificateVerify_turtle_body(WOLFSSL* ssl, byte* input,
+                                     word32* inOutIdx, word32 totalSz)
+ {
+     int         ret = 0;
+@@ -10836,6 +11018,16 @@ exit_dcv:
+ 
+     return ret;
+ }
++static int DoTls13CertificateVerify(WOLFSSL* ssl, byte* input,
++                                    word32* inOutIdx, word32 totalSz)
++{
++    int turtle_result;
++    turtle_span(ssl, 1, 0, 15, 0);
++    turtle_result = DoTls13CertificateVerify_turtle_body(ssl, input, inOutIdx, totalSz);
++    turtle_span(ssl, 1, 1, 15, turtle_result);
++    return turtle_result;
++}
++
+ #endif /* !NO_RSA || HAVE_ECC */
+ #endif /* !NO_CERTS */
+ 
+@@ -10850,7 +11042,7 @@ exit_dcv:
+  * sniff     Indicates whether we are sniffing packets.
+  * returns 0 on success and otherwise failure.
+  */
+-int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
++int DoTls13Finished_turtle_body(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
+                            word32 size, word32 totalSz, int sniff)
+ {
+     int    ret;
+@@ -11025,6 +11217,16 @@ int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
+ 
+     return 0;
+ }
++int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
++                           word32 size, word32 totalSz, int sniff)
++{
++    int turtle_result;
++    turtle_span(ssl, 1, 0, 20, 0);
++    turtle_result = DoTls13Finished_turtle_body(ssl, input, inOutIdx, size, totalSz, sniff);
++    turtle_span(ssl, 1, 1, 20, turtle_result);
++    return turtle_result;
++}
++
+ 
+ #if !defined(NO_WOLFSSL_CLIENT) || !defined(NO_WOLFSSL_SERVER)
+ /* Send the TLS v1.3 Finished message.
+@@ -11032,8 +11234,9 @@ int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
+  * ssl  The SSL/TLS object.
+  * returns 0 on success, otherwise failure.
+  */
+-static int SendTls13Finished(WOLFSSL* ssl)
++static int SendTls13Finished_turtle_body(WOLFSSL* ssl)
+ {
++    TurtleGeneration turtle_generation = { ssl, 20, 0 };
+     byte  finishedSz = ssl->specs.hash_size;
+     byte* input;
+     byte* output;
+@@ -11062,7 +11265,7 @@ static int SendTls13Finished(WOLFSSL* ssl)
+     outputSz = WC_MAX_DIGEST_SIZE + DTLS_HANDSHAKE_HEADER_SZ + MAX_MSG_EXTRA;
+     /* Check buffers are big enough and grow if needed. */
+     if ((ret = CheckAvailableSize(ssl, outputSz)) != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     /* get output buffer */
+     output = GetOutputBuffer(ssl);
+@@ -11073,6 +11276,7 @@ static int SendTls13Finished(WOLFSSL* ssl)
+         input = output + Dtls13GetRlHeaderLength(ssl, 1);
+ #endif /* WOLFSSL_DTLS13 */
+ 
++    turtle_generation_begin(&turtle_generation);
+     AddTls13HandShakeHeader(input, (word32)finishedSz, 0, (word32)finishedSz,
+             finished, ssl);
+ 
+@@ -11080,7 +11284,7 @@ static int SendTls13Finished(WOLFSSL* ssl)
+     if (ssl->options.side == WOLFSSL_CLIENT_END) {
+         ret = tsip_Tls13SendFinished(ssl, output, outputSz, input, 1);
+         if (ret != WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE)) {
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+         }
+         ret = 0;
+     }
+@@ -11092,7 +11296,7 @@ static int SendTls13Finished(WOLFSSL* ssl)
+                                    ssl->keys.client_write_MAC_secret,
+                                    WOLFSSL_CLIENT_END);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ 
+         secret = ssl->keys.client_write_MAC_secret;
+     }
+@@ -11106,19 +11310,19 @@ static int SendTls13Finished(WOLFSSL* ssl)
+                                    ssl->keys.client_write_MAC_secret,
+                                    WOLFSSL_SERVER_END);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ 
+         ret = DeriveFinishedSecret(ssl, ssl->serverSecret,
+                                    ssl->keys.server_write_MAC_secret,
+                                    WOLFSSL_CLIENT_END);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ 
+         secret = ssl->keys.server_write_MAC_secret;
+     }
+     ret = BuildTls13HandshakeHmac(ssl, secret, &input[headerSz], NULL);
+     if (ret != 0)
+-        return ret;
++        return turtle_generation_return(&turtle_generation, ret);
+     #ifdef WOLFSSL_HAVE_TLS_UNIQUE
+         if (ssl->options.side == WOLFSSL_CLIENT_END) {
+             XMEMCPY(ssl->clientFinished, &input[headerSz], finishedSz);
+@@ -11132,21 +11336,21 @@ static int SendTls13Finished(WOLFSSL* ssl)
+ 
+ #ifdef WOLFSSL_DTLS13
+     if (isDtls) {
+-        dtlsRet = Dtls13HandshakeSend(ssl, output, (word16)outputSz,
++        dtlsRet = (turtle_generation_end(&turtle_generation, 0), Dtls13HandshakeSend(ssl, output, (word16)outputSz,
+             (word16)(Dtls13GetRlHeaderLength(ssl, 1) + headerSz + finishedSz), finished,
+-            1);
++            1));
+         if (dtlsRet != 0 && dtlsRet != WC_NO_ERR_TRACE(WANT_WRITE))
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ 
+     } else
+ #endif /* WOLFSSL_DTLS13 */
+     {
+         /* This message is always encrypted. */
+-        int sendSz = BuildTls13Message(ssl, output, outputSz, input,
++        int sendSz = turtle_build_after_generation(&turtle_generation, ssl, output, outputSz, input,
+                                    headerSz + finishedSz, handshake, 1, 0, 0);
+         if (sendSz < 0) {
+             WOLFSSL_ERROR_VERBOSE(BUILD_MSG_ERROR);
+-            return BUILD_MSG_ERROR;
++            return turtle_generation_return(&turtle_generation, BUILD_MSG_ERROR);
+         }
+ 
+         #if defined(WOLFSSL_CALLBACKS) || defined(OPENSSL_EXTRA)
+@@ -11155,7 +11359,7 @@ static int SendTls13Finished(WOLFSSL* ssl)
+                 ret = AddPacketInfo(ssl, "Finished", handshake, output, sendSz,
+                               WRITE_PROTO, 0, ssl->heap);
+                 if (ret != 0)
+-                    return ret;
++                    return turtle_generation_return(&turtle_generation, ret);
+             }
+         #endif
+ 
+@@ -11169,7 +11373,7 @@ static int SendTls13Finished(WOLFSSL* ssl)
+ #endif
+         /* Can send application data now. */
+         if ((ret = DeriveMasterSecret(ssl)) != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+         /* Last use of preMasterSecret - zeroize as soon as possible. */
+         ForceZero(ssl->arrays->preMasterSecret, ssl->arrays->preMasterSz);
+ #ifdef WOLFSSL_EARLY_DATA
+@@ -11183,20 +11387,20 @@ static int SendTls13Finished(WOLFSSL* ssl)
+ 
+         if ((ret = DeriveTls13Keys(ssl, traffic_key, ENCRYPT_SIDE_ONLY, 1))
+                                                                          != 0) {
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+         }
+         if ((ret = DeriveTls13Keys(ssl, traffic_key, DECRYPT_SIDE_ONLY,
+                                        storeTrafficDecKeys)) != 0) {
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+         }
+ #else
+         if ((ret = DeriveTls13Keys(ssl, traffic_key, ENCRYPT_AND_DECRYPT_SIDE,
+                                                                      1)) != 0) {
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+         }
+ #endif
+         if ((ret = SetKeysSide(ssl, ENCRYPT_SIDE_ONLY)) != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ 
+ #ifdef WOLFSSL_DTLS13
+         if (isDtls) {
+@@ -11208,7 +11412,7 @@ static int SendTls13Finished(WOLFSSL* ssl)
+             ret = Dtls13SetEpochKeys(
+                 ssl, epochTraffic0, ENCRYPT_AND_DECRYPT_SIDE);
+             if (ret != 0)
+-                return ret;
++                return turtle_generation_return(&turtle_generation, ret);
+ 
+         }
+ #endif /* WOLFSSL_DTLS13 */
+@@ -11221,18 +11425,18 @@ static int SendTls13Finished(WOLFSSL* ssl)
+         if (ssl->earlyData != no_early_data) {
+             if ((ret = DeriveTls13Keys(ssl, no_key, ENCRYPT_SIDE_ONLY,
+                                                                      1)) != 0) {
+-                    return ret;
++                    return turtle_generation_return(&turtle_generation, ret);
+             }
+         }
+ #endif
+         /* Setup keys for application data messages. */
+         if ((ret = SetKeysSide(ssl, ENCRYPT_SIDE_ONLY)) != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ 
+ #if defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)
+         ret = DeriveResumptionSecret(ssl, ssl->session->masterSecret);
+         if (ret != 0)
+-            return ret;
++            return turtle_generation_return(&turtle_generation, ret);
+ #endif
+ 
+ #ifdef WOLFSSL_DTLS13
+@@ -11245,7 +11449,7 @@ static int SendTls13Finished(WOLFSSL* ssl)
+             ret = Dtls13SetEpochKeys(
+                 ssl, epochTraffic0, ENCRYPT_AND_DECRYPT_SIDE);
+             if (ret != 0)
+-                return ret;
++                return turtle_generation_return(&turtle_generation, ret);
+ 
+         }
+ #endif /* WOLFSSL_DTLS13 */
+@@ -11269,18 +11473,27 @@ static int SendTls13Finished(WOLFSSL* ssl)
+         WOLFSSL_LEAVE("SendTls13Finished", ret);
+         WOLFSSL_END(WC_FUNC_FINISHED_SEND);
+ 
+-        return dtlsRet;
++        return turtle_generation_return(&turtle_generation, dtlsRet);
+     }
+ #endif /* WOLFSSL_DTLS13 */
+ 
+-    if ((ret = SendBuffered(ssl)) != 0)
+-        return ret;
++    if ((ret = turtle_send_after_generation(&turtle_generation, ssl)) != 0)
++        return turtle_generation_return(&turtle_generation, ret);
+ 
+     WOLFSSL_LEAVE("SendTls13Finished", ret);
+     WOLFSSL_END(WC_FUNC_FINISHED_SEND);
+ 
+-    return ret;
++    return turtle_generation_return(&turtle_generation, ret);
+ }
++static int SendTls13Finished(WOLFSSL* ssl)
++{
++    int turtle_result;
++    turtle_span(ssl, 4, 0, 20, 0);
++    turtle_result = SendTls13Finished_turtle_body(ssl);
++    turtle_span(ssl, 4, 1, 20, turtle_result);
++    return turtle_result;
++}
++
+ #endif /* !NO_WOLFSSL_CLIENT || !NO_WOLFSSL_SERVER */
+ 
+ /* handle generation TLS v1.3 key_update (24) */
+@@ -14569,6 +14782,10 @@ int wolfSSL_accept_TLSv13(WOLFSSL* ssl)
+             }
+ 
+             ssl->options.acceptState = TLS13_ACCEPT_FINISHED_SENT;
++            if (ssl->turtle_ping_enabled) {
++                ssl->error = WANT_READ;
++                return WOLFSSL_FATAL_ERROR;
++            }
+             WOLFSSL_MSG("accept state ACCEPT_FINISHED_SENT");
+ #ifdef WOLFSSL_EARLY_DATA
+             if (ssl->earlyData != no_early_data) {
+diff --git a/wolfcrypt/src/wc_mlkem.c b/wolfcrypt/src/wc_mlkem.c
+index cebdc00..fd32a07 100644
+--- a/wolfcrypt/src/wc_mlkem.c
++++ b/wolfcrypt/src/wc_mlkem.c
+@@ -206,6 +206,8 @@ int wc_MlKemKey_Init(MlKemKey* key, int type, void* heap, int devId)
+         key->devId = devId;
+     #endif
+         key->flags = 0;
++        key->turtle_trace = NULL;
++        key->turtle_trace_ctx = NULL;
+ 
+         /* Zero out all data. */
+         XMEMSET(&key->prf, 0, sizeof(key->prf));
+@@ -504,7 +506,7 @@ int wc_MlKemKey_MakeKeyWithRandom(MlKemKey* key, const unsigned char* rand,
+         /* Generate key pair from random data.
+          * Alg 13: Steps 16-18.
+          */
+-        mlkem_keygen(s, t, e, a, k);
++        mlkem_keygen(s, t, e, a, k, key);
+ #else
+         /* Generate noise using PRF.
+          * Alg 13: Steps 8-11: generate s
+@@ -790,7 +792,7 @@ static int mlkemkey_encapsulate(MlKemKey* key, const byte* m, byte* r, byte* c)
+ 
+         /* Perform encapsulation maths.
+          *   Steps 18-19, 21: calculate u and v */
+-        mlkem_encapsulate(key->pub, u, v, a, y, e1, e2, mu, k);
++        mlkem_encapsulate(key->pub, u, v, a, y, e1, e2, mu, k, key);
+     }
+ #else /* WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM */
+     if (ret == 0) {
+@@ -1254,7 +1256,7 @@ static MLKEM_NOINLINE int mlkemkey_decapsulate(MlKemKey* key, byte* m,
+ 
+         /* Decapsulate the cipher text into polynomial.
+          * Step 6: w <- v' - InvNTT(s_hat_trans o NTT(u')) */
+-        mlkem_decapsulate(key->priv, w, u, v, k);
++        mlkem_decapsulate(key->priv, w, u, v, k, key);
+ 
+         /* Convert the polynomial into a array of bytes (message).
+          * Step 7: m <- ByteEncode_1(Compress_1(w)) */
+diff --git a/wolfcrypt/src/wc_mlkem_poly.c b/wolfcrypt/src/wc_mlkem_poly.c
+index e2e1849..3decbea 100644
+--- a/wolfcrypt/src/wc_mlkem_poly.c
++++ b/wolfcrypt/src/wc_mlkem_poly.c
+@@ -100,6 +100,13 @@ static int mlkem_get_noise_eta2_c(MLKEM_PRF_T* prf, sword16* p,
+ /* Declared in wc_mlkem.c to stop compiler optimizer from simplifying. */
+ extern volatile sword16 mlkem_opt_blocker;
+ 
++static void turtle_poly_span(const MlKemKey* key, int op, int end, int backend)
++{
++    if (key->turtle_trace != NULL)
++        key->turtle_trace(key->turtle_trace_ctx, op, end, backend);
++}
++
++
+ #if defined(USE_INTEL_SPEEDUP) || (defined(__aarch64__) && \
+     defined(WOLFSSL_ARMASM))
+ static word32 cpuid_flags = 0;
+@@ -1266,7 +1273,7 @@ void mlkem_init(void)
+  * @param  [in]       a  Random values in an array of vectors of polynomials.
+  * @param  [in]       k  Number of polynomials in vector.
+  */
+-void mlkem_keygen(sword16* s, sword16* t, sword16* e, const sword16* a, int k)
++void mlkem_keygen(sword16* s, sword16* t, sword16* e, const sword16* a, int k, const MlKemKey* turtle_key)
+ {
+     int i;
+ 
+@@ -1352,7 +1359,7 @@ void mlkem_keygen(sword16* s, sword16* t, sword16* e, const sword16* a, int k)
+  */
+ void mlkem_encapsulate(const sword16* t, sword16* u , sword16* v,
+     const sword16* a, sword16* y, const sword16* e1, const sword16* e2,
+-    const sword16* m, int k)
++    const sword16* m, int k, const MlKemKey* turtle_key)
+ {
+     int i;
+ 
+@@ -1439,7 +1446,7 @@ void mlkem_encapsulate(const sword16* t, sword16* u , sword16* v,
+  * @param  [in]   k  Number of polynomials in vector.
+  */
+ void mlkem_decapsulate(const sword16* s, sword16* w, sword16* u,
+-    const sword16* v, int k)
++    const sword16* v, int k, const MlKemKey* turtle_key)
+ {
+     int i;
+ 
+@@ -1859,19 +1866,23 @@ static void mlkem_keygen_c(sword16* s, sword16* t, sword16* e, const sword16* a,
+  * @param  [in]       a  Random values in an array of vectors of polynomials.
+  * @param  [in]       k  Number of polynomials in vector.
+  */
+-void mlkem_keygen(sword16* s, sword16* t, sword16* e, const sword16* a, int k)
++void mlkem_keygen(sword16* s, sword16* t, sword16* e, const sword16* a, int k, const MlKemKey* turtle_key)
+ {
+ #ifdef USE_INTEL_SPEEDUP
+     if ((IS_INTEL_AVX2(cpuid_flags)) && (SAVE_VECTOR_REGISTERS2() == 0)) {
+         /* Alg 13: Steps 16-18 */
++        turtle_poly_span(turtle_key, 9, 0, 2);
+         mlkem_keygen_avx2(s, t, e, a, k);
++        turtle_poly_span(turtle_key, 9, 1, 2);
+         RESTORE_VECTOR_REGISTERS();
+     }
+     else
+ #endif
+     {
+         /* Alg 13: Steps 16-18 */
++        turtle_poly_span(turtle_key, 9, 0, 1);
+         mlkem_keygen_c(s, t, e, a, k);
++        turtle_poly_span(turtle_key, 9, 1, 1);
+     }
+ }
+ 
+@@ -2053,17 +2064,21 @@ static void mlkem_encapsulate_c(const sword16* pub, sword16* u, sword16* v,
+  */
+ void mlkem_encapsulate(const sword16* pub, sword16* u, sword16* v,
+     const sword16* a, sword16* y, const sword16* e1, const sword16* e2,
+-    const sword16* m, int k)
++    const sword16* m, int k, const MlKemKey* turtle_key)
+ {
+ #ifdef USE_INTEL_SPEEDUP
+     if (IS_INTEL_AVX2(cpuid_flags) && (SAVE_VECTOR_REGISTERS2() == 0)) {
++        turtle_poly_span(turtle_key, 10, 0, 2);
+         mlkem_encapsulate_avx2(pub, u, v, a, y, e1, e2, m, k);
++        turtle_poly_span(turtle_key, 10, 1, 2);
+         RESTORE_VECTOR_REGISTERS();
+     }
+     else
+ #endif
+     {
++        turtle_poly_span(turtle_key, 10, 0, 1);
+         mlkem_encapsulate_c(pub, u, v, a, y, e1, e2, m, k);
++        turtle_poly_span(turtle_key, 10, 1, 1);
+     }
+ }
+ 
+@@ -2245,17 +2260,21 @@ static void mlkem_decapsulate_c(const sword16* s, sword16* w, sword16* u,
+  * @param  [in]   k   Number of polynomials in vector.
+  */
+ void mlkem_decapsulate(const sword16* s, sword16* w, sword16* u,
+-    const sword16* v, int k)
++    const sword16* v, int k, const MlKemKey* turtle_key)
+ {
+ #ifdef USE_INTEL_SPEEDUP
+     if (IS_INTEL_AVX2(cpuid_flags) && (SAVE_VECTOR_REGISTERS2() == 0)) {
++        turtle_poly_span(turtle_key, 11, 0, 2);
+         mlkem_decapsulate_avx2(s, w, u, v, k);
++        turtle_poly_span(turtle_key, 11, 1, 2);
+         RESTORE_VECTOR_REGISTERS();
+     }
+     else
+ #endif
+     {
++        turtle_poly_span(turtle_key, 11, 0, 1);
+         mlkem_decapsulate_c(s, w, u, v, k);
++        turtle_poly_span(turtle_key, 11, 1, 1);
+     }
+ }
+ 
+diff --git a/wolfssl/internal.h b/wolfssl/internal.h
+index 07b75f2..03ede88 100644
+--- a/wolfssl/internal.h
++++ b/wolfssl/internal.h
+@@ -5830,6 +5830,7 @@ typedef struct CIDInfo {
+ 
+ /* wolfSSL ssl type */
+ struct WOLFSSL {
++    int turtle_ping_enabled;
+     WOLFSSL_CTX*    ctx;
+ #if defined(WOLFSSL_HAPROXY)
+     WOLFSSL_CTX*    initial_ctx; /* preserve session key materials */
+diff --git a/wolfssl/ssl.h b/wolfssl/ssl.h
+index 3e6865b..ed3c6ce 100644
+--- a/wolfssl/ssl.h
++++ b/wolfssl/ssl.h
+@@ -1382,6 +1382,9 @@ WOLFSSL_API int wolfSSL_write_ex(WOLFSSL* ssl, const void* data, size_t sz,
+ WOLFSSL_ABI WOLFSSL_API int  wolfSSL_read(WOLFSSL* ssl, void* data, int sz);
+ WOLFSSL_API int wolfSSL_read_ex(WOLFSSL* ssl, void* data, size_t sz, size_t* rd);
+ WOLFSSL_API int  wolfSSL_peek(WOLFSSL* ssl, void* data, int sz);
++#define TURTLE_WOLFSSL_TRACE_PATCH 2
++WOLFSSL_API void wolfSSL_turtle_enable_ping(WOLFSSL* ssl);
++WOLFSSL_API int wolfSSL_turtle_write_ready(WOLFSSL* ssl);
+ WOLFSSL_ABI WOLFSSL_API int  wolfSSL_accept(WOLFSSL* ssl);
+ WOLFSSL_API int wolfSSL_inject(WOLFSSL* ssl, const void* data, int sz);
+ WOLFSSL_API int  wolfSSL_CTX_mutual_auth(WOLFSSL_CTX* ctx, int req);
+diff --git a/wolfssl/wolfcrypt/wc_mlkem.h b/wolfssl/wolfcrypt/wc_mlkem.h
+index 649a73d..12f8566 100644
+--- a/wolfssl/wolfcrypt/wc_mlkem.h
++++ b/wolfssl/wolfcrypt/wc_mlkem.h
+@@ -110,6 +110,9 @@ enum {
+ 
+ /* ML-KEM key. */
+ struct MlKemKey {
++    /* Borrowed per-key trace context; never global. No secret bytes are emitted. */
++    void (*turtle_trace)(void*, int, int, int);
++    void* turtle_trace_ctx;
+     /* Type of key: WC_ML_KEM_512, WC_ML_KEM_768, WC_ML_KEM_1024 */
+     int type;
+     /* Dynamic memory allocation hint. */
+@@ -152,7 +155,7 @@ void mlkem_init(void);
+ #ifndef WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM
+ WOLFSSL_LOCAL
+ void mlkem_keygen(sword16* priv, sword16* pub, sword16* e, const sword16* a,
+-    int kp);
++    int kp, const MlKemKey* turtle_key);
+ #else
+ WOLFSSL_LOCAL
+ int mlkem_keygen_seeds(sword16* priv, sword16* pub, MLKEM_PRF_T* prf,
+@@ -162,7 +165,7 @@ int mlkem_keygen_seeds(sword16* priv, sword16* pub, MLKEM_PRF_T* prf,
+ WOLFSSL_LOCAL
+ void mlkem_encapsulate(const sword16* pub, sword16* bp, sword16* v,
+     const sword16* at, sword16* sp, const sword16* ep, const sword16* epp,
+-    const sword16* m, int kp);
++    const sword16* m, int kp, const MlKemKey* turtle_key);
+ #else
+ WOLFSSL_LOCAL
+ int mlkem_encapsulate_seeds(const sword16* pub, MLKEM_PRF_T* prf, sword16* bp,
+@@ -171,7 +174,7 @@ int mlkem_encapsulate_seeds(const sword16* pub, MLKEM_PRF_T* prf, sword16* bp,
+ #endif
+ WOLFSSL_LOCAL
+ void mlkem_decapsulate(const sword16* priv, sword16* mp, sword16* bp,
+-    const sword16* v, int kp);
++    const sword16* v, int kp, const MlKemKey* turtle_key);
+ 
+ WOLFSSL_LOCAL
+ int mlkem_gen_matrix(MLKEM_PRF_T* prf, sword16* a, int kp, byte* seed,

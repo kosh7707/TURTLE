@@ -28,8 +28,11 @@ using turtle::Io;
 using turtle::IoStatus;
 using turtle::Negotiated;
 using turtle::Role;
+using turtle::Scenario;
+using turtle::SendPolicy;
 using turtle::Step;
 using turtle::TlsConfig;
+using turtle::TraceOperation;
 using turtle::Verification;
 using turtle::wolfssl_adapter::WolfConnection;
 using turtle::wolfssl_adapter::WolfContext;
@@ -37,7 +40,13 @@ using turtle::wolfssl_adapter::WolfContext;
 constexpr const char* kWolfSslVersion = LIBWOLFSSL_VERSION_STRING;
 constexpr const char* kCipher = "TLS_AES_128_GCM_SHA256";
 constexpr const char* kWolfCipher = "TLS13-AES128-GCM-SHA256";
+#ifdef TURTLE_MLKEM
+constexpr const char* kGroup = "ML_KEM_768";
+constexpr int kWolfGroup = WOLFSSL_ML_KEM_768;
+#else
 constexpr const char* kGroup = "secp256r1";
+constexpr int kWolfGroup = WOLFSSL_ECC_SECP256R1;
+#endif
 constexpr const char* kSignature = "ecdsa_secp256r1_sha256";
 
 // wolfSSL's allocator registration has no user argument. Each role runs in a
@@ -151,7 +160,7 @@ std::string unsupported_reason(const TlsConfig& config, std::span<const std::uin
         return "wolfSSL adapter supports only TLS_AES_128_GCM_SHA256";
     }
     if (config.group != kGroup) {
-        return "wolfSSL adapter supports only secp256r1";
+        return std::string("this wolfSSL adapter supports only ") + kGroup;
     }
     if (config.signature != kSignature) {
         return "wolfSSL adapter supports only ecdsa_secp256r1_sha256";
@@ -208,21 +217,89 @@ bool load_identity(WolfContext& context, const std::string& certificate, const s
 }
 
 const char* adapter_name() noexcept {
+#ifdef TURTLE_ADAPTER_ID
+    return TURTLE_ADAPTER_ID;
+#else
     return "wolfssl";
+#endif
 }
 
 Declaration declaration(const Context* base) {
     Declaration value;
     value.library = "wolfSSL";
+    value.source_version = kWolfSslVersion;
+    value.source_url = "https://github.com/wolfSSL/wolfssl/tree/v5.8.2-stable";
+#ifdef TURTLE_MLKEM
+    value.source_version = "5.8.2;decea12e223869c8f8f3ab5a53dc90b69f436eb2";
+    value.technique = "mlkem768-tls13";
+    value.implementation = TURTLE_MLKEM_AVX2 ? "mlkem-avx2-dispatch" : "mlkem-portable-c";
+#endif
+#ifdef TURTLE_BITHAC
+    value.source_version = "5.7.0;68ad825a37ef72cc1db4a67eb6d13275cc61f8aa";
+    value.source_url =
+        "https://github.com/RWTH-SPICe/BiTHaC/tree/68ad825a37ef72cc1db4a67eb6d13275cc61f8aa";
+    value.technique = "bithac-tls13";
+    value.implementation =
+        TURTLE_BITHAC_ENABLED ? "author-caching-enabled" : "same-source-caching-disabled";
+#endif
+#ifdef TURTLE_WOLFSSL_TRACE_PATCH
+    value.patch_hash = TURTLE_PATCH_SHA256;
+    value.scenarios.push_back(Scenario::FinishedPing);
+    value.send_policies.push_back(SendPolicy::ServerHelloFirst);
+    value.internal_events = {TraceOperation::MessageProcess, TraceOperation::RecordEncrypt,
+                             TraceOperation::RecordDecrypt, TraceOperation::LibraryMessageWrite};
+    value.internal_events_note =
+        "DoTls13 certificate/verify/Finished/extensions processing; Encrypt/DecryptTls13; "
+        "SendTls13 spans include construction, record and I/O, not pure generation";
+#if TURTLE_WOLFSSL_TRACE_PATCH >= 2
+    value.internal_events.push_back(TraceOperation::MessageGenerate);
+    value.internal_events_note +=
+        "; additional Hello processing; stack-owned message_generate spans stop before "
+        "BuildTls13Message/SendBuffered (Certificate fragments are separate spans); "
+        "generation includes in-function buffer/message preparation and excludes encrypted "
+        "record construction and I/O; prerequisite keys outside these spans remain separate";
+#endif
+    value.server_ping_note = "explicit yield after ServerFinished submission with application "
+                             "traffic keys; before ClientFinished";
+#endif
     value.version = kWolfSslVersion;
     value.build_options =
-        "TLS1.3,ECC,secp256r1,AES128-GCM,OPENSSL_EXTRA,SECRET_CALLBACK,"
+        "TLS1.3,ECC,AES128-GCM,OPENSSL_EXTRA,SECRET_CALLBACK,"
         "SESSION_TICKET,TLS13_MIDDLEBOX_COMPAT,WOLFSSL_GETRANDOM; "
         "key log is sink-only (no file); "
         "version/cipher/group/signature/resumption are queried from wolfSSL; "
-        "hello_retry_request=false is inferred from the forced single P-256 group";
+        "hello_retry_request=false is inferred from the forced single key-share group";
     value.context_description =
         "full handshake only; session tickets disabled; HRR has no wolfSSL observation hook";
+#ifdef TURTLE_MLKEM
+    value.build_options += ";ML_KEM_768; source-local USE_INTEL_SPEEDUP in wc_mlkem.c/poly.c; "
+                           "other crypto objects identical across pair";
+    value.build_options += TURTLE_MLKEM_AVX2 ? ";ML-KEM AVX2 dispatch enabled"
+                                             : ";WC_MLKEM_NO_ASM in ML-KEM source files";
+    value.internal_events.insert(
+        value.internal_events.end(),
+        {TraceOperation::KemKeygen, TraceOperation::KemEncapsulate, TraceOperation::KemDecapsulate,
+         TraceOperation::KemPolynomialKeygen, TraceOperation::KemPolynomialEncapsulate,
+         TraceOperation::KemPolynomialDecapsulate});
+    value.internal_events_note +=
+        "; kem_* brackets actual TLS wc_MlKemKey calls including RNG; kem_polynomial_* "
+        "brackets actual arithmetic dispatch (message_type 1=C, 2=AVX2); "
+        "decapsulation includes a separate polynomial re-encryption call";
+#endif
+#ifdef TURTLE_BITHAC
+    value.build_options +=
+        TURTLE_BITHAC_ENABLED ? ";WOLFSSL_CACHED_INFO,WOLFSSL_SSC" : ";caching-disabled";
+    value.context_description +=
+        "; original author code; cache is library process-global, initially empty in each fresh "
+        "role process; first measured connection populates it; subsequent connections reuse it; no "
+        "small-cert-cache prevalidation";
+#if TURTLE_BITHAC_ENABLED
+    value.internal_events.push_back(TraceOperation::CachedCertificateWrite);
+    value.internal_events_note +=
+        "; cached_certificate_write brackets CISSC_SendCachedTls13Certificate including record and "
+        "I/O; this is the actual research path";
+#endif
+#endif
     value.callback_io = true;
     const auto* context = dynamic_cast<const WolfContext*>(base);
     value.allocator_hooks = context != nullptr && context->allocator_installed;
@@ -233,7 +310,7 @@ Declaration declaration(const Context* base) {
     value.is_mock = false;
     value.read_ahead = false;
     value.read_ahead_note =
-        "wolfSSL 5.8.2 stores a disabled compatibility flag, but its TLS stream reader does "
+        "wolfSSL stores a disabled compatibility flag, but its TLS stream reader does "
         "not consult that flag; the pinned reader independently requests the exact remaining "
         "header or body bytes";
     value.memory_note =
@@ -302,7 +379,7 @@ Context* setup(Role role, const TlsConfig& config, const HostServices& services,
         set_setup_error(*context, "wolfSSL_CTX_set_cipher_list");
         return context;
     }
-    int group = WOLFSSL_ECC_SECP256R1;
+    int group = kWolfGroup;
     if (wolfSSL_CTX_set_groups(context->ssl_context, &group, 1) != WOLFSSL_SUCCESS) {
         set_setup_error(*context, "wolfSSL_CTX_set_groups");
         return context;
@@ -357,9 +434,29 @@ Connection* open(Context* base, const Io& io) {
         connection->last_error = "wolfSSL_new failed";
         return connection;
     }
+    connection->trace.sink = context->services.trace;
+    connection->trace.enabled = context->services.trace_mode;
+#ifdef TURTLE_WOLFSSL_TRACE_PATCH
+    if (context->role == Role::Server && (context->config.scenario == Scenario::ServerPing ||
+                                          context->config.scenario == Scenario::FinishedPing))
+        wolfSSL_turtle_enable_ping(connection->ssl);
+    if (context->services.trace_mode) {
+        wolfSSL_set_msg_callback_arg(connection->ssl, connection);
+        wolfSSL_set_msg_callback(connection->ssl, [](int, int version, int type, const void* bytes,
+                                                     std::size_t size, WOLFSSL*, void* arg) {
+            static_cast<WolfConnection*>(arg)->trace.message(version, type, bytes, size);
+        });
+    }
+#endif
     wolfSSL_SetIOReadCtx(connection->ssl, connection);
     wolfSSL_SetIOWriteCtx(connection->ssl, connection);
     if (context->role == Role::Client) {
+#if defined(TURTLE_BITHAC) && TURTLE_BITHAC_ENABLED
+        if (wolfSSL_CI_set_peer_id(connection->ssl, context->config.server_name.c_str()) != 0) {
+            connection->last_error = "wolfSSL_CI_set_peer_id failed";
+            return connection;
+        }
+#endif
         if (wolfSSL_check_domain_name(connection->ssl, context->config.server_name.c_str()) !=
             WOLFSSL_SUCCESS) {
             connection->last_error = "wolfSSL_check_domain_name failed";
@@ -376,6 +473,8 @@ Connection* open(Context* base, const Io& io) {
 }
 
 Step translate_operation(WolfConnection& connection, int result, const char* operation) {
+    if (connection.trace.failed)
+        return Step::Failed;
     if (result == WOLFSSL_SUCCESS) {
         return Step::Done;
     }
@@ -400,6 +499,16 @@ Step handshake_step(Connection* base) {
     }
     const int result = connection->context->role == Role::Client ? wolfSSL_connect(connection->ssl)
                                                                  : wolfSSL_accept(connection->ssl);
+#ifdef TURTLE_WOLFSSL_TRACE_PATCH
+    if (!connection->trace.failed && !connection->ping_reported &&
+        connection->context->role == Role::Server &&
+        (connection->context->config.scenario == Scenario::ServerPing ||
+         connection->context->config.scenario == Scenario::FinishedPing) &&
+        wolfSSL_turtle_write_ready(connection->ssl)) {
+        connection->ping_reported = true;
+        return Step::ApplicationWriteReady;
+    }
+#endif
     const Step step = translate_operation(*connection, result, "TLS handshake");
     if (step == Step::Done) {
         connection->handshake_done = true;
@@ -445,11 +554,17 @@ Negotiated negotiated(Connection* base) {
         value.cipher = kCipher;
     }
     const char* curve = wolfSSL_get_curve_name(connection->ssl);
+#ifdef TURTLE_MLKEM
+    if (curve != nullptr && std::strcmp(curve, kGroup) == 0) {
+        value.group = kGroup;
+    }
+#else
     if (curve != nullptr &&
         (std::strcmp(curve, "SECP256R1") == 0 || std::strcmp(curve, "secp256r1") == 0 ||
          std::strcmp(curve, "P-256") == 0)) {
         value.group = kGroup;
     }
+#endif
     int hash_nid = 0;
     int signature_nid = 0;
     const bool signature_observed =
@@ -536,7 +651,7 @@ void teardown(Context* base) noexcept {
 
 } // namespace
 
-extern "C" turtle::ImplementationApi turtle_adapter_v2() {
+extern "C" turtle::ImplementationApi turtle_adapter_v3() {
     turtle::ImplementationApi api;
     api.version = turtle::adapter_api_version;
     api.name = adapter_name;

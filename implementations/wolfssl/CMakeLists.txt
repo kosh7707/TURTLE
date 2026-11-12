@@ -39,3 +39,10 @@ set_target_properties(turtle_adapter_wolfssl PROPERTIES
   OUTPUT_NAME "wolfssl"
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/adapters")
 
+
+file(SHA256 "${CMAKE_CURRENT_LIST_DIR}/instrumentation.patch" _turtle_patch_hash)
+include(../common/patch-provenance.cmake)
+turtle_check_patch_manifest(wolfssl "${_turtle_patch_hash}")
+target_compile_definitions(turtle_adapter_wolfssl PRIVATE TURTLE_PATCH_SHA256="${_turtle_patch_hash}")
+
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/instrumentation.patch")

@@ -103,8 +103,8 @@ void send_all(Waiter& waiter, const unsigned char* data, std::size_t size, Deadl
     while (offset != size) {
         if (std::chrono::steady_clock::now() >= deadline)
             throw std::runtime_error("operation deadline exceeded");
-        const auto sent = ::send(waiter.fd(), data + offset, size - offset,
-                                 MSG_DONTWAIT | MSG_NOSIGNAL);
+        const auto sent =
+            ::send(waiter.fd(), data + offset, size - offset, MSG_DONTWAIT | MSG_NOSIGNAL);
         if (sent > 0) {
             offset += static_cast<std::size_t>(sent);
             continue;
@@ -209,33 +209,50 @@ Message decode_message(const std::array<unsigned char, message_frame_size>& fram
 
 const char* name(Phase value) noexcept {
     switch (value) {
-    case Phase::Setup: return "setup";
-    case Phase::Scenario: return "scenario";
-    case Phase::Cleanup: return "cleanup";
+    case Phase::Setup:
+        return "setup";
+    case Phase::Scenario:
+        return "scenario";
+    case Phase::Cleanup:
+        return "cleanup";
     }
     return "unknown";
 }
 const char* name(PhaseEdge value) noexcept {
     switch (value) {
-    case PhaseEdge::Begin: return "begin";
-    case PhaseEdge::End: return "end";
+    case PhaseEdge::Begin:
+        return "begin";
+    case PhaseEdge::End:
+        return "end";
     }
     return "unknown";
 }
 const char* name(MessageKind value) noexcept {
     switch (value) {
-    case MessageKind::NamespaceReady: return "namespace_ready";
-    case MessageKind::ReadyAddress: return "ready_address";
-    case MessageKind::TcpReady: return "tcp_ready";
-    case MessageKind::Start: return "start";
-    case MessageKind::ResponseComplete: return "response_complete";
-    case MessageKind::LookupSkipped: return "lookup_skipped";
-    case MessageKind::ConnectionComplete: return "connection_complete";
-    case MessageKind::Flush: return "flush";
-    case MessageKind::AbortFlush: return "abort_flush";
-    case MessageKind::Flushed: return "flushed";
-    case MessageKind::Failed: return "failed";
-    case MessageKind::Exit: return "exit";
+    case MessageKind::NamespaceReady:
+        return "namespace_ready";
+    case MessageKind::ReadyAddress:
+        return "ready_address";
+    case MessageKind::TcpReady:
+        return "tcp_ready";
+    case MessageKind::Start:
+        return "start";
+    case MessageKind::ResponseComplete:
+        return "response_complete";
+    case MessageKind::LookupSkipped:
+        return "lookup_skipped";
+    case MessageKind::ConnectionComplete:
+        return "connection_complete";
+    case MessageKind::Flush:
+        return "flush";
+    case MessageKind::AbortFlush:
+        return "abort_flush";
+    case MessageKind::Flushed:
+        return "flushed";
+    case MessageKind::Failed:
+        return "failed";
+    case MessageKind::Exit:
+        return "exit";
     }
     return "unknown";
 }
@@ -360,9 +377,10 @@ void barrier(int fd, Deadline deadline) {
     Waiter waiter(fd);
     barrier(waiter, deadline);
 }
-void isolate() {
+void isolate(bool allow_new_connections) {
     const rlimit limit{0, 0};
-    if (::setrlimit(RLIMIT_NOFILE, &limit) || ::setrlimit(RLIMIT_NPROC, &limit))
+    if ((!allow_new_connections && ::setrlimit(RLIMIT_NOFILE, &limit)) ||
+        ::setrlimit(RLIMIT_NPROC, &limit))
         throw std::runtime_error("resource isolation failed");
 }
 
@@ -370,7 +388,10 @@ namespace {
 constexpr auto killed_child_reap_budget = std::chrono::milliseconds(250);
 
 ReapResult reap_children(std::span<const pid_t> children, Deadline deadline) {
-    struct Child { pid_t pid; bool pending = true; };
+    struct Child {
+        pid_t pid;
+        bool pending = true;
+    };
     std::vector<Child> owned;
     owned.reserve(children.size());
     for (const pid_t pid : children) {
@@ -392,8 +413,8 @@ ReapResult reap_children(std::span<const pid_t> children, Deadline deadline) {
             const pid_t result = ::waitpid(child.pid, &status, WNOHANG);
             if (result == child.pid) {
                 child.pending = false;
-                outcome.all_success = outcome.all_success && WIFEXITED(status) &&
-                                      WEXITSTATUS(status) == 0;
+                outcome.all_success =
+                    outcome.all_success && WIFEXITED(status) && WEXITSTATUS(status) == 0;
             } else if (result == 0 || (result < 0 && errno == EINTR)) {
                 any_pending = true;
             } else {
@@ -419,8 +440,7 @@ ReapResult reap_children(std::span<const pid_t> children, Deadline deadline) {
         if (child.pending)
             (void)::kill(child.pid, SIGKILL);
 
-    const Deadline recovery_deadline = std::chrono::steady_clock::now() +
-                                       killed_child_reap_budget;
+    const Deadline recovery_deadline = std::chrono::steady_clock::now() + killed_child_reap_budget;
     for (;;) {
         bool any_pending = false;
         for (auto& child : owned) {
@@ -442,9 +462,8 @@ ReapResult reap_children(std::span<const pid_t> children, Deadline deadline) {
             outcome.all_reaped = false;
             return outcome;
         }
-        std::this_thread::sleep_until(
-            std::min(recovery_deadline,
-                     std::chrono::steady_clock::now() + std::chrono::milliseconds(1)));
+        std::this_thread::sleep_until(std::min(
+            recovery_deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(1)));
     }
 }
 } // namespace
@@ -468,11 +487,14 @@ void enter_network_namespace(int namespace_fd) {
         throw std::system_error(errno, std::generic_category(), "network namespace entry failed");
 }
 
-PhaseAck exchange_phase(int phase_control_fd, std::uint64_t attempt, Phase phase,
-                        PhaseEdge edge, Deadline deadline) {
+PhaseAck exchange_phase(int phase_control_fd, std::uint64_t attempt, Phase phase, PhaseEdge edge,
+                        Deadline deadline) {
     using Json = nlohmann::json;
-    Json request{{"type", "phase"}, {"schema", 1}, {"attempt", attempt},
-                 {"phase", name(phase)}, {"edge", name(edge)}};
+    Json request{{"type", "phase"},
+                 {"schema", 1},
+                 {"attempt", attempt},
+                 {"phase", name(phase)},
+                 {"edge", name(edge)}};
     std::string request_line = request.dump();
     if (request_line.size() > maximum_json_payload_size)
         throw std::runtime_error("phase request exceeds JSON-line limit");
@@ -518,13 +540,13 @@ PhaseAck exchange_phase(int phase_control_fd, std::uint64_t attempt, Phase phase
         !response.contains("schema") || !response.contains("attempt") ||
         !response.contains("phase") || !response.contains("edge") ||
         !response.contains("observation_id") || !response["type"].is_string() ||
-        !response["schema"].is_number_unsigned() ||
-        !response["attempt"].is_number_unsigned() || !response["phase"].is_string() ||
-        !response["edge"].is_string() || !response["observation_id"].is_string())
+        !response["schema"].is_number_unsigned() || !response["attempt"].is_number_unsigned() ||
+        !response["phase"].is_string() || !response["edge"].is_string() ||
+        !response["observation_id"].is_string())
         throw std::runtime_error("phase acknowledgement has invalid fields");
 
-    const std::string expected_observation = std::to_string(attempt) + ":" + name(phase) +
-                                             ":" + name(edge);
+    const std::string expected_observation =
+        std::to_string(attempt) + ":" + name(phase) + ":" + name(edge);
     if (response["type"].get_ref<const std::string&>() != "ack" ||
         response["schema"].get<std::uint64_t>() != 1 ||
         response["attempt"].get<std::uint64_t>() != attempt ||

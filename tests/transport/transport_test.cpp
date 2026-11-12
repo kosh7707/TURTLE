@@ -6,8 +6,8 @@
 #include <cstddef>
 #include <fcntl.h>
 #include <iostream>
-#include <netinet/in.h>
 #include <linux/tcp.h>
+#include <netinet/in.h>
 #include <stdexcept>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -71,15 +71,16 @@ int main() {
                 client_peer.port == listener_endpoint.port);
         require(server_local.address == listener_endpoint.address &&
                 server_local.port == listener_endpoint.port);
-        require(server_peer.address == client_local.address && server_peer.port == client_local.port);
+        require(server_peer.address == client_local.address &&
+                server_peer.port == client_local.port);
         require(turtle::tcp::check_ready(client).empty());
         require(turtle::tcp::check_ready(server).empty());
 
         const auto tcp_start = turtle::tcp::read_tcp_info(client);
         require(tcp_start.structure_bytes > 0);
-#define REQUIRE_TCP_FIELD(field, kernel_field)                                                   \
-    require(tcp_start.field.has_value() ==                                                        \
-            (tcp_start.structure_bytes >=                                                         \
+#define REQUIRE_TCP_FIELD(field, kernel_field)                                                     \
+    require(tcp_start.field.has_value() ==                                                         \
+            (tcp_start.structure_bytes >=                                                          \
              offsetof(tcp_info, kernel_field) + sizeof(decltype(tcp_info{}.kernel_field))))
         REQUIRE_TCP_FIELD(state, tcpi_state);
         REQUIRE_TCP_FIELD(retransmits, tcpi_retransmits);
@@ -89,6 +90,8 @@ int main() {
         REQUIRE_TCP_FIELD(lost, tcpi_lost);
         REQUIRE_TCP_FIELD(snd_mss, tcpi_snd_mss);
         REQUIRE_TCP_FIELD(rcv_mss, tcpi_rcv_mss);
+        REQUIRE_TCP_FIELD(snd_cwnd, tcpi_snd_cwnd);
+        REQUIRE_TCP_FIELD(snd_ssthresh, tcpi_snd_ssthresh);
         REQUIRE_TCP_FIELD(segs_out, tcpi_segs_out);
         REQUIRE_TCP_FIELD(segs_in, tcpi_segs_in);
         REQUIRE_TCP_FIELD(data_segs_out, tcpi_data_segs_out);
@@ -106,14 +109,14 @@ int main() {
                 small.receive_buffer > 0 && small.kernel_timestamps);
         require(small.send_buffer != 1 && small.receive_buffer != 1);
 
-        const auto large =
-            turtle::transport::configure(server, false, INT_MAX, INT_MAX, false);
+        const auto large = turtle::transport::configure(server, false, INT_MAX, INT_MAX, false);
         require_settings_match(server, large);
         require(large.nonblocking && !large.tcp_nodelay && large.send_buffer > 0 &&
                 large.receive_buffer > 0 && !large.kernel_timestamps);
         require(large.send_buffer != INT_MAX && large.receive_buffer != INT_MAX);
 
-        const auto timestamps_off = turtle::transport::configure(client, false, 65536, 65536, false);
+        const auto timestamps_off =
+            turtle::transport::configure(client, false, 65536, 65536, false);
         require_settings_match(client, timestamps_off);
         require(!timestamps_off.tcp_nodelay && !timestamps_off.kernel_timestamps);
         Observation state;
@@ -143,8 +146,7 @@ int main() {
         turtle::control::wait(client, false,
                               std::chrono::steady_clock::now() + std::chrono::seconds(1));
         got = reverse_receiver.recv(reverse_receiver.context, received.data(), received.size());
-        require(got.status == turtle::IoStatus::Ok && got.bytes == data.size() &&
-                received == data);
+        require(got.status == turtle::IoStatus::Ok && got.bytes == data.size() && received == data);
         require(reverse_state.entered == 1 && reverse_state.returned == 1 &&
                 reverse_state.bytes == data.size());
         const auto tcp_end = turtle::tcp::read_tcp_info(server);

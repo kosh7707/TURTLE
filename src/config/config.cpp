@@ -12,6 +12,22 @@
 
 namespace turtle::config {
 namespace {
+Scenario scenario(const std::string& value) {
+    for (auto item : {Scenario::Handshake, Scenario::ServerPing, Scenario::FinishedPing,
+                      Scenario::ClientRequest})
+        if (value == model::name(item))
+            return item;
+    throw std::invalid_argument(
+        "scenario must be handshake, server-ping, finished-ping or client-request");
+}
+SendPolicy send_policy(const std::string& value) {
+    if (value == "native")
+        return SendPolicy::Native;
+    if (value == "server-hello-first")
+        return SendPolicy::ServerHelloFirst;
+    throw std::invalid_argument("send policy must be native or server-hello-first");
+}
+
 using Json = nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -77,8 +93,7 @@ model::FailurePolicy failure_policy(const std::string& value) {
         return model::FailurePolicy::FailFast;
     if (value == "fixed-attempts")
         return model::FailurePolicy::FixedAttempts;
-    throw std::invalid_argument(
-        "measurement.failure_policy must be fail-fast or fixed-attempts");
+    throw std::invalid_argument("measurement.failure_policy must be fail-fast or fixed-attempts");
 }
 
 void keys(const Json& object, std::initializer_list<std::string_view> allowed,
@@ -114,10 +129,27 @@ void profile(model::RunConfig& run, const std::string& filename) {
     if (document.contains("tls")) {
         const auto& tls = document.at("tls");
         keys(tls,
-             {"version", "cipher", "group", "signature", "server_name", "ca_file",
-              "server_certificate", "server_key", "client_certificate", "client_key", "mutual_auth",
-              "compatibility_ccs", "framework_io", "tickets", "application_bytes",
-              "record_size_limit", "certificate_compression"},
+             {"version",
+              "cipher",
+              "group",
+              "signature",
+              "server_name",
+              "ca_file",
+              "server_certificate",
+              "server_key",
+              "client_certificate",
+              "client_key",
+              "mutual_auth",
+              "compatibility_ccs",
+              "framework_io",
+              "tickets",
+              "application_bytes",
+              "record_size_limit",
+              "certificate_compression",
+              "scenario",
+              "send_policy",
+              "client_application_bytes",
+              "server_application_bytes"},
              "tls");
         if (tls.value("version", "TLS1.3") != "TLS1.3")
             throw std::invalid_argument("only certificate-based TLS1.3 is in scope");
@@ -130,6 +162,16 @@ void profile(model::RunConfig& run, const std::string& filename) {
         assign(tls, "framework_io", run.tls.framework_io);
         assign(tls, "tickets", run.tls.tickets);
         assign(tls, "application_bytes", run.tls.application_bytes);
+        if (tls.contains("scenario"))
+            run.tls.scenario = scenario(tls.at("scenario"));
+        if (tls.contains("send_policy"))
+            run.tls.send_policy = send_policy(tls.at("send_policy"));
+        if (tls.contains("client_application_bytes"))
+            run.tls.client_application_bytes =
+                tls.at("client_application_bytes").get<std::size_t>();
+        if (tls.contains("server_application_bytes"))
+            run.tls.server_application_bytes =
+                tls.at("server_application_bytes").get<std::size_t>();
         assign(tls, "record_size_limit", run.tls.record_size_limit);
         assign(tls, "certificate_compression", run.tls.certificate_compression);
         for (auto [key, value] : {std::pair{"ca_file", &run.tls.ca_file},
@@ -150,11 +192,31 @@ void profile(model::RunConfig& run, const std::string& filename) {
     if (document.contains("measurement")) {
         const auto& m = document.at("measurement");
         keys(m,
-             {"samples", "connections", "warmups", "batch", "seed", "timeout_ms",
-              "failure_policy", "flush_grace_ms", "ca_cpu",
-              "event_capacity", "stream_capacity", "keylog_capacity", "calibration_samples",
-              "mode", "perf", "perf_scope", "kernel_timestamps", "channel_observer", "isolate", "pin_cores", "director_cpu",
-              "client_cpu", "server_cpu"},
+             {"samples",
+              "connections",
+              "warmups",
+              "batch",
+              "seed",
+              "timeout_ms",
+              "failure_policy",
+              "flush_grace_ms",
+              "ca_cpu",
+              "event_capacity",
+              "stream_capacity",
+              "keylog_capacity",
+              "calibration_samples",
+              "mode",
+              "perf",
+              "perf_scope",
+              "kernel_timestamps",
+              "tx_timestamps",
+              "cpu_profile",
+              "channel_observer",
+              "isolate",
+              "pin_cores",
+              "director_cpu",
+              "client_cpu",
+              "server_cpu"},
              "measurement");
         assign(m, "samples", run.samples);
         assign(m, "connections", run.connections);
@@ -171,6 +233,8 @@ void profile(model::RunConfig& run, const std::string& filename) {
         if (m.contains("perf_scope"))
             run.perf_scope = perf_scope(m.at("perf_scope").get<std::string>());
         assign(m, "kernel_timestamps", run.kernel_timestamps);
+        assign(m, "tx_timestamps", run.tx_timestamps);
+        assign(m, "cpu_profile", run.cpu_profile);
         assign(m, "channel_observer", run.channel_observer);
         assign(m, "isolate", run.isolate);
         assign(m, "pin_cores", run.pin_cores);
@@ -239,44 +303,37 @@ void network_manifest(model::RunConfig& run) {
                 "lookup-enabled network manifest requires the CA namespace fd");
         handoff.phase_control_fd = document.at("phase_control_fd").get<int>();
         if (handoff.client_namespace_fd < 0 || handoff.server_namespace_fd < 0 ||
-            handoff.phase_control_fd < 0 ||
-            (fds.contains("ca") && handoff.ca_namespace_fd < 0))
+            handoff.phase_control_fd < 0 || (fds.contains("ca") && handoff.ca_namespace_fd < 0))
             throw std::invalid_argument("network manifest file descriptors must be non-negative");
-        std::vector<int> inherited_fds = {handoff.client_namespace_fd,
-                                          handoff.server_namespace_fd,
+        std::vector<int> inherited_fds = {handoff.client_namespace_fd, handoff.server_namespace_fd,
                                           handoff.phase_control_fd};
         if (fds.contains("ca"))
             inherited_fds.push_back(handoff.ca_namespace_fd);
         std::sort(inherited_fds.begin(), inherited_fds.end());
-        if (std::adjacent_find(inherited_fds.begin(), inherited_fds.end()) !=
-            inherited_fds.end())
+        if (std::adjacent_find(inherited_fds.begin(), inherited_fds.end()) != inherited_fds.end())
             throw std::invalid_argument("network manifest file descriptors must be distinct");
 
         const auto& addresses = document.at("addresses");
-        keys(addresses, {"client_tls", "server", "client_ca", "ca"},
-             "network manifest addresses");
+        keys(addresses, {"client_tls", "server", "client_ca", "ca"}, "network manifest addresses");
         handoff.client_tls_address = addresses.at("client_tls").get<std::string>();
         handoff.server_address = addresses.at("server").get<std::string>();
         if (addresses.contains("client_ca"))
             handoff.client_ca_address = addresses.at("client_ca").get<std::string>();
         if (addresses.contains("ca"))
             handoff.ca_address = addresses.at("ca").get<std::string>();
-        if (run.lookup.enabled &&
-            (!addresses.contains("client_ca") || !addresses.contains("ca")))
+        if (run.lookup.enabled && (!addresses.contains("client_ca") || !addresses.contains("ca")))
             throw std::invalid_argument(
                 "lookup-enabled network manifest requires the CA addresses");
-        if (handoff.client_tls_address != "10.203.1.2" ||
-            handoff.server_address != "10.203.2.2" ||
-            (addresses.contains("client_ca") &&
-             handoff.client_ca_address != "10.203.3.2") ||
+        if (handoff.client_tls_address != "10.203.1.2" || handoff.server_address != "10.203.2.2" ||
+            (addresses.contains("client_ca") && handoff.client_ca_address != "10.203.3.2") ||
             (addresses.contains("ca") && handoff.ca_address != "10.203.4.2"))
             throw std::invalid_argument(
                 "network manifest addresses do not match the fixed topology");
 
         const auto& interfaces = document.at("interfaces");
         keys(interfaces,
-             {"client_tls", "server", "client_ca", "ca", "router_client_tls",
-              "router_server", "router_client_ca", "router_ca"},
+             {"client_tls", "server", "client_ca", "ca", "router_client_tls", "router_server",
+              "router_client_ca", "router_ca"},
              "network manifest interfaces");
         handoff.client_tls_interface = interfaces.at("client_tls").get<std::string>();
         handoff.server_interface = interfaces.at("server").get<std::string>();
@@ -284,8 +341,7 @@ void network_manifest(model::RunConfig& run) {
             handoff.client_ca_interface = interfaces.at("client_ca").get<std::string>();
         if (interfaces.contains("ca"))
             handoff.ca_interface = interfaces.at("ca").get<std::string>();
-        handoff.router_client_tls_interface =
-            interfaces.at("router_client_tls").get<std::string>();
+        handoff.router_client_tls_interface = interfaces.at("router_client_tls").get<std::string>();
         handoff.router_server_interface = interfaces.at("router_server").get<std::string>();
         if (interfaces.contains("router_client_ca"))
             handoff.router_client_ca_interface =
@@ -332,6 +388,24 @@ void network_manifest(model::RunConfig& run) {
 }
 
 void validate(const model::RunConfig& run) {
+    if (run.tls.scenario != Scenario::Handshake &&
+        (run.tls.client_application_bytes.value_or(run.tls.application_bytes) == 0 ||
+         run.tls.server_application_bytes.value_or(run.tls.application_bytes) == 0))
+        throw std::invalid_argument("application scenario requires positive directional sizes");
+    if (run.tls.scenario == Scenario::FinishedPing && !run.tls.framework_io)
+        throw std::invalid_argument("finished-ping requires framework output buffering");
+    if (run.tx_timestamps &&
+        (run.mode != model::Mode::Trace || !run.tls.framework_io || !run.channel_observer))
+        throw std::invalid_argument("tx_timestamps requires trace mode and observed framework I/O");
+    if (run.tx_timestamps && run.stream_capacity >= 0xffffffffULL)
+        throw std::invalid_argument(
+            "TX timestamp byte mapping requires streams shorter than 2^32 bytes");
+    if (run.cpu_profile && run.mode != model::Mode::Timing)
+        throw std::invalid_argument("cpu_profile requires a separate timing-mode run");
+    if (run.cpu_profile && run.lookup.enabled)
+        throw std::invalid_argument("cpu_profile currently supports the TLS-only scenario");
+    if (run.lookup.enabled && run.tls.scenario != Scenario::ClientRequest)
+        throw std::invalid_argument("synthetic lookup currently requires client-request");
     if (run.samples == 0 || run.samples > 10000000)
         throw std::invalid_argument("samples must be 1..10000000");
     if (run.connections == 0 || run.connections > 1025)
@@ -392,17 +466,23 @@ void identify(model::RunConfig& run) {
                         {"framework_io", run.tls.framework_io},
                         {"tickets", run.tls.tickets},
                         {"application_bytes", run.tls.application_bytes},
+                        {"scenario", model::name(run.tls.scenario)},
+                        {"send_policy", model::name(run.tls.send_policy)},
+                        {"client_application_bytes",
+                         run.tls.client_application_bytes.value_or(run.tls.application_bytes)},
+                        {"server_application_bytes",
+                         run.tls.server_application_bytes.value_or(run.tls.application_bytes)},
                         {"record_size_limit", run.tls.record_size_limit},
                         {"certificate_compression", run.tls.certificate_compression}};
     effective["socket"] = {{"tcp_nodelay", run.tcp_nodelay},
                            {"send_buffer", run.socket_send_buffer},
                            {"receive_buffer", run.socket_receive_buffer}};
-    effective["lookup"] = {
-        {"enabled", run.lookup.enabled},
-        {"object_file", run.lookup.object_file},
-        {"cache_mode", model::name(run.lookup.cache_mode)},
-        {"snapshot_file",
-         run.lookup.snapshot_file.empty() ? Json(nullptr) : Json(run.lookup.snapshot_file)}};
+    effective["lookup"] = {{"enabled", run.lookup.enabled},
+                           {"object_file", run.lookup.object_file},
+                           {"cache_mode", model::name(run.lookup.cache_mode)},
+                           {"snapshot_file", run.lookup.snapshot_file.empty()
+                                                 ? Json(nullptr)
+                                                 : Json(run.lookup.snapshot_file)}};
     // Retain certificate content identity as well as paths. Do not put private
     // key contents into JSON. These fingerprints are not cryptographic hashes.
     effective["certificate_inputs"] = Json::object();
@@ -449,7 +529,8 @@ Command parse(int argc, char** argv) {
         }
         if (name == "--no-perf" || name == "--no-kernel-timestamps" || name == "--no-isolate" ||
             name == "--no-affinity" || name == "--mutual-auth" || name == "--server-auth" ||
-            name == "--native-io" || name == "--no-ccs") {
+            name == "--native-io" || name == "--no-ccs" || name == "--tx-timestamps" ||
+            name == "--cpu-profile") {
             options.push_back({name, {}});
             continue;
         }
@@ -483,8 +564,7 @@ Command parse(int argc, char** argv) {
             if (!run.network_manifest.empty())
                 throw std::invalid_argument("only one network manifest may be supplied");
             run.network_manifest = resolve_path(value);
-        }
-        else if (name == "--pki")
+        } else if (name == "--pki")
             pki(run, resolve_path(value));
         else if (name == "--mode")
             run.mode = mode(value);
@@ -518,6 +598,14 @@ Command parse(int argc, char** argv) {
             run.tls.tickets = number<std::uint32_t>(value, name);
         else if (name == "--application-bytes")
             run.tls.application_bytes = number<std::size_t>(value, name);
+        else if (name == "--scenario")
+            run.tls.scenario = scenario(value);
+        else if (name == "--send-policy")
+            run.tls.send_policy = send_policy(value);
+        else if (name == "--client-bytes")
+            run.tls.client_application_bytes = number<std::size_t>(value, name);
+        else if (name == "--server-bytes")
+            run.tls.server_application_bytes = number<std::size_t>(value, name);
         else if (name == "--cipher")
             run.tls.cipher = value;
         else if (name == "--group")
@@ -528,6 +616,10 @@ Command parse(int argc, char** argv) {
             run.perf = false;
         else if (name == "--no-kernel-timestamps")
             run.kernel_timestamps = false;
+        else if (name == "--tx-timestamps")
+            run.tx_timestamps = true;
+        else if (name == "--cpu-profile")
+            run.cpu_profile = true;
         else if (name == "--no-isolate")
             run.isolate = false;
         else if (name == "--no-affinity")
@@ -566,12 +658,16 @@ std::string usage() {
            "  --network-manifest FILE     Inherited namespace/phase-control handoff\n"
            "  --batch N --seed N --timeout-ms N\n"
            "  --mutual-auth | --server-auth; --tickets N; --no-ccs\n"
+           "  --scenario handshake|server-ping|finished-ping|client-request\n"
+           "  --send-policy native|server-hello-first --client-bytes N --server-bytes N\n"
            "  --cipher NAME --group NAME --signature NAME --application-bytes N\n"
            "  Cipher suite is fixed to TLS_AES_128_GCM_SHA256.\n"
            "  --director-cpu N --client-cpu N --server-cpu N\n"
            "  --event-capacity N --stream-capacity N --keylog-capacity N\n"
            "  --calibration-samples N\n"
            "  --no-perf --no-kernel-timestamps --no-affinity --no-isolate\n"
+           "  --tx-timestamps (trace mode: scheduler/software send/cumulative ACK)\n"
+           "  --cpu-profile (mark separate external CPU sampling run)\n"
            "  --native-io                 Compatibility only: no I/O-boundary capture\n"
            "CLI overrides profile settings. Existing sample files are never overwritten.\n";
 }

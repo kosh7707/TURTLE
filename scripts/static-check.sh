@@ -29,8 +29,6 @@ for entry in commands:
     path = path.resolve()
     if not any(path.is_relative_to(root / component) for component in ("src", "implementations")):
         continue
-    if path in files:
-        continue
     files.add(path)
     selected.append(entry)
 if not selected:
@@ -51,7 +49,8 @@ if [[ "$tool" == cppcheck || "$tool" == all ]]; then
     cppcheck --version
     cppcheck --project="$temporary/compile_commands.json" --std=c++20 \
         --enable=warning,performance,portability --inline-suppr \
-        --suppress=missingIncludeSystem --error-exitcode=1 || failed=1
+        --suppress=missingIncludeSystem "--suppress=*:$root/third_party/*" \
+        --error-exitcode=1 || failed=1
 fi
 if [[ "$tool" == clang-tidy || "$tool" == all ]]; then
     command -v clang-tidy >/dev/null || { echo "clang-tidy가 없습니다" >&2; exit 2; }

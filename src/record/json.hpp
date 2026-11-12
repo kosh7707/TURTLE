@@ -24,6 +24,8 @@ inline nlohmann::json tcp_json(const std::optional<model::TcpInfoSnapshot>& valu
             {"lost", nullable(value->lost)},
             {"snd_mss", nullable(value->snd_mss)},
             {"rcv_mss", nullable(value->rcv_mss)},
+            {"snd_cwnd", nullable(value->snd_cwnd)},
+            {"snd_ssthresh", nullable(value->snd_ssthresh)},
             {"segs_out", nullable(value->segs_out)},
             {"segs_in", nullable(value->segs_in)},
             {"data_segs_out", nullable(value->data_segs_out)},

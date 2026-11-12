@@ -93,7 +93,7 @@ Message receive_message(Waiter& waiter, Deadline deadline);
 void wait(int fd, bool writing, Deadline deadline);
 void barrier(Waiter& waiter, Deadline deadline);
 void barrier(int fd, Deadline deadline);
-void isolate();
+void isolate(bool allow_new_connections = false);
 bool reap(pid_t server, pid_t client, Deadline deadline);
 
 // Enter a borrowed network namespace before creating any data listener/socket.
@@ -116,6 +116,6 @@ bool reap_owned(std::span<const pid_t> children, Deadline deadline);
 // including the trailing newline) on the borrowed Python coordinator socket.
 // EOF is a run-level abort. Callers use the attempt deadline normally and the
 // already-established grace deadline after abort; this helper never extends it.
-PhaseAck exchange_phase(int phase_control_fd, std::uint64_t attempt, Phase phase,
-                        PhaseEdge edge, Deadline deadline);
+PhaseAck exchange_phase(int phase_control_fd, std::uint64_t attempt, Phase phase, PhaseEdge edge,
+                        Deadline deadline);
 } // namespace turtle::control

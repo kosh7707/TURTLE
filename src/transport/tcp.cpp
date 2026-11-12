@@ -1,8 +1,9 @@
 #include "transport/tcp.hpp"
+#include <fcntl.h>
 
 #include <arpa/inet.h>
-#include <netinet/in.h>
 #include <linux/tcp.h>
+#include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -60,8 +61,7 @@ Endpoint socket_endpoint(int fd, bool peer) {
     return endpoint_from(address);
 }
 
-template <class T>
-bool field_returned(socklen_t length, std::size_t offset) noexcept {
+template <class T> bool field_returned(socklen_t length, std::size_t offset) noexcept {
     return static_cast<std::size_t>(length) >= offset + sizeof(T);
 }
 
@@ -123,6 +123,52 @@ Endpoint local_endpoint(int fd) {
     return socket_endpoint(fd, false);
 }
 
+DialAddress prepare_dial(const std::string& source, const Endpoint& target) {
+    return {numeric_ipv4(source, 0).sin_addr.s_addr,
+            numeric_ipv4(target.address, target.port).sin_addr.s_addr, htons(target.port)};
+}
+
+int begin_connect(const DialAddress& address) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        fail("socket");
+    sockaddr_in source{}, target{};
+    source.sin_family = target.sin_family = AF_INET;
+    source.sin_addr.s_addr = address.source;
+    target.sin_addr.s_addr = address.target;
+    target.sin_port = address.port;
+    if (::bind(fd, reinterpret_cast<const sockaddr*>(&source), sizeof(source)) < 0)
+        fail("bind source", fd);
+    if (::connect(fd, reinterpret_cast<const sockaddr*>(&target), sizeof(target)) < 0 &&
+        errno != EINPROGRESS)
+        fail("connect", fd);
+    return fd;
+}
+
+void finish_connect(int fd) {
+    int error = 0;
+    socklen_t size = sizeof(error);
+    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) < 0)
+        fail("connect SO_ERROR");
+    if (error) {
+        errno = error;
+        fail("connect completion");
+    }
+}
+
+void nonblocking_listener(int fd) {
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        fail("nonblocking listener");
+}
+
+int try_accept(int listener) {
+    const int fd = ::accept4(listener, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if (fd < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+        fail("accept");
+    return fd;
+}
+
 Endpoint peer_endpoint(int fd) {
     return socket_endpoint(fd, true);
 }
@@ -156,12 +202,12 @@ model::TcpInfoSnapshot read_tcp_info(int fd) noexcept {
     }
     snapshot.structure_bytes = length;
     bool missing = false;
-#define TURTLE_TCP_INFO_FIELD(target, source)                                                   \
-    do {                                                                                         \
-        if (field_returned<decltype(info.source)>(length, offsetof(tcp_info, source)))           \
-            snapshot.target = info.source;                                                       \
-        else                                                                                     \
-            missing = true;                                                                      \
+#define TURTLE_TCP_INFO_FIELD(target, source)                                                      \
+    do {                                                                                           \
+        if (field_returned<decltype(info.source)>(length, offsetof(tcp_info, source)))             \
+            snapshot.target = info.source;                                                         \
+        else                                                                                       \
+            missing = true;                                                                        \
     } while (false)
     TURTLE_TCP_INFO_FIELD(state, tcpi_state);
     TURTLE_TCP_INFO_FIELD(retransmits, tcpi_retransmits);
@@ -171,6 +217,8 @@ model::TcpInfoSnapshot read_tcp_info(int fd) noexcept {
     TURTLE_TCP_INFO_FIELD(lost, tcpi_lost);
     TURTLE_TCP_INFO_FIELD(snd_mss, tcpi_snd_mss);
     TURTLE_TCP_INFO_FIELD(rcv_mss, tcpi_rcv_mss);
+    TURTLE_TCP_INFO_FIELD(snd_cwnd, tcpi_snd_cwnd);
+    TURTLE_TCP_INFO_FIELD(snd_ssthresh, tcpi_snd_ssthresh);
     TURTLE_TCP_INFO_FIELD(segs_out, tcpi_segs_out);
     TURTLE_TCP_INFO_FIELD(segs_in, tcpi_segs_in);
     TURTLE_TCP_INFO_FIELD(data_segs_out, tcpi_data_segs_out);

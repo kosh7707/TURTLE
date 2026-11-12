@@ -1,5 +1,5 @@
-#include "record/record.hpp"
 #include "model/sample.hpp"
+#include "record/record.hpp"
 #include <cassert>
 #include <cstdlib>
 #include <filesystem>
@@ -80,8 +80,7 @@ int main() {
         topology.cpu = 4;
         topology.package_id = 0;
         topology.core_id = 2;
-        topology.thread_siblings =
-            std::vector<model::CpuSibling>{{4, true}, {5, std::nullopt}};
+        topology.thread_siblings = std::vector<model::CpuSibling>{{4, true}, {5, std::nullopt}};
         info.environment.cpu_topology.push_back(std::move(topology));
         info.config.lookup.enabled = true;
         info.config.lookup.cache_mode = model::CacheMode::FixedSnapshot;
@@ -131,9 +130,8 @@ int main() {
     input >> sample >> event;
     assert(sample["sample"] == 7 && sample["valid"] == false);
     assert(sample["schema"] == model::record_schema);
-    assert(sample["measurement_contract_revision"] ==
-           model::measurement_contract_revision);
-    assert(sample["measurement_contract_revision"] == 2);
+    assert(sample["measurement_contract_revision"] == model::measurement_contract_revision);
+    assert(sample["measurement_contract_revision"] == 3);
     assert(sample["declaration"]["read_ahead"] == false);
     assert(sample["declaration"]["read_ahead_note"] == "exact-needed receive policy");
     assert(sample["capture_dropped"] == 4);
@@ -148,8 +146,7 @@ int main() {
            "server_first_receive_not_observed");
     for (const auto* field : {"tls_stream", "io_events", "kernel_receive_events"}) {
         assert(sample["availability"][field]["available"] == false);
-        assert(sample["availability"][field]["reason"] ==
-               "native_socket_io_not_observed");
+        assert(sample["availability"][field]["reason"] == "native_socket_io_not_observed");
     }
     const auto& config = sample["config"];
     assert(config["scenario_name"] == model::lookup_scenario_name);
@@ -163,17 +160,14 @@ int main() {
     assert(sample["capabilities"]["perf_failure_stage"].is_null());
     assert(sample["capabilities"]["perf_error_number"].is_null());
     assert(sample["environment"]["perf_event_paranoid"] == 2);
-    assert(sample["environment"]["cpu_topology"][0]["thread_siblings"][1]["online"]
-               .is_null());
+    assert(sample["environment"]["cpu_topology"][0]["thread_siblings"][1]["online"].is_null());
     assert(config["lookup"]["enabled"] == true);
     assert(config["lookup"]["cache_mode"] == "fixed-snapshot");
     assert(config["lookup"]["object_file"] == "/input/server-chain.pem");
     assert(config["lookup"]["snapshot_file"] == "/input/cache.json");
     assert(config["network_manifest"] == "/run/network-manifest.json");
-    assert(config["network_handoff"]["provenance_file"] ==
-           "/run/network-provenance.json");
-    assert(config["network_handoff"]["observations_file"] ==
-           "/run/network-observations.jsonl");
+    assert(config["network_handoff"]["provenance_file"] == "/run/network-provenance.json");
+    assert(config["network_handoff"]["observations_file"] == "/run/network-observations.jsonl");
     assert(config["network_handoff"]["net_profile"]["qdisc"] == "none");
     assert(!config["network_handoff"].contains("client_namespace_fd"));
     assert(!config["network_handoff"].contains("phase_control_fd"));

@@ -41,7 +41,7 @@ class Buffer {
     // finish fields after other capture work without allocating or changing
     // event order. A null result records an overflow exactly like append().
     model::Event* prepare_event(model::Event event) noexcept;
-    bool append(model::Event event) noexcept;
+    bool append(const model::Event& event) noexcept;
     bool append_bytes(std::size_t connection, model::Direction direction,
                       std::span<const std::uint8_t> bytes) noexcept;
     bool append_keylog(std::string_view line) noexcept;

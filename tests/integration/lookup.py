@@ -176,7 +176,7 @@ def validate_heap(rows, mode, domain, source):
 def validate_tls(raw, mode, interpret, certificate):
     rows = json_lines(raw)
     header, events = rows[0], rows[1:]
-    check(header["type"] == "sample" and header["schema"] == 1, f"{raw}: TLS schema changed")
+    check(header["type"] == "sample" and header["schema"] == 2, f"{raw}: TLS schema changed")
     check(header["valid"], f"{raw}: {header['invalid_reason']}")
     check(not header["declaration"]["is_mock"], f"{raw}: mock is not TLS evidence")
     check(header["config"]["samples"] == SAMPLES, f"{raw}: sample count changed")

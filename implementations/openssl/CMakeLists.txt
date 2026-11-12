@@ -4,8 +4,22 @@ elseif(DEFINED ENV{TURTLE_DEPS_ROOT} AND EXISTS "$ENV{TURTLE_DEPS_ROOT}/openssl"
   set(OPENSSL_ROOT_DIR "$ENV{TURTLE_DEPS_ROOT}/openssl")
 endif()
 find_package(OpenSSL 3.0 REQUIRED)
+file(STRINGS "${OPENSSL_INCLUDE_DIR}/openssl/ssl.h" _turtle_openssl_trace
+     REGEX "^# *define TURTLE_OPENSSL_TRACE_PATCH")
 add_library(turtle_adapter_openssl MODULE adapter.cpp)
 target_include_directories(turtle_adapter_openssl PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../include)
 target_link_libraries(turtle_adapter_openssl PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 set_target_properties(turtle_adapter_openssl PROPERTIES PREFIX "" OUTPUT_NAME "openssl" LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/adapters")
 target_compile_features(turtle_adapter_openssl PRIVATE cxx_std_20)
+if(_turtle_openssl_trace)
+  set_property(TARGET turtle_adapter_openssl PROPERTY TURTLE_INTERNAL_TRACE TRUE)
+endif()
+
+file(SHA256 "${CMAKE_CURRENT_LIST_DIR}/instrumentation.patch" _turtle_patch_hash)
+if(_turtle_openssl_trace)
+  include(../common/patch-provenance.cmake)
+  turtle_check_patch_manifest(openssl "${_turtle_patch_hash}")
+endif()
+target_compile_definitions(turtle_adapter_openssl PRIVATE TURTLE_PATCH_SHA256="${_turtle_patch_hash}")
+
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/instrumentation.patch")

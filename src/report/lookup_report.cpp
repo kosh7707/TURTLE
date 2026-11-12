@@ -1,6 +1,6 @@
-#include "report/report.hpp"
-#include "report/perf_condition.hpp"
 #include "report/network_evidence.hpp"
+#include "report/perf_condition.hpp"
+#include "report/report.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -97,9 +97,8 @@ std::optional<std::uint64_t> timestamp(const std::vector<Json>& events, std::siz
     return value;
 }
 
-std::optional<std::uint64_t> cpu_timestamp(const std::vector<Json>& events,
-                                           std::size_t connection, std::string_view kind,
-                                           bool last = false) {
+std::optional<std::uint64_t> cpu_timestamp(const std::vector<Json>& events, std::size_t connection,
+                                           std::string_view kind, bool last = false) {
     std::optional<std::uint64_t> value;
     for (const auto& event : events) {
         if (event.value("connection", std::size_t(-1)) != connection ||
@@ -186,16 +185,17 @@ Json io_interval_sum(const std::vector<Json>& events, std::size_t connection) {
 }
 
 Json tcp_delta(const Json& summary) {
-    Json result = {{"start", nullptr}, {"end", nullptr}, {"deltas", Json::object()},
+    Json result = {{"start", nullptr},
+                   {"end", nullptr},
+                   {"deltas", Json::object()},
                    {"delta_reasons", Json::object()}};
-    if (!summary.is_object() || !summary.contains("tcp_start") ||
-        !summary.contains("tcp_end") || !summary.at("tcp_start").is_object() ||
-        !summary.at("tcp_end").is_object())
+    if (!summary.is_object() || !summary.contains("tcp_start") || !summary.contains("tcp_end") ||
+        !summary.at("tcp_start").is_object() || !summary.at("tcp_end").is_object())
         return result;
     result["start"] = summary.at("tcp_start");
     result["end"] = summary.at("tcp_end");
-    for (const char* field : {"total_retrans", "segs_out", "segs_in", "data_segs_out", "data_segs_in",
-                              "bytes_acked", "bytes_received"}) {
+    for (const char* field : {"total_retrans", "segs_out", "segs_in", "data_segs_out",
+                              "data_segs_in", "bytes_acked", "bytes_received"}) {
         const auto& start = summary.at("tcp_start");
         const auto& end = summary.at("tcp_end");
         if (!start.contains(field) || !end.contains(field) || start.at(field).is_null() ||
@@ -294,7 +294,8 @@ Json endpoint_identity(const std::optional<Json>& header, std::string_view role)
     for (const char* field : {"monotonic_clock", "thread_cpu_clock", "perf", "heap_tracking",
                               "affinity", "kernel_timestamp_configured"})
         support[field] = capabilities.contains(field) ? capabilities.at(field) : Json(nullptr);
-    return {{"role", role}, {"adapter", config.value(adapter, Json(nullptr))},
+    return {{"role", role},
+            {"adapter", config.value(adapter, Json(nullptr))},
             {"library", declaration.value("library", Json(nullptr))},
             {"library_version", declaration.value("version", Json(nullptr))},
             {"build_options", declaration.value("build_options", Json(nullptr))},
@@ -303,25 +304,24 @@ Json endpoint_identity(const std::optional<Json>& header, std::string_view role)
             {"loaded_context", tls_context_identity(*header)},
             {"mode", header->value("mode", Json(nullptr))},
             {"pinned_cpu", header->value("pinned_cpu", Json(nullptr))},
-            {"measurement_controls", {{"perf", config.value("perf", Json(nullptr))},
-                                       {"perf_scope", perf.controls.at("perf_scope")},
-                                       {"isolate", config.value("isolate", Json(nullptr))},
-                                       {"pin_cores", config.value("pin_cores", Json(nullptr))},
-                                       {"kernel_timestamps", config.value("kernel_timestamps", Json(nullptr))},
-                                       {"channel_observer",
-                                        config.value("channel_observer", true) &&
-                                            header->value("observation_level", std::string()) !=
-                                                "observer-disabled"}}},
+            {"measurement_controls",
+             {{"perf", config.value("perf", Json(nullptr))},
+              {"perf_scope", perf.controls.at("perf_scope")},
+              {"isolate", config.value("isolate", Json(nullptr))},
+              {"pin_cores", config.value("pin_cores", Json(nullptr))},
+              {"kernel_timestamps", config.value("kernel_timestamps", Json(nullptr))},
+              {"channel_observer",
+               config.value("channel_observer", true) &&
+                   header->value("observation_level", std::string()) != "observer-disabled"}}},
             {"support", support}};
 }
 
 bool endpoint_identity_complete(const Json& endpoint) {
     if (!endpoint.is_object())
         return false;
-    for (const char* field : {"adapter", "library", "library_version", "build_options",
-                              "measurement_contract_revision", "environment_hash",
-                              "loaded_context", "mode",
-                              "measurement_controls", "support"})
+    for (const char* field :
+         {"adapter", "library", "library_version", "build_options", "measurement_contract_revision",
+          "environment_hash", "loaded_context", "mode", "measurement_controls", "support"})
         if (!endpoint.contains(field) || endpoint.at(field).is_null() ||
             (endpoint.at(field).is_string() && endpoint.at(field).get<std::string>().empty()))
             return false;
@@ -335,11 +335,10 @@ bool endpoint_identity_complete(const Json& endpoint) {
     for (const auto* object_name : {"measurement_controls", "support"})
         for (auto it = endpoint.at(object_name).begin(); it != endpoint.at(object_name).end(); ++it)
             if (it.value().is_null() &&
-                !(std::string_view(object_name) == "support" &&
-                  it.key() == "perf_effective_scope"))
+                !(std::string_view(object_name) == "support" && it.key() == "perf_effective_scope"))
                 return false;
     return detail::complete_perf_condition(endpoint.at("measurement_controls"),
-                                            endpoint.at("support"));
+                                           endpoint.at("support"));
 }
 
 Json value_or_null(const Json& object, std::string_view key) {
@@ -360,8 +359,7 @@ bool observed_socket_complete(const Json& socket) {
 }
 
 Json all_socket_settings(const std::optional<Json>& header) {
-    if (!header || !header->contains("connections") ||
-        !header->at("connections").is_array())
+    if (!header || !header->contains("connections") || !header->at("connections").is_array())
         return nullptr;
     Json settings = Json::array();
     for (const auto& connection : header->at("connections"))
@@ -381,26 +379,26 @@ bool observed_socket_array_complete(const Json& settings) {
 bool connection_policy_complete(const Json& policy) {
     if (!policy.is_object())
         return false;
-    for (const char* field : {"warmups", "connections", "tcp_nodelay", "socket_send_buffer",
-                              "socket_receive_buffer", "timeout_ms", "failure_policy",
-                              "flush_grace_ms"})
+    for (const char* field :
+         {"warmups", "connections", "tcp_nodelay", "socket_send_buffer", "socket_receive_buffer",
+          "timeout_ms", "failure_policy", "flush_grace_ms"})
         if (!policy.contains(field) || policy.at(field).is_null())
             return false;
     return observed_socket_complete(policy.value("client_socket_actual", Json(nullptr))) &&
            observed_socket_complete(policy.value("server_socket_actual", Json(nullptr))) &&
-           observed_socket_array_complete(
-               policy.value("client_sockets_actual", Json(nullptr))) &&
-           observed_socket_array_complete(
-               policy.value("server_sockets_actual", Json(nullptr)));
+           observed_socket_array_complete(policy.value("client_sockets_actual", Json(nullptr))) &&
+           observed_socket_array_complete(policy.value("server_sockets_actual", Json(nullptr)));
 }
 
 bool volatile_identity_key(std::string_view key) {
-    static constexpr std::string_view exact[] = {
-        "pid",          "pids",       "fd",          "fds",       "path",
-        "port",         "ports",      "handle",      "timestamp",
-        "monotonic_ns", "namespace_pid", "namespace_inode", "time", "started_at",
-        "ended_at",     "drops",      "drop",        "actual_drop", "retrans",
-        "retransmits",  "total_retrans", "outcome",  "status",    "reason"};
+    static constexpr std::string_view exact[] = {"pid",          "pids",          "fd",
+                                                 "fds",          "path",          "port",
+                                                 "ports",        "handle",        "timestamp",
+                                                 "monotonic_ns", "namespace_pid", "namespace_inode",
+                                                 "time",         "started_at",    "ended_at",
+                                                 "drops",        "drop",          "actual_drop",
+                                                 "retrans",      "retransmits",   "total_retrans",
+                                                 "outcome",      "status",        "reason"};
     return std::find(std::begin(exact), std::end(exact), key) != std::end(exact);
 }
 
@@ -439,8 +437,8 @@ bool contains_identity_key(const Json& value, std::string_view key) {
 }
 
 std::map<std::uint64_t, Attempt> ledger_attempts(const std::filesystem::path& root,
-                                                  std::size_t& requested,
-                                                  std::string& ledger_status) {
+                                                 std::size_t& requested,
+                                                 std::string& ledger_status) {
     std::map<std::uint64_t, Attempt> attempts;
     const auto path = root / "attempts.jsonl";
     std::error_code status_error;
@@ -467,7 +465,8 @@ std::map<std::uint64_t, Attempt> ledger_attempts(const std::filesystem::path& ro
         attempt.observation_ids = row.value("network_observation_ids", Json::array());
         attempt.legacy_artifact_status = row.value("artifact_status", Json::array());
         attempt.artifacts = row.contains("artifacts") && row.at("artifacts").is_object()
-                                ? row.at("artifacts") : Json::object();
+                                ? row.at("artifacts")
+                                : Json::object();
         if (kind == "attempt_final") {
             // A parent final row is authoritative. Child validity is never consulted here.
             attempt.status = row.value("final_status", "incomplete");
@@ -492,7 +491,7 @@ std::map<std::uint64_t, Attempt> ledger_attempts(const std::filesystem::path& ro
 std::optional<Json> tls_partition(const std::filesystem::path& path, std::size_t connection) {
     const auto rows = json_lines(path);
     if (rows.empty() || rows.front().value("type", "") != "sample" ||
-        rows.front().value("schema", 0) != 1)
+        (rows.front().value("schema", 0) != 1 && rows.front().value("schema", 0) != 2))
         return std::nullopt;
     std::vector<Json> events(rows.begin() + 1, rows.end());
     try {
@@ -507,7 +506,7 @@ std::optional<Json> tls_partition(const std::filesystem::path& path, std::size_t
 std::optional<Json> tls_header(const std::filesystem::path& path) {
     const auto rows = json_lines(path);
     if (!rows.empty() && rows.front().value("type", "") == "sample" &&
-        rows.front().value("schema", 0) == 1)
+        (rows.front().value("schema", 0) == 1 || rows.front().value("schema", 0) == 2))
         return rows.front();
     return std::nullopt;
 }
@@ -538,9 +537,8 @@ std::uint64_t sample_id(const Artifact& lookup, const std::optional<Json>& clien
     return 0;
 }
 
-std::string legacy_status(const std::filesystem::path& directory,
-                          const std::optional<Json>& client, const std::optional<Json>& server,
-                          std::string& reason) {
+std::string legacy_status(const std::filesystem::path& directory, const std::optional<Json>& client,
+                          const std::optional<Json>& server, std::string& reason) {
     std::ifstream director(directory / "director.txt");
     std::string line;
     if (director && (!std::getline(director, line) || line != "valid")) {
@@ -575,12 +573,12 @@ Json status_counts(const std::map<std::uint64_t, Attempt>& attempts, std::size_t
 
 Json metric_distribution(const std::vector<double>& values) {
     if (values.empty())
-        return {{"count", 0}, {"minimum", nullptr}, {"maximum", nullptr},
-                {"stq1", nullptr}, {"stq2", nullptr}, {"stq3", nullptr},
-                {"values", Json::array()}};
+        return {
+            {"count", 0},      {"minimum", nullptr}, {"maximum", nullptr},     {"stq1", nullptr},
+            {"stq2", nullptr}, {"stq3", nullptr},    {"values", Json::array()}};
     const auto value = statistics(values);
     return {{"count", value.count}, {"minimum", value.minimum}, {"maximum", value.maximum},
-            {"stq1", value.stq[0]}, {"stq2", value.stq[1]}, {"stq3", value.stq[2]},
+            {"stq1", value.stq[0]}, {"stq2", value.stq[1]},     {"stq3", value.stq[2]},
             {"values", values}};
 }
 } // namespace
@@ -617,8 +615,8 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
             attempt.id = id;
             attempt.started = true;
             attempt.source = "legacy_tls_director_fallback";
-            attempt.status = legacy_status(sample.directory, sample.client, sample.server,
-                                           attempt.reason);
+            attempt.status =
+                legacy_status(sample.directory, sample.client, sample.server, attempt.reason);
             if (sample.client && sample.client->contains("connections"))
                 for (const auto& connection : sample.client->at("connections"))
                     attempt.connections.push_back(connection.at("index"));
@@ -630,10 +628,8 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
     std::vector<NetworkAttempt> network_attempts;
     network_attempts.reserve(attempts.size());
     for (const auto& [id, attempt] : attempts)
-        network_attempts.push_back(
-            {id, attempt.started, attempt.status, attempt.observation_ids});
-    const auto network = read_network_evidence(
-        root, NetworkTopology::lookup_4ns, network_attempts);
+        network_attempts.push_back({id, attempt.started, attempt.status, attempt.observation_ids});
+    const auto network = read_network_evidence(root, NetworkTopology::lookup_4ns, network_attempts);
     const auto& network_identity = network.condition_identity;
     const auto& network_observations = network.observations;
     const auto& run_network_integrity = network.integrity;
@@ -654,7 +650,8 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                 indices.insert(index);
             }
             if (sample_it->second.client)
-                for (const auto& connection : sample_it->second.client->value("connections", Json::array()))
+                for (const auto& connection :
+                     sample_it->second.client->value("connections", Json::array()))
                     indices.insert(connection.at("index").get<std::size_t>());
             for (const auto index : indices)
                 connections.push_back(index);
@@ -686,7 +683,8 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                 if (network_required) {
                     row_network_integrity["eligible"] = false;
                     row_network_integrity["status"] = "failed";
-                    row_network_integrity["reasons"].push_back("network_observation_references_missing");
+                    row_network_integrity["reasons"].push_back(
+                        "network_observation_references_missing");
                 }
             }
             for (const auto& observation_id : attempt.observation_ids) {
@@ -709,8 +707,7 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                                                    !observation.at("packet_trace").is_null()));
                 }
                 row["network_observation_reference_status"].push_back(
-                    {{"observation_id", id_value},
-                     {"present", present}});
+                    {{"observation_id", id_value}, {"present", present}});
                 if (network_required && !present) {
                     row_network_integrity["eligible"] = false;
                     row_network_integrity["status"] = "failed";
@@ -737,15 +734,18 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
             row["descriptive_distribution_eligible"] =
                 !network_required || row_network_integrity.value("eligible", false);
             bool warmup = false;
-            if (sample_it != samples.end() && sample_it->second.lookup.connections.contains(connection))
+            if (sample_it != samples.end() &&
+                sample_it->second.lookup.connections.contains(connection))
                 warmup = sample_it->second.lookup.connections.at(connection).value("warmup", false);
             else if (sample_it != samples.end() && sample_it->second.client)
-                for (const auto& item : sample_it->second.client->value("connections", Json::array()))
+                for (const auto& item :
+                     sample_it->second.client->value("connections", Json::array()))
                     if (item.value("index", std::size_t(-1)) == connection)
                         warmup = item.value("warmup", false);
             row["warmup"] = warmup;
 
-            const Artifact* lookup = sample_it == samples.end() ? nullptr : &sample_it->second.lookup;
+            const Artifact* lookup =
+                sample_it == samples.end() ? nullptr : &sample_it->second.lookup;
             const Artifact* ca = sample_it == samples.end() ? nullptr : &sample_it->second.ca;
             const Json* lookup_summary = nullptr;
             const Json* ca_summary = nullptr;
@@ -755,64 +755,73 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                 ca_summary = &ca->connections.at(connection);
             const bool hit = lookup_summary && lookup_summary->value("cache_hit", false);
             row["cache_hit"] = hit;
-            row["request_count"] = lookup_summary
-                                       ? Json(lookup_summary->value("request_count", 0))
-                                       : Json(nullptr);
-            row["lookup_artifact"] = lookup_summary ? Json({
-                {"status", lookup_summary->value("artifact_status", "missing")},
-                {"object_id", lookup_summary->value("object_id", Json(nullptr))},
-                {"object_size", lookup_summary->value("object_size", Json(nullptr))},
-                {"logical_cache_bytes", lookup_summary->value("logical_cache_bytes", Json(nullptr))},
-                {"cache_capacity", lookup_summary->value("cache_capacity", Json(nullptr))},
-                {"reference_bytes", lookup_summary->value("reference_bytes", Json(nullptr))},
-                {"framework_reserved_bytes", lookup_summary->value("framework_reserved_bytes", Json(nullptr))}})
-                                                     : Json(nullptr);
-            row["ca_artifact"] = ca_summary ? Json({
-                {"status", ca_summary->value("artifact_status", "missing")},
-                {"object_id", ca_summary->value("object_id", Json(nullptr))},
-                {"object_size", ca_summary->value("object_size", Json(nullptr))},
-                {"framework_reserved_bytes", ca_summary->value("framework_reserved_bytes", Json(nullptr))}})
-                                             : Json(nullptr);
+            row["request_count"] =
+                lookup_summary ? Json(lookup_summary->value("request_count", 0)) : Json(nullptr);
+            row["lookup_artifact"] =
+                lookup_summary
+                    ? Json({{"status", lookup_summary->value("artifact_status", "missing")},
+                            {"object_id", lookup_summary->value("object_id", Json(nullptr))},
+                            {"object_size", lookup_summary->value("object_size", Json(nullptr))},
+                            {"logical_cache_bytes",
+                             lookup_summary->value("logical_cache_bytes", Json(nullptr))},
+                            {"cache_capacity",
+                             lookup_summary->value("cache_capacity", Json(nullptr))},
+                            {"reference_bytes",
+                             lookup_summary->value("reference_bytes", Json(nullptr))},
+                            {"framework_reserved_bytes",
+                             lookup_summary->value("framework_reserved_bytes", Json(nullptr))}})
+                    : Json(nullptr);
+            row["ca_artifact"] =
+                ca_summary ? Json({{"status", ca_summary->value("artifact_status", "missing")},
+                                   {"object_id", ca_summary->value("object_id", Json(nullptr))},
+                                   {"object_size", ca_summary->value("object_size", Json(nullptr))},
+                                   {"framework_reserved_bytes",
+                                    ca_summary->value("framework_reserved_bytes", Json(nullptr))}})
+                           : Json(nullptr);
 
             if (hit) {
                 row["remote_lookup_duration_ns"] = nullptr;
                 row["remote_lookup_duration_reason"] = "not_applicable_cache_hit";
             } else {
                 duration(row, "remote_lookup_duration",
-                         lookup ? timestamp(lookup->events, connection, "REQUEST_BEGIN") : std::nullopt,
+                         lookup ? timestamp(lookup->events, connection, "REQUEST_BEGIN")
+                                : std::nullopt,
                          lookup ? timestamp(lookup->events, connection, "RESPONSE_COMPLETE", true)
                                 : std::nullopt,
                          "missing_lookup_request_or_response_boundary");
             }
             duration(row, "usable_duration",
                      lookup ? timestamp(lookup->events, connection,
-                                        hit ? "CACHE_LOOKUP" : "REQUEST_BEGIN") : std::nullopt,
+                                        hit ? "CACHE_LOOKUP" : "REQUEST_BEGIN")
+                            : std::nullopt,
                      lookup ? timestamp(lookup->events, connection, "USABLE_OBJECT", true)
                             : std::nullopt,
                      hit ? "missing_cache_lookup_or_usable_boundary"
                          : "missing_lookup_request_or_usable_boundary");
-            duration(row, "scenario_elapsed",
-                     lookup ? timestamp(lookup->events, connection, "SCENARIO_BEGIN") : std::nullopt,
-                     lookup ? timestamp(lookup->events, connection, "SCENARIO_END", true)
-                            : std::nullopt,
-                     "missing_scenario_boundary");
+            duration(
+                row, "scenario_elapsed",
+                lookup ? timestamp(lookup->events, connection, "SCENARIO_BEGIN") : std::nullopt,
+                lookup ? timestamp(lookup->events, connection, "SCENARIO_END", true) : std::nullopt,
+                "missing_scenario_boundary");
             duration(row, "ca_process",
                      ca ? timestamp(ca->events, connection, "CA_PROCESS_BEGIN") : std::nullopt,
                      ca ? timestamp(ca->events, connection, "CA_PROCESS_END", true) : std::nullopt,
                      hit ? "not_applicable_cache_hit" : "missing_ca_process_boundary");
             duration(row, "ca_cpu",
                      ca ? cpu_timestamp(ca->events, connection, "CA_PROCESS_BEGIN") : std::nullopt,
-                     ca ? cpu_timestamp(ca->events, connection, "CA_PROCESS_END", true) : std::nullopt,
+                     ca ? cpu_timestamp(ca->events, connection, "CA_PROCESS_END", true)
+                        : std::nullopt,
                      hit ? "not_applicable_cache_hit" : "missing_ca_cpu_boundary");
-            row["ca_io_ns"] = ca ? io_interval_sum(ca->events, connection)
-                                   : Json(nullptr);
-            row["ca_io_reason"] = row["ca_io_ns"].is_null()
-                                      ? Json(hit ? "not_applicable_cache_hit" : "missing_or_unpaired_ca_io_boundary")
-                                      : Json(nullptr);
-            row["ca_wait_ns"] = ca ? interval_sum(ca->events, connection, "WAIT_BEGIN", "WAIT_END")
-                                     : Json(nullptr);
+            row["ca_io_ns"] = ca ? io_interval_sum(ca->events, connection) : Json(nullptr);
+            row["ca_io_reason"] =
+                row["ca_io_ns"].is_null()
+                    ? Json(hit ? "not_applicable_cache_hit" : "missing_or_unpaired_ca_io_boundary")
+                    : Json(nullptr);
+            row["ca_wait_ns"] =
+                ca ? interval_sum(ca->events, connection, "WAIT_BEGIN", "WAIT_END") : Json(nullptr);
             row["ca_wait_reason"] = row["ca_wait_ns"].is_null()
-                                        ? Json(hit ? "not_applicable_cache_hit" : "missing_or_unpaired_ca_wait_boundary")
+                                        ? Json(hit ? "not_applicable_cache_hit"
+                                                   : "missing_or_unpaired_ca_wait_boundary")
                                         : Json(nullptr);
 
             std::optional<Json> tls;
@@ -826,61 +835,76 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                 row["tls_elapsed_reason"] = tls ? tls->value("reason", "invalid_tls_boundaries")
                                                 : "missing_tls_artifact_or_connection";
             }
-            const Json* client_connection = sample_it == samples.end()
-                                                ? nullptr
-                                                : tls_connection(sample_it->second.client, connection);
-            const Json* server_connection = sample_it == samples.end()
-                                                ? nullptr
-                                                : tls_connection(sample_it->second.server, connection);
+            const Json* client_connection =
+                sample_it == samples.end() ? nullptr
+                                           : tls_connection(sample_it->second.client, connection);
+            const Json* server_connection =
+                sample_it == samples.end() ? nullptr
+                                           : tls_connection(sample_it->second.server, connection);
             row["tcp_counter_deltas"] = {
                 {"lookup", lookup_summary ? tcp_delta(*lookup_summary) : Json(nullptr)},
                 {"ca", ca_summary ? tcp_delta(*ca_summary) : Json(nullptr)},
                 {"tls_client", client_connection ? tcp_delta(*client_connection) : Json(nullptr)},
                 {"tls_server", server_connection ? tcp_delta(*server_connection) : Json(nullptr)}};
 
-            const bool lookup_complete = lookup_summary &&
-                lookup_summary->value("artifact_status", "missing") == "complete";
-            const bool ca_complete = hit || (ca_summary &&
-                ca_summary->value("artifact_status", "missing") == "complete");
+            const bool lookup_complete =
+                lookup_summary && lookup_summary->value("artifact_status", "missing") == "complete";
+            const bool ca_complete =
+                hit ||
+                (ca_summary && ca_summary->value("artifact_status", "missing") == "complete");
             const bool tls_complete = tls && tls->value("valid", false);
-            row["connection_status"] = lookup_complete && ca_complete && tls_complete
-                                           ? "success" : "incomplete";
+            row["connection_status"] =
+                lookup_complete && ca_complete && tls_complete ? "success" : "incomplete";
 
-            Json identity = {{"scenario_name", lookup && lookup->header.contains("scenario_name")
-                                                   ? lookup->header.at("scenario_name") : Json(nullptr)},
-                             {"synthetic_scenario", lookup && lookup->header.value("scenario_name", "") ==
-                                                       "synthetic-lookup-plus-standard-tls"},
-                             {"cache_mode", lookup && lookup->header.contains("cache_mode")
-                                                ? lookup->header.at("cache_mode") : Json(nullptr)},
-                             {"cache_state_id", lookup && lookup->header.contains("cache_state_id")
-                                                    ? lookup->header.at("cache_state_id") : Json(nullptr)},
-                             {"object_id", lookup && lookup->header.contains("object_id")
-                                               ? lookup->header.at("object_id") : Json(nullptr)},
-                             {"object_size", lookup && lookup->header.contains("object_size")
-                                                 ? lookup->header.at("object_size") : Json(nullptr)},
-                             {"initial_cache_bytes", lookup && lookup->header.contains("initial_cache_bytes")
-                                                         ? lookup->header.at("initial_cache_bytes") : Json(nullptr)},
-                             {"initial_cache_capacity", lookup && lookup->header.contains("cache_capacity")
-                                                            ? lookup->header.at("cache_capacity") : Json(nullptr)},
-                             {"reference_bytes", lookup && lookup->header.contains("reference_bytes")
-                                                     ? lookup->header.at("reference_bytes") : Json(nullptr)},
-                             {"ca_object_id", ca && ca->header.contains("object_id")
-                                                   ? ca->header.at("object_id") : Json(nullptr)},
-                             {"ca_object_size", ca && ca->header.contains("object_size")
-                                                     ? ca->header.at("object_size") : Json(nullptr)},
-                             {"observation_level", lookup && lookup->header.contains("observation_level")
-                                                       ? lookup->header.at("observation_level") : Json(nullptr)},
-                             {"ca_observation_level", ca && ca->header.contains("observation_level")
-                                                          ? ca->header.at("observation_level") : Json(nullptr)},
-                             {"lookup_pinned_cpu", lookup && lookup->header.contains("pinned_cpu")
-                                                       ? lookup->header.at("pinned_cpu") : Json(nullptr)},
-                             {"ca_pinned_cpu", ca && ca->header.contains("pinned_cpu")
-                                                   ? ca->header.at("pinned_cpu") : Json(nullptr)},
-                             {"mode", lookup && lookup->header.contains("mode")
-                                          ? lookup->header.at("mode") : Json(nullptr)},
-                             {"connection_position", connection},
-                             {"warmup", warmup},
-                             {"network", network_identity}};
+            Json identity = {
+                {"scenario_name", lookup && lookup->header.contains("scenario_name")
+                                      ? lookup->header.at("scenario_name")
+                                      : Json(nullptr)},
+                {"synthetic_scenario", lookup && lookup->header.value("scenario_name", "") ==
+                                                     "synthetic-lookup-plus-standard-tls"},
+                {"cache_mode", lookup && lookup->header.contains("cache_mode")
+                                   ? lookup->header.at("cache_mode")
+                                   : Json(nullptr)},
+                {"cache_state_id", lookup && lookup->header.contains("cache_state_id")
+                                       ? lookup->header.at("cache_state_id")
+                                       : Json(nullptr)},
+                {"object_id", lookup && lookup->header.contains("object_id")
+                                  ? lookup->header.at("object_id")
+                                  : Json(nullptr)},
+                {"object_size", lookup && lookup->header.contains("object_size")
+                                    ? lookup->header.at("object_size")
+                                    : Json(nullptr)},
+                {"initial_cache_bytes", lookup && lookup->header.contains("initial_cache_bytes")
+                                            ? lookup->header.at("initial_cache_bytes")
+                                            : Json(nullptr)},
+                {"initial_cache_capacity", lookup && lookup->header.contains("cache_capacity")
+                                               ? lookup->header.at("cache_capacity")
+                                               : Json(nullptr)},
+                {"reference_bytes", lookup && lookup->header.contains("reference_bytes")
+                                        ? lookup->header.at("reference_bytes")
+                                        : Json(nullptr)},
+                {"ca_object_id", ca && ca->header.contains("object_id") ? ca->header.at("object_id")
+                                                                        : Json(nullptr)},
+                {"ca_object_size", ca && ca->header.contains("object_size")
+                                       ? ca->header.at("object_size")
+                                       : Json(nullptr)},
+                {"observation_level", lookup && lookup->header.contains("observation_level")
+                                          ? lookup->header.at("observation_level")
+                                          : Json(nullptr)},
+                {"ca_observation_level", ca && ca->header.contains("observation_level")
+                                             ? ca->header.at("observation_level")
+                                             : Json(nullptr)},
+                {"lookup_pinned_cpu", lookup && lookup->header.contains("pinned_cpu")
+                                          ? lookup->header.at("pinned_cpu")
+                                          : Json(nullptr)},
+                {"ca_pinned_cpu", ca && ca->header.contains("pinned_cpu")
+                                      ? ca->header.at("pinned_cpu")
+                                      : Json(nullptr)},
+                {"mode", lookup && lookup->header.contains("mode") ? lookup->header.at("mode")
+                                                                   : Json(nullptr)},
+                {"connection_position", connection},
+                {"warmup", warmup},
+                {"network", network_identity}};
             identity["tcp_preparation"] = {
                 {"lookup", tcp_preparation_identity(lookup_summary)},
                 {"ca", tcp_preparation_identity(ca_summary)},
@@ -888,25 +912,34 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                 {"tls_server", tcp_preparation_identity(server_connection)}};
             if (sample_it != samples.end() && sample_it->second.client) {
                 const auto& header = *sample_it->second.client;
-                identity["connection_policy"] = {{"warmups", value_or_null(header.at("config"), "warmups")},
-                                                   {"connections", value_or_null(header.at("config"), "connections")},
-                                                   {"tcp_nodelay", value_or_null(header.at("config"), "tcp_nodelay")},
-                                                   {"socket_send_buffer", value_or_null(header.at("config"), "socket_send_buffer")},
-                                                   {"socket_receive_buffer", value_or_null(header.at("config"), "socket_receive_buffer")},
-                                                   {"timeout_ms", value_or_null(header.at("config"), "timeout_ms")},
-                                                   {"failure_policy", value_or_null(header.at("config"), "failure_policy")},
-                                                   {"flush_grace_ms", value_or_null(header.at("config"), "flush_grace_ms")},
-                                                   {"client_socket_actual", client_connection && client_connection->contains("socket")
-                                                                                ? client_connection->at("socket") : Json(nullptr)},
-                                                   {"server_socket_actual", server_connection && server_connection->contains("socket")
-                                                                                ? server_connection->at("socket") : Json(nullptr)},
-                                                   {"client_sockets_actual", all_socket_settings(sample_it->second.client)},
-                                                   {"server_sockets_actual", all_socket_settings(sample_it->second.server)}};
+                identity["connection_policy"] = {
+                    {"warmups", value_or_null(header.at("config"), "warmups")},
+                    {"connections", value_or_null(header.at("config"), "connections")},
+                    {"tcp_nodelay", value_or_null(header.at("config"), "tcp_nodelay")},
+                    {"socket_send_buffer",
+                     value_or_null(header.at("config"), "socket_send_buffer")},
+                    {"socket_receive_buffer",
+                     value_or_null(header.at("config"), "socket_receive_buffer")},
+                    {"timeout_ms", value_or_null(header.at("config"), "timeout_ms")},
+                    {"failure_policy", value_or_null(header.at("config"), "failure_policy")},
+                    {"flush_grace_ms", value_or_null(header.at("config"), "flush_grace_ms")},
+                    {"client_socket_actual",
+                     client_connection && client_connection->contains("socket")
+                         ? client_connection->at("socket")
+                         : Json(nullptr)},
+                    {"server_socket_actual",
+                     server_connection && server_connection->contains("socket")
+                         ? server_connection->at("socket")
+                         : Json(nullptr)},
+                    {"client_sockets_actual", all_socket_settings(sample_it->second.client)},
+                    {"server_sockets_actual", all_socket_settings(sample_it->second.server)}};
                 identity["tls_profile_hash"] = header.value("profile_hash", Json(nullptr));
-                identity["client_observation_level"] = header.value("observation_level", Json(nullptr));
-                identity["scenario_name"] = lookup && lookup->header.contains("scenario_name")
-                                                ? lookup->header.at("scenario_name")
-                                                : header.at("config").value("scenario_name", Json(nullptr));
+                identity["client_observation_level"] =
+                    header.value("observation_level", Json(nullptr));
+                identity["scenario_name"] =
+                    lookup && lookup->header.contains("scenario_name")
+                        ? lookup->header.at("scenario_name")
+                        : header.at("config").value("scenario_name", Json(nullptr));
                 identity["client_pinned_cpu"] = header.value("pinned_cpu", Json(nullptr));
                 identity["client_endpoint"] = endpoint_identity(sample_it->second.client, "client");
                 identity["server_endpoint"] = endpoint_identity(sample_it->second.server, "server");
@@ -917,20 +950,36 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                 identity["client_endpoint"] = nullptr;
                 identity["server_endpoint"] = nullptr;
             }
-            identity["server_pinned_cpu"] = sample_it != samples.end() && sample_it->second.server
-                                                  ? sample_it->second.server->value("pinned_cpu", Json(nullptr))
-                                                  : Json(nullptr);
-            identity["server_observation_level"] = sample_it != samples.end() && sample_it->second.server
-                                                        ? sample_it->second.server->value("observation_level", Json(nullptr))
-                                                        : Json(nullptr);
+            identity["server_pinned_cpu"] =
+                sample_it != samples.end() && sample_it->second.server
+                    ? sample_it->second.server->value("pinned_cpu", Json(nullptr))
+                    : Json(nullptr);
+            identity["server_observation_level"] =
+                sample_it != samples.end() && sample_it->second.server
+                    ? sample_it->second.server->value("observation_level", Json(nullptr))
+                    : Json(nullptr);
             identity = stable_identity(identity);
             Json missing_identity = Json::array();
-            for (const char* key : {"scenario_name", "cache_mode", "cache_state_id", "object_id",
-                                    "object_size", "initial_cache_bytes", "initial_cache_capacity",
-                                    "reference_bytes", "observation_level", "ca_observation_level",
-                                    "ca_object_id", "ca_object_size", "network", "mode",
-                                    "connection_position", "warmup", "connection_policy",
-                                    "tls_profile_hash", "client_endpoint", "server_endpoint",
+            for (const char* key : {"scenario_name",
+                                    "cache_mode",
+                                    "cache_state_id",
+                                    "object_id",
+                                    "object_size",
+                                    "initial_cache_bytes",
+                                    "initial_cache_capacity",
+                                    "reference_bytes",
+                                    "observation_level",
+                                    "ca_observation_level",
+                                    "ca_object_id",
+                                    "ca_object_size",
+                                    "network",
+                                    "mode",
+                                    "connection_position",
+                                    "warmup",
+                                    "connection_policy",
+                                    "tls_profile_hash",
+                                    "client_endpoint",
+                                    "server_endpoint",
                                     "tcp_preparation"})
                 if (!identity.contains(key) || identity.at(key).is_null() ||
                     (identity.at(key).is_object() && identity.at(key).empty()))
@@ -953,12 +1002,14 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
             if (!tcp_preparation_complete(identity.at("tcp_preparation")))
                 missing_identity.push_back("tcp_start_mss_missing");
             if (identity.at("client_endpoint").is_object() &&
-                identity.at("client_endpoint").value("measurement_contract_revision",
-                                                       Json(nullptr)).is_null())
+                identity.at("client_endpoint")
+                    .value("measurement_contract_revision", Json(nullptr))
+                    .is_null())
                 missing_identity.push_back("client_measurement_contract_revision_unknown");
             if (identity.at("server_endpoint").is_object() &&
-                identity.at("server_endpoint").value("measurement_contract_revision",
-                                                       Json(nullptr)).is_null())
+                identity.at("server_endpoint")
+                    .value("measurement_contract_revision", Json(nullptr))
+                    .is_null())
                 missing_identity.push_back("server_measurement_contract_revision_unknown");
             if (identity.at("client_endpoint").is_object() &&
                 !detail::complete_perf_condition(
@@ -978,25 +1029,30 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                 missing_identity.empty() && row_network_integrity.value("eligible", false);
             row["comparison_exclusion_reasons"] = Json::array();
             for (const auto& key : missing_identity)
-                row["comparison_exclusion_reasons"].push_back("missing_identity:" + key.get<std::string>());
+                row["comparison_exclusion_reasons"].push_back("missing_identity:" +
+                                                              key.get<std::string>());
             for (const auto& reason : row_network_integrity.at("reasons"))
-                row["comparison_exclusion_reasons"].push_back(
-                    "network_integrity:" + reason.get<std::string>());
+                row["comparison_exclusion_reasons"].push_back("network_integrity:" +
+                                                              reason.get<std::string>());
 
             const auto row_index = joined.size();
             joined.push_back(row);
             attempt_row_refs[id].push_back(row_index);
-            connection_table.push_back({{"attempt_id", id}, {"connection", connection},
+            connection_table.push_back({{"attempt_id", id},
+                                        {"connection", connection},
                                         {"warmup", warmup},
                                         {"status", row["connection_status"]},
                                         {"joined_row", row_index}});
             const auto group_key = identity.dump();
             auto& group = groups[group_key];
             if (group.is_null())
-                group = {{"condition_identity", identity}, {"joined_rows", Json::array()},
+                group = {{"condition_identity", identity},
+                         {"joined_rows", Json::array()},
                          {"automatic_comparison_eligible", row["automatic_comparison_eligible"]},
-                         {"timing_interpretation", lookup && lookup->header.value("mode", "timing") == "timing"
-                                                       ? "performance" : "diagnostic_only"}};
+                         {"timing_interpretation",
+                          lookup && lookup->header.value("mode", "timing") == "timing"
+                              ? "performance"
+                              : "diagnostic_only"}};
             group["automatic_comparison_eligible"] =
                 group.value("automatic_comparison_eligible", false) &&
                 row.value("automatic_comparison_eligible", false);
@@ -1008,10 +1064,12 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
         Json refs = Json::array();
         for (const auto ref : attempt_row_refs[id])
             refs.push_back(ref);
-        attempt_table.push_back({{"attempt_id", id}, {"started", attempt.started},
+        attempt_table.push_back({{"attempt_id", id},
+                                 {"started", attempt.started},
                                  {"final_status", attempt.status},
                                  {"failure_phase", attempt.failure_phase},
-                                 {"reason", attempt.reason}, {"source", attempt.source},
+                                 {"reason", attempt.reason},
+                                 {"source", attempt.source},
                                  {"artifacts", attempt.artifacts},
                                  {"artifact_status", attempt.legacy_artifact_status},
                                  {"network_observation_ids", attempt.observation_ids},
@@ -1021,9 +1079,9 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
     for (auto& [key, group] : groups) {
         (void)key;
         group["distributions"] = Json::object();
-        for (const char* metric : {"remote_lookup_duration_ns", "usable_duration_ns",
-                                   "tls_elapsed_ns", "scenario_elapsed_ns", "ca_process_ns",
-                                   "ca_cpu_ns", "ca_io_ns", "ca_wait_ns"}) {
+        for (const char* metric :
+             {"remote_lookup_duration_ns", "usable_duration_ns", "tls_elapsed_ns",
+              "scenario_elapsed_ns", "ca_process_ns", "ca_cpu_ns", "ca_io_ns", "ca_wait_ns"}) {
             std::vector<double> values;
             if (group.value("timing_interpretation", "diagnostic_only") == "performance") {
                 for (const auto& reference : group.at("joined_rows")) {
@@ -1031,8 +1089,8 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                     if (row.value("warmup", false) ||
                         !row.value("descriptive_distribution_eligible", false) ||
                         row.value("attempt_status", "") != "success" ||
-                        row.value("connection_status", "") != "success" ||
-                        !row.contains(metric) || row.at(metric).is_null())
+                        row.value("connection_status", "") != "success" || !row.contains(metric) ||
+                        row.at(metric).is_null())
                         continue;
                     values.push_back(row.at(metric).get<double>());
                 }
@@ -1043,22 +1101,30 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
     }
     const auto counts = status_counts(attempts, requested);
     if (counts.at("requested").get<std::size_t>() !=
-            counts.at("started").get<std::size_t>() + counts.at("not_attempted").get<std::size_t>() ||
-        counts.at("started").get<std::size_t>() != counts.at("success").get<std::size_t>() +
-            counts.at("timeout").get<std::size_t>() + counts.at("error").get<std::size_t>() +
-            counts.at("incomplete").get<std::size_t>())
+            counts.at("started").get<std::size_t>() +
+                counts.at("not_attempted").get<std::size_t>() ||
+        counts.at("started").get<std::size_t>() !=
+            counts.at("success").get<std::size_t>() + counts.at("timeout").get<std::size_t>() +
+                counts.at("error").get<std::size_t>() + counts.at("incomplete").get<std::size_t>())
         throw std::runtime_error("attempt ledger denominator identities are inconsistent");
 
-    Json result = {{"type", "turtle-lookup-summary"}, {"schema", 1},
-                   {"scenario_disclosure", "synthetic lookup plus stock certificate-based TLS; not a certificate-lightening result"},
-                   {"attempt_ledger_status", ledger_status}, {"denominators", counts},
-                   {"network_integrity", run_network_integrity},
-                   {"condition_groups", condition_groups}, {"attempt_table", attempt_table},
-                   {"connection_table", connection_table}, {"joined_rows", joined},
-                   {"network_observations", network_observations},
-                   {"aggregation_rules", {{"ca_plus_rtt", "never_summed"},
-                                           {"qdisc_per_connection", "reference_only_never_summed"},
-                                           {"memory_mode_timing", "diagnostic_only"}}}};
+    Json result = {
+        {"type", "turtle-lookup-summary"},
+        {"schema", 1},
+        {"scenario_disclosure",
+         "synthetic lookup plus stock certificate-based TLS; not a certificate-lightening result"},
+        {"attempt_ledger_status", ledger_status},
+        {"denominators", counts},
+        {"network_integrity", run_network_integrity},
+        {"condition_groups", condition_groups},
+        {"attempt_table", attempt_table},
+        {"connection_table", connection_table},
+        {"joined_rows", joined},
+        {"network_observations", network_observations},
+        {"aggregation_rules",
+         {{"ca_plus_rtt", "never_summed"},
+          {"qdisc_per_connection", "reference_only_never_summed"},
+          {"memory_mode_timing", "diagnostic_only"}}}};
     return result;
 }
 
@@ -1068,8 +1134,7 @@ Json summarize_lookup(const std::filesystem::path& input, const std::filesystem:
     std::error_code ledger_status_error;
     const auto root_ledger_status =
         std::filesystem::symlink_status(root / "attempts.jsonl", ledger_status_error);
-    if (ledger_status_error &&
-        ledger_status_error != std::errc::no_such_file_or_directory)
+    if (ledger_status_error && ledger_status_error != std::errc::no_such_file_or_directory)
         throw std::runtime_error("cannot inspect authoritative attempt ledger: " +
                                  (root / "attempts.jsonl").string());
     if (root_ledger_status.type() != std::filesystem::file_type::not_found) {
@@ -1088,25 +1153,38 @@ Json summarize_lookup(const std::filesystem::path& input, const std::filesystem:
         runs.push_back(root);
     std::sort(runs.begin(), runs.end());
 
-    Json combined = {{"type", "turtle-lookup-summary"}, {"schema", 1},
-                     {"scenario_disclosure", "synthetic lookup plus stock certificate-based TLS; not a certificate-lightening result"},
-                     {"attempt_ledger_status", runs.size() == 1 ? Json(nullptr) : Json("multiple_authoritative_ledgers")},
-                     {"denominators", {{"requested", 0}, {"started", 0}, {"success", 0},
-                                       {"timeout", 0}, {"error", 0}, {"incomplete", 0},
-                                       {"not_attempted", 0}}},
-                     {"condition_groups", Json::array()}, {"attempt_table", Json::array()},
-                     {"connection_table", Json::array()}, {"joined_rows", Json::array()},
-                     {"network_observations", Json::object()},
-                     {"network_integrity", Json::array()},
-                     {"aggregation_rules", {{"ca_plus_rtt", "never_summed"},
-                                             {"qdisc_per_connection", "reference_only_never_summed"},
-                                             {"memory_mode_timing", "diagnostic_only"}}}};
+    Json combined = {
+        {"type", "turtle-lookup-summary"},
+        {"schema", 1},
+        {"scenario_disclosure",
+         "synthetic lookup plus stock certificate-based TLS; not a certificate-lightening result"},
+        {"attempt_ledger_status",
+         runs.size() == 1 ? Json(nullptr) : Json("multiple_authoritative_ledgers")},
+        {"denominators",
+         {{"requested", 0},
+          {"started", 0},
+          {"success", 0},
+          {"timeout", 0},
+          {"error", 0},
+          {"incomplete", 0},
+          {"not_attempted", 0}}},
+        {"condition_groups", Json::array()},
+        {"attempt_table", Json::array()},
+        {"connection_table", Json::array()},
+        {"joined_rows", Json::array()},
+        {"network_observations", Json::object()},
+        {"network_integrity", Json::array()},
+        {"aggregation_rules",
+         {{"ca_plus_rtt", "never_summed"},
+          {"qdisc_per_connection", "reference_only_never_summed"},
+          {"memory_mode_timing", "diagnostic_only"}}}};
     std::map<std::string, std::size_t> group_indices;
     for (const auto& run : runs) {
         auto report = summarize_lookup_run(run);
         std::error_code ec;
         auto relative = std::filesystem::relative(run, root, ec);
-        const std::string run_id = ec || relative.empty() || relative == "." ? "." : relative.generic_string();
+        const std::string run_id =
+            ec || relative.empty() || relative == "." ? "." : relative.generic_string();
         if (runs.size() == 1)
             combined["attempt_ledger_status"] = report.at("attempt_ledger_status");
         combined["network_integrity"].push_back(
@@ -1132,8 +1210,8 @@ Json summarize_lookup(const std::filesystem::path& input, const std::filesystem:
         }
         for (auto it = report.at("network_observations").begin();
              it != report.at("network_observations").end(); ++it)
-            combined["network_observations"][run_id + ":" + it.key()] =
-                {{"run_id", run_id}, {"observation", it.value()}};
+            combined["network_observations"][run_id + ":" + it.key()] = {
+                {"run_id", run_id}, {"observation", it.value()}};
         for (auto group : report.at("condition_groups")) {
             const auto key = group.at("condition_identity").dump();
             if (!group_indices.contains(key)) {
@@ -1157,12 +1235,13 @@ Json summarize_lookup(const std::filesystem::path& input, const std::filesystem:
     for (auto& group : combined["condition_groups"]) {
         bool group_eligible = true;
         for (const auto& reference : group.at("joined_rows"))
-            group_eligible = group_eligible &&
-                combined["joined_rows"].at(reference.get<std::size_t>())
-                    .value("automatic_comparison_eligible", false);
+            group_eligible = group_eligible && combined["joined_rows"]
+                                                   .at(reference.get<std::size_t>())
+                                                   .value("automatic_comparison_eligible", false);
         group["automatic_comparison_eligible"] = group_eligible;
-        for (const char* metric : {"remote_lookup_duration_ns", "usable_duration_ns", "tls_elapsed_ns",
-                                   "scenario_elapsed_ns", "ca_process_ns", "ca_cpu_ns", "ca_io_ns", "ca_wait_ns"}) {
+        for (const char* metric :
+             {"remote_lookup_duration_ns", "usable_duration_ns", "tls_elapsed_ns",
+              "scenario_elapsed_ns", "ca_process_ns", "ca_cpu_ns", "ca_io_ns", "ca_wait_ns"}) {
             std::vector<double> values;
             if (group.value("timing_interpretation", "diagnostic_only") == "performance")
                 for (const auto& reference : group.at("joined_rows")) {

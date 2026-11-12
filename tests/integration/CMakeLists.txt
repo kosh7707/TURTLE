@@ -1,5 +1,14 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(TURTLE_OPENSSL_PROGRAM openssl REQUIRED)
+add_test(NAME kernel_event_byte_ranges COMMAND ${Python3_EXECUTABLE} -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/kernel_events.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/kernel_observer.py")
+add_test(NAME cpu_sample_analysis COMMAND ${Python3_EXECUTABLE} -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/cpu_profile.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/cpu-profile.py" "$<TARGET_FILE:turtle>")
+add_test(NAME tcp_byte_correlation COMMAND ${Python3_EXECUTABLE} -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/tcp_correlate.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/tcp-correlate.py")
 add_test(NAME study_runner_contracts COMMAND ${Python3_EXECUTABLE} -B
   "${CMAKE_CURRENT_SOURCE_DIR}/study.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run-study.py")
@@ -92,6 +101,13 @@ if(TARGET turtle_adapter_openssl AND TARGET turtle-report AND TARGET turtle-inte
     "$<TARGET_FILE:turtle-interpret>" "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
   set_tests_properties(pure_tls_netem_actual PROPERTIES
     FIXTURES_REQUIRED local_pki TIMEOUT 240 LABELS integration)
+  add_test(NAME network_rate_cwnd_actual_tls COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/network_shaping.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/netem-study.py"
+    "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>"
+    "$<TARGET_FILE:turtle-interpret>" "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
+  set_tests_properties(network_rate_cwnd_actual_tls PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 90 LABELS integration)
   add_test(NAME pipeline_multiple_connections COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/pipeline.py"
     "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
@@ -137,3 +153,47 @@ foreach(name IN LISTS adapters)
       FIXTURES_REQUIRED local_pki TIMEOUT 240 LABELS integration)
   endif()
 endforeach()
+
+if(TARGET turtle_adapter_openssl AND TARGET turtle-interpret)
+  get_target_property(prototype_trace turtle_adapter_openssl TURTLE_INTERNAL_TRACE)
+  if(prototype_trace)
+  add_test(NAME kernel_tx_timestamps_actual_tls COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/tx_timestamps.py" "$<TARGET_FILE:turtle>"
+    "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
+    "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
+  set_tests_properties(kernel_tx_timestamps_actual_tls PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 180 LABELS integration SKIP_RETURN_CODE 77)
+  add_test(NAME prototype_scenarios_actual_tls COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/prototype.py" "$<TARGET_FILE:turtle>"
+    "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
+    "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
+  set_tests_properties(prototype_scenarios_actual_tls PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 240 LABELS integration)
+  endif()
+endif()
+if(TARGET turtle_adapter_bithac_cached AND TARGET turtle-interpret)
+  add_test(NAME bithac_actual_cached_certificates COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/bithac.py" "$<TARGET_FILE:turtle>"
+    "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
+    "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
+  set_tests_properties(bithac_actual_cached_certificates PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 180 LABELS integration)
+endif()
+if(TARGET turtle_adapter_mlkem_avx2 AND TARGET turtle-interpret)
+  add_test(NAME mlkem_actual_dispatch_tls COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/mlkem.py" "$<TARGET_FILE:turtle>"
+    "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
+    "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
+  set_tests_properties(mlkem_actual_dispatch_tls PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 240 LABELS integration)
+  foreach(variant c avx2)
+    set(prefix "${TURTLE_DEPS_ROOT}/install/mlkem-${variant}")
+    add_executable(turtle_mlkem_vectors_${variant} ../adapters/mlkem_vectors.cpp)
+    target_include_directories(turtle_mlkem_vectors_${variant} SYSTEM PRIVATE "${prefix}/include")
+    target_link_libraries(turtle_mlkem_vectors_${variant} PRIVATE "${prefix}/lib/libwolfssl.a" m pthread)
+  endforeach()
+  add_test(NAME mlkem_normal_vectors COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/mlkem_vectors.py"
+    "$<TARGET_FILE:turtle_mlkem_vectors_c>" "$<TARGET_FILE:turtle_mlkem_vectors_avx2>"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../adapters/mlkem-vectors.json")
+endif()

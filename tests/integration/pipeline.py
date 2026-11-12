@@ -68,6 +68,7 @@ def validate_role(raw, mode, interpret):
         check(set(socket) == {
             "nonblocking", "tcp_nodelay", "send_buffer", "receive_buffer",
             "kernel_timestamps",
+            "kernel_tx_timestamps", "kernel_tx_timestamp_error", "kernel_tx_drain_error",
         }, "socket settings schema changed")
         check(socket["nonblocking"] is True, "socket is not nonblocking")
         check(socket["tcp_nodelay"] == header["config"]["tcp_nodelay"],
@@ -76,6 +77,8 @@ def validate_role(raw, mode, interpret):
         check(socket["receive_buffer"] > 0, "invalid effective receive buffer")
         check(isinstance(socket["kernel_timestamps"], bool),
               "kernel timestamp state was not recorded")
+        check(socket['kernel_tx_timestamps'] is False and socket['kernel_tx_timestamp_error'] == 0,
+              'ordinary runs unexpectedly enabled TX tracing')
         check(conn["negotiated"]["version"] == "TLS1.3", "wrong TLS version")
         check(conn["negotiated"]["cipher"] == "TLS_AES_128_GCM_SHA256",
               "wrong TLS cipher suite")

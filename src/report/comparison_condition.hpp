@@ -20,12 +20,11 @@ inline bool observed_socket_settings(const nlohmann::json& settings) {
     return true;
 }
 
-inline bool comparison_condition(const nlohmann::json& dimensions,
-                                 bool group_eligible) {
+inline bool comparison_condition(const nlohmann::json& dimensions, bool group_eligible) {
     if (!group_eligible || dimensions.value("mode", "") != "timing" ||
+        dimensions.value("timing_interpretation", "performance") != "performance" ||
         !dimensions.value("automatic_comparison_identity_complete", false) ||
-        !dimensions.value("peer_verified", false) ||
-        !dimensions.value("peer_valid", false))
+        !dimensions.value("peer_verified", false) || !dimensions.value("peer_valid", false))
         return false;
     if (!observed_socket_settings(dimensions.value("socket_settings", nlohmann::json(nullptr))) ||
         !observed_socket_settings(
@@ -33,8 +32,7 @@ inline bool comparison_condition(const nlohmann::json& dimensions,
         return false;
     for (const char* field : {"context_identity", "peer_context_identity"})
         if (!dimensions.contains(field) || !dimensions.at(field).is_object() ||
-            !dimensions.at(field).contains("hash") ||
-            dimensions.at(field).at("hash").is_null())
+            !dimensions.at(field).contains("hash") || dimensions.at(field).at("hash").is_null())
             return false;
     return true;
 }

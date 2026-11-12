@@ -2,6 +2,14 @@
 
 각 모듈은 공개 계약만 포함하며 컨텍스트와 연결을 직접 소유합니다. 소켓은 빌려 쓰고 닫지 않습니다. 정상 경로의 TLS 1.3 전체 핸드셰이크만 비교합니다. 컨텍스트 저장은 세 어댑터 모두 빈 바이트열을 돌려주며, 비어 있지 않은 저장 상태 입력은 지원하지 않습니다.
 
+## 개정 3의 실제 적용
+
+세 고정 라이브러리는 계측·서버 Ping 지원 패치를 적용한 ABI 3 모듈입니다. 네 시나리오와 두 송신 정책을 실제 TCP에서 검증했습니다. 순수 메시지 생성·처리의 지원 위치는 라이브러리마다 다르므로 [관측 대응 표](../../docs/design/prototype.md)를 따릅니다. wolfSSL의 넓은 송신 구간을 OpenSSL의 구성 함수와 동일 비용으로 비교하지 않습니다.
+
+선택 모듈 `bithac-baseline`과 `bithac`은 저자 wolfSSL 5.7.0 기반 같은 커밋의 쌍입니다. 원본 판·프로토콜 확장·캐시 상태와 실행 지원 패치를 [별도로 설명](../../docs/experiments/research-reproduction.md)합니다.
+
+선택 모듈 `mlkem-c`와 `mlkem-avx2`는 wolfSSL 5.8.2-stable의 같은 커밋·패치에서 두 ML-KEM 소스의 컴파일 분기만 바꾼 쌍입니다. 아래 표준 P-256 키 교환과 달리 ML-KEM-768만 협상합니다. 인증서는 같은 ECDSA P-256이며 실제 KEM API와 다항식 C/AVX2 분기를 추적합니다. [출처·빌드·관측 범위](../../docs/experiments/mlkem-comparison.md)를 따릅니다. ARM 최적화 쌍이나 후보 AVX-512 논문 구현은 아닙니다.
+
 ## 고정 의존성과 빌드
 
 `TURTLE_DEPS_ROOT=<캐시 폴더> scripts/build-deps.sh`는 다음 판을 내려받아 직접 빌드합니다. OpenSSL과 Mbed TLS의 배포 압축 파일은 SHA-256을 검사하고 wolfSSL은 태그의 커밋을 확인합니다. CMake에 같은 `TURTLE_DEPS_ROOT`를 전달합니다. 시험 실행 자체는 네트워크에 접속하지 않습니다.

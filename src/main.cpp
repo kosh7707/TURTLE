@@ -13,8 +13,8 @@ int main(int argc, char** argv) {
         }
         if (command.action == turtle::config::Command::Action::Capabilities) {
             const auto environment = turtle::capability::inspect_environment();
-            turtle::measure::Meter meter(
-                command.run.mode, command.run.perf, command.run.perf_scope);
+            turtle::measure::Meter meter(command.run.mode, command.run.perf,
+                                         command.run.perf_scope);
             const auto& caps = meter.capabilities();
             std::cout << "kernel: " << environment.kernel << "\nCPU: " << environment.cpu_model
                       << "\ncompiler: " << environment.compiler
@@ -38,7 +38,8 @@ int main(int argc, char** argv) {
                       << "\nheap: memory mode + adapter allocator hooks required"
                       << "\nstack: " << caps.stack_tracking << " (" << caps.stack_note << ")"
                       << "\nreceive timestamps: probed on each measured TCP connection"
-                      << "\nTX/NIC timestamps, eBPF and packet capture: not implemented\n";
+                      << "\nTX scheduler/software/ACK timestamps: opt-in trace, probed per socket"
+                      << "\npacket capture: owned netem runner; NIC timestamps/eBPF: unavailable\n";
             for (const auto& warning : environment.warnings) {
                 std::cout << "warning: " << warning << '\n';
             }

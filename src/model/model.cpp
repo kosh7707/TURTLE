@@ -1,6 +1,6 @@
 #include "model/model.hpp"
-#include "model/service.hpp"
 #include "model/build_info.hpp"
+#include "model/service.hpp"
 
 #include <iomanip>
 #include <sstream>
@@ -11,6 +11,51 @@ const char* build_information() noexcept {
     return detail::build_information;
 }
 
+const char* name(Scenario value) noexcept {
+    switch (value) {
+    case Scenario::Handshake:
+        return "handshake";
+    case Scenario::ServerPing:
+        return "server-ping";
+    case Scenario::FinishedPing:
+        return "finished-ping";
+    case Scenario::ClientRequest:
+        return "client-request";
+    }
+    return "unknown";
+}
+const char* name(SendPolicy value) noexcept {
+    return value == SendPolicy::Native ? "native" : "server-hello-first";
+}
+const char* name(TraceOperation value) noexcept {
+    switch (value) {
+    case TraceOperation::MessageGenerate:
+        return "message_generate";
+    case TraceOperation::MessageProcess:
+        return "message_process";
+    case TraceOperation::RecordEncrypt:
+        return "record_encrypt";
+    case TraceOperation::LibraryMessageWrite:
+        return "library_message_write";
+    case TraceOperation::CachedCertificateWrite:
+        return "cached_certificate_write";
+    case TraceOperation::KemKeygen:
+        return "kem_keygen";
+    case TraceOperation::KemEncapsulate:
+        return "kem_encapsulate";
+    case TraceOperation::KemDecapsulate:
+        return "kem_decapsulate";
+    case TraceOperation::KemPolynomialKeygen:
+        return "kem_polynomial_keygen";
+    case TraceOperation::KemPolynomialEncapsulate:
+        return "kem_polynomial_encapsulate";
+    case TraceOperation::KemPolynomialDecapsulate:
+        return "kem_polynomial_decapsulate";
+    case TraceOperation::RecordDecrypt:
+        return "record_decrypt";
+    }
+    return "unknown";
+}
 const char* name(Role value) noexcept {
     return value == Role::Client ? "client" : "server";
 }
@@ -188,6 +233,8 @@ const char* name(Location value) noexcept {
 }
 const char* name(Call value) noexcept {
     switch (value) {
+    case Call::Flush:
+        return "output_flush";
     case Call::None:
         return "none";
     case Call::Setup:
@@ -215,6 +262,44 @@ const char* name(Call value) noexcept {
 }
 const char* name(EventKind value) noexcept {
     switch (value) {
+    case EventKind::ModuleBegin:
+        return "MODULE_BEGIN";
+    case EventKind::ModuleEnd:
+        return "MODULE_END";
+    case EventKind::TcpConnectBegin:
+        return "TCP_CONNECT_BEGIN";
+    case EventKind::TcpConnectEnd:
+        return "TCP_CONNECT_END";
+    case EventKind::AcceptBegin:
+        return "ACCEPT_BEGIN";
+    case EventKind::AcceptEnd:
+        return "ACCEPT_END";
+    case EventKind::HandshakeComplete:
+        return "HANDSHAKE_COMPLETE";
+    case EventKind::ApplicationWriteBegin:
+        return "APPLICATION_WRITE_BEGIN";
+    case EventKind::ApplicationWriteEnd:
+        return "APPLICATION_WRITE_END";
+    case EventKind::ApplicationReadBegin:
+        return "APPLICATION_READ_BEGIN";
+    case EventKind::ApplicationFirstByte:
+        return "APPLICATION_FIRST_BYTE";
+    case EventKind::ApplicationReadEnd:
+        return "APPLICATION_READ_END";
+    case EventKind::PayloadPrepareBegin:
+        return "PAYLOAD_PREPARE_BEGIN";
+    case EventKind::PayloadPrepareEnd:
+        return "PAYLOAD_PREPARE_END";
+    case EventKind::OutputAccepted:
+        return "OUTPUT_ACCEPTED";
+    case EventKind::OutputFlushBegin:
+        return "OUTPUT_FLUSH_BEGIN";
+    case EventKind::OutputFlushEnd:
+        return "OUTPUT_FLUSH_END";
+    case EventKind::InternalBegin:
+        return "INTERNAL_BEGIN";
+    case EventKind::InternalEnd:
+        return "INTERNAL_END";
     case EventKind::SetupBegin:
         return "SETUP_BEGIN";
     case EventKind::SetupEnd:
@@ -275,6 +360,8 @@ const char* name(Step value) noexcept {
         return "want_read";
     case Step::WantWrite:
         return "want_write";
+    case Step::ApplicationWriteReady:
+        return "application_write_ready";
     case Step::Done:
         return "done";
     case Step::Failed:
@@ -299,8 +386,7 @@ std::uint64_t fnv1a64(std::span<const std::uint8_t> bytes) noexcept {
 
 std::string fingerprint(std::span<const std::uint8_t> bytes) {
     std::ostringstream out;
-    out << "fnv1a64:" << std::hex << std::setfill('0') << std::setw(16)
-        << fnv1a64(bytes);
+    out << "fnv1a64:" << std::hex << std::setfill('0') << std::setw(16) << fnv1a64(bytes);
     return out.str();
 }
 

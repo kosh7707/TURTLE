@@ -16,8 +16,8 @@ Json statistics_json(const std::vector<double>& values) {
     if (values.empty())
         return nullptr;
     const auto s = statistics(values);
-    return {{"count", s.count},       {"minimum", s.minimum}, {"maximum", s.maximum},
-            {"stq1", s.stq[0]},      {"stq2", s.stq[1]},     {"stq3", s.stq[2]}};
+    return {{"count", s.count}, {"minimum", s.minimum}, {"maximum", s.maximum},
+            {"stq1", s.stq[0]}, {"stq2", s.stq[1]},     {"stq3", s.stq[2]}};
 }
 
 void normalize_reasons(std::vector<std::string>& reasons) {
@@ -26,17 +26,17 @@ void normalize_reasons(std::vector<std::string>& reasons) {
 }
 
 Json denominators(const RepeatedRunInput& run) {
-    Json result = {{"requested", nullptr}, {"started", nullptr},
-                   {"success", nullptr},   {"timeout", nullptr},
-                   {"error", nullptr},     {"incomplete", nullptr},
+    Json result = {{"requested", nullptr},     {"started", nullptr},
+                   {"success", nullptr},       {"timeout", nullptr},
+                   {"error", nullptr},         {"incomplete", nullptr},
                    {"not_attempted", nullptr}, {"missing_artifacts", nullptr}};
     if (!run.ledger)
         return result;
     result["requested"] = run.ledger->requested;
     if (run.ledger->partial)
         return result;
-    for (const char* field : {"requested", "started", "success", "timeout", "error",
-                              "incomplete", "not_attempted", "missing_artifacts"})
+    for (const char* field : {"requested", "started", "success", "timeout", "error", "incomplete",
+                              "not_attempted", "missing_artifacts"})
         result[field] = run.ledger->run_summary.at(field);
     return result;
 }
@@ -46,8 +46,8 @@ struct MetricResult {
     std::optional<double> representative;
 };
 
-MetricResult metric(const RepeatedContextInput& input, const char* name,
-                    bool execution_complete, bool aggregate_eligible) {
+MetricResult metric(const RepeatedContextInput& input, const char* name, bool execution_complete,
+                    bool aggregate_eligible) {
     if (!input.measured_connections) {
         return {{{"complete", false},
                  {"expected_count", nullptr},
@@ -115,23 +115,20 @@ MetricResult metric(const RepeatedContextInput& input, const char* name,
              {"reasons", reasons},
              {"values", values},
              {"inner_statistics", stats}},
-            complete && aggregate_eligible
-                ? std::optional<double>(stats.at("stq2").get<double>())
-                : std::nullopt};
+            complete && aggregate_eligible ? std::optional<double>(stats.at("stq2").get<double>())
+                                           : std::nullopt};
 }
 
 bool all_success(const RepeatedRunInput& run) {
     if (!run.ledger || run.ledger->partial)
         return false;
     const auto& summary = run.ledger->run_summary;
-    return summary.at("success") == summary.at("requested") &&
-           summary.at("missing_artifacts") == 0;
+    return summary.at("success") == summary.at("requested") && summary.at("missing_artifacts") == 0;
 }
 
 } // namespace
 
-Json repeated_context_summary(std::string selection_scope,
-                              std::vector<RepeatedStudyInput> studies,
+Json repeated_context_summary(std::string selection_scope, std::vector<RepeatedStudyInput> studies,
                               std::vector<RepeatedRunInput> runs,
                               std::vector<RepeatedContextInput> inputs) {
     const auto path_order = [](const auto& a, const auto& b) {
@@ -171,9 +168,8 @@ Json repeated_context_summary(std::string selection_scope,
             {{"root", study.root.string()},
              {"manifest", study.manifest.string()},
              {"namespace_status", study.namespace_status},
-             {"batch_namespace", study.batch_namespace
-                                     ? Json(study.batch_namespace->string())
-                                     : Json(nullptr)},
+             {"batch_namespace",
+              study.batch_namespace ? Json(study.batch_namespace->string()) : Json(nullptr)},
              {"listed_run_roots", listed},
              {"discovered_run_roots", discovered},
              {"coverage_complete", study.coverage_complete},
@@ -211,8 +207,7 @@ Json repeated_context_summary(std::string selection_scope,
         if (!input.raw_valid)
             reasons.push_back("invalid_context");
         const bool duplicate_context_identity =
-            context_identity_counts.at(
-                {input.run_root.string(), input.sample, input.role}) > 1;
+            context_identity_counts.at({input.run_root.string(), input.sample, input.role}) > 1;
         if (duplicate_context_identity)
             reasons.push_back("invalid_context");
         if (input.lookup_scenario)
@@ -246,41 +241,43 @@ Json repeated_context_summary(std::string selection_scope,
         if (observed != expected || extra)
             reasons.push_back("incomplete_connections");
         normalize_reasons(reasons);
-        const bool execution_complete = input.raw_valid && input.peer_verified && input.peer_valid &&
-                                        input.parent_status && *input.parent_status == "success" &&
-                                        input.measured_connections && observed == expected &&
-                                        !extra && !duplicate && partitions_valid &&
-                                        !duplicate_context_identity;
-        const bool status_complete = execution_complete && !input.lookup_scenario &&
-                                     *input.measured_connections >= 2;
+        const bool execution_complete =
+            input.raw_valid && input.peer_verified && input.peer_valid && input.parent_status &&
+            *input.parent_status == "success" && input.measured_connections &&
+            observed == expected && !extra && !duplicate && partitions_valid &&
+            !duplicate_context_identity;
+        const bool status_complete =
+            execution_complete && !input.lookup_scenario && *input.measured_connections >= 2;
         const auto elapsed = metric(input, "elapsed_ns", execution_complete, status_complete);
         const auto cpu = metric(input, "thread_cpu_ns", execution_complete, status_complete);
         Json dimensions = input.dimensions;
         dimensions.erase("connection");
         dimensions["aggregation_policy"] = "context-stq2-v1";
-        dimensions["measured_connections"] = input.measured_connections
-                                                   ? Json(*input.measured_connections)
-                                                   : Json(nullptr);
+        dimensions["measured_connections"] =
+            input.measured_connections ? Json(*input.measured_connections) : Json(nullptr);
         dimensions["warmups"] = input.warmups;
-        dimensions["timeout_ms"] = dimensions.value("run_controls", Json::object())
-                                         .value("timeout_ms", Json(nullptr));
+        dimensions["timeout_ms"] =
+            dimensions.value("run_controls", Json::object()).value("timeout_ms", Json(nullptr));
         Json context = {
-            {"id", {{"run_root", input.run_root.string()}, {"sample", input.sample},
-                    {"role", input.role}}},
+            {"id",
+             {{"run_root", input.run_root.string()},
+              {"sample", input.sample},
+              {"role", input.role}}},
             {"source", input.source.string()},
             {"batch_namespace", run ? Json(run->batch_namespace.string()) : Json(nullptr)},
             {"batch", input.batch},
-            {"measured_connections", input.measured_connections
-                                         ? Json(*input.measured_connections)
-                                         : Json(nullptr)},
+            {"measured_connections",
+             input.measured_connections ? Json(*input.measured_connections) : Json(nullptr)},
             {"warmups", input.warmups},
             {"status", status_complete ? "complete" : "excluded"},
             {"execution_complete", execution_complete},
             {"reasons", reasons},
             {"metrics", {{"elapsed_ns", elapsed.json}, {"thread_cpu_ns", cpu.json}}}};
-        computed.push_back({context, dimensions, input.run_root.string(),
-                            {{"elapsed_ns", elapsed.representative},
-                             {"thread_cpu_ns", cpu.representative}}});
+        computed.push_back(
+            {context,
+             dimensions,
+             input.run_root.string(),
+             {{"elapsed_ns", elapsed.representative}, {"thread_cpu_ns", cpu.representative}}});
         result["contexts"].push_back(std::move(context));
     }
 
@@ -298,10 +295,10 @@ Json repeated_context_summary(std::string selection_scope,
                     context.json.at("id").at("role") != role)
                     continue;
                 ++discovered;
-                duplicate_id = duplicate_id ||
-                               !discovered_ids
-                                    .insert(context.json.at("id").at("sample").get<std::uint64_t>())
-                                    .second;
+                duplicate_id =
+                    duplicate_id ||
+                    !discovered_ids.insert(context.json.at("id").at("sample").get<std::uint64_t>())
+                         .second;
                 execution += context.json.at("execution_complete").get<bool>();
                 elapsed += context.json.at("metrics").at("elapsed_ns").at("complete").get<bool>();
                 cpu += context.json.at("metrics").at("thread_cpu_ns").at("complete").get<bool>();
@@ -314,11 +311,11 @@ Json repeated_context_summary(std::string selection_scope,
                     execution != run.ledger->requested)
                     raw_coverage = false;
             }
-            coverage[role] = {{"expected_contexts", expected},
-                              {"discovered_contexts", discovered},
-                              {"execution_complete_contexts", execution},
-                              {"metric_complete_contexts", {{"elapsed_ns", elapsed},
-                                                             {"thread_cpu_ns", cpu}}}};
+            coverage[role] = {
+                {"expected_contexts", expected},
+                {"discovered_contexts", discovered},
+                {"execution_complete_contexts", execution},
+                {"metric_complete_contexts", {{"elapsed_ns", elapsed}, {"thread_cpu_ns", cpu}}}};
         }
         const bool complete = all_success(run) && raw_coverage;
         if (!raw_coverage)
@@ -329,7 +326,9 @@ Json repeated_context_summary(std::string selection_scope,
         result["runs"].push_back(
             {{"root", run.root.string()},
              {"ledger", run.ledger_path ? Json(run.ledger_path->string()) : Json(nullptr)},
-             {"ledger_status", !run.ledger ? "absent" : run.ledger->partial ? "partial" : "complete"},
+             {"ledger_status", !run.ledger           ? "absent"
+                               : run.ledger->partial ? "partial"
+                                                     : "complete"},
              {"namespace_status", run.namespace_status},
              {"batch_namespace", run.batch_namespace.string()},
              {"batch", run.batch ? Json(*run.batch) : Json(nullptr)},
@@ -343,17 +342,15 @@ Json repeated_context_summary(std::string selection_scope,
     for (auto& study : result["studies"]) {
         bool complete = study.at("coverage_complete").get<bool>();
         for (const auto& listed : study.at("listed_run_roots")) {
-            const auto found = std::find_if(result["runs"].begin(), result["runs"].end(),
-                                            [&](const Json& run) {
-                                                return run.at("root") == listed;
-                                            });
+            const auto found =
+                std::find_if(result["runs"].begin(), result["runs"].end(),
+                             [&](const Json& run) { return run.at("root") == listed; });
             complete = complete && found != result["runs"].end() &&
                        found->at("coverage_complete").get<bool>();
             if (found != result["runs"].end())
-                complete = complete &&
-                           std::find(found->at("reasons").begin(),
-                                     found->at("reasons").end(),
-                                     "study_manifest_mismatch") == found->at("reasons").end();
+                complete =
+                    complete && std::find(found->at("reasons").begin(), found->at("reasons").end(),
+                                          "study_manifest_mismatch") == found->at("reasons").end();
         }
         if (!complete) {
             auto reasons = study.at("reasons").get<std::vector<std::string>>();
@@ -377,8 +374,8 @@ Json repeated_context_summary(std::string selection_scope,
         if (batch_namespace.is_null())
             continue;
         const auto batch = context.json.at("batch").get<std::uint64_t>();
-        const auto key = batch_namespace.dump() + ":" + std::to_string(batch) + ":" +
-                         context.dimensions.dump();
+        const auto key =
+            batch_namespace.dump() + ":" + std::to_string(batch) + ":" + context.dimensions.dump();
         auto& group = grouped[key];
         group.dimensions = context.dimensions;
         group.batch_namespace = batch_namespace.get<std::string>();
@@ -426,14 +423,12 @@ Json repeated_context_summary(std::string selection_scope,
                 exclusion.push_back("selection_scope_partial");
             if (group.batch_namespace.empty())
                 exclusion.push_back("batch_namespace_unverified");
-            const auto study = std::find_if(result["studies"].begin(),
-                                            result["studies"].end(), [&](const Json& item) {
-                                                return item.at("batch_namespace").is_string() &&
-                                                       item.at("batch_namespace") ==
-                                                           group.batch_namespace;
-                                            });
-            if (study != result["studies"].end() &&
-                !study->at("coverage_complete").get<bool>())
+            const auto study = std::find_if(
+                result["studies"].begin(), result["studies"].end(), [&](const Json& item) {
+                    return item.at("batch_namespace").is_string() &&
+                           item.at("batch_namespace") == group.batch_namespace;
+                });
+            if (study != result["studies"].end() && !study->at("coverage_complete").get<bool>())
                 exclusion.push_back("study_coverage_incomplete");
             normalize_reasons(exclusion);
             item["metrics"][metric_name] = {
@@ -461,11 +456,13 @@ Json repeated_context_summary(std::string selection_scope,
             if (diagnostic.is_null())
                 diagnostic = {{"dimensions", dimensions},
                               {"batch_namespace", group.at("batch_namespace")},
-                              {"metric", metric}, {"batches", Json::array()},
+                              {"metric", metric},
+                              {"batches", Json::array()},
                               {"batch_stq2_range", nullptr}};
             const auto& stats = group.at("metrics").at(metric).at("outer_statistics");
             diagnostic["batches"].push_back(
-                {{"batch", group.at("batch")}, {"group_index", gi},
+                {{"batch", group.at("batch")},
+                 {"group_index", gi},
                  {"eligible_contexts", group.at("metrics").at(metric).at("eligible_contexts")},
                  {"stq2", stats.is_null() ? Json(nullptr) : stats.at("stq2")}});
         }
@@ -477,9 +474,8 @@ Json repeated_context_summary(std::string selection_scope,
             if (!batch.at("stq2").is_null())
                 values.push_back(batch.at("stq2").get<double>());
         if (!values.empty())
-            diagnostic["batch_stq2_range"] =
-                *std::max_element(values.begin(), values.end()) -
-                *std::min_element(values.begin(), values.end());
+            diagnostic["batch_stq2_range"] = *std::max_element(values.begin(), values.end()) -
+                                             *std::min_element(values.begin(), values.end());
         result["batch_diagnostics"].push_back(std::move(diagnostic));
     }
 
@@ -493,7 +489,8 @@ Json repeated_context_summary(std::string selection_scope,
                 continue;
             const auto role = da.value("role", "");
             const char* own_adapter = role == "client" ? "client_adapter" : "server_adapter";
-            for (const char* field : {own_adapter, "library", "library_version", "build_options"}) {
+            for (const char* field : {own_adapter, "library", "library_version", "build_options",
+                                      "source_version", "implementation", "patch_hash"}) {
                 da.erase(field);
                 db.erase(field);
             }
@@ -509,14 +506,21 @@ Json repeated_context_summary(std::string selection_scope,
                 const auto bv = mb.at("context_values").get<std::vector<double>>();
                 const auto c = compare(av, bv, 1, 2000);
                 result["comparisons"].push_back(
-                    {{"group_a", a}, {"group_b", b}, {"metric", metric},
+                    {{"group_a", a},
+                     {"group_b", b},
+                     {"metric", metric},
                      {"batch_namespace", result["groups"][a].at("batch_namespace")},
                      {"batch", result["groups"][a].at("batch")},
-                     {"context_count_a", av.size()}, {"context_count_b", bv.size()},
-                     {"difference_b_minus_a_ns", c.difference}, {"lower_95_ns", c.lower},
-                     {"upper_95_ns", c.upper}, {"distinguishable", c.distinguishable},
+                     {"context_count_a", av.size()},
+                     {"context_count_b", bv.size()},
+                     {"difference_b_minus_a_ns", c.difference},
+                     {"lower_95_ns", c.lower},
+                     {"upper_95_ns", c.upper},
+                     {"distinguishable", c.distinguishable},
                      {"method", "independent_context_percentile_bootstrap"},
-                     {"resampling_unit", "context"}, {"seed", 1}, {"replicates", 2000},
+                     {"resampling_unit", "context"},
+                     {"seed", 1},
+                     {"replicates", 2000},
                      {"estimand", "stq2_of_context_stq2"},
                      {"assumption", "independent_contexts_within_observed_batch"},
                      {"interpretation",

@@ -1,9 +1,10 @@
 #include "report/report.hpp"
 #include "report/comparison_condition.hpp"
+#include "report/network_evidence.hpp"
 #include "report/perf_condition.hpp"
+#include "report/prototype.hpp"
 #include "report/repeated_context.hpp"
 #include "report/window.hpp"
-#include "report/network_evidence.hpp"
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -144,7 +145,8 @@ PeerHeader peer_header(const std::filesystem::path& path, const Json& header) {
     } catch (const Json::exception&) {
         return {false, "peer_header_malformed", Json::object()};
     }
-    if (peer.value("schema", 0) != 1 || peer.value("type", "") != "sample") {
+    if ((peer.value("schema", 0) != 1 && peer.value("schema", 0) != 2) ||
+        peer.value("type", "") != "sample") {
         return {false, "peer_schema_mismatch", std::move(peer)};
     }
     if (peer.value("role", "") != expected_role) {
@@ -175,13 +177,13 @@ std::optional<std::string> director_invalid_reason(const std::filesystem::path& 
     }
     return std::nullopt;
 }
-std::optional<AuthoritativeLedger> authoritative_ledger(
-    const std::filesystem::path& sample_path, const std::filesystem::path& input_root,
-    std::map<std::string, AuthoritativeLedger>* cache = nullptr) {
+std::optional<AuthoritativeLedger>
+authoritative_ledger(const std::filesystem::path& sample_path,
+                     const std::filesystem::path& input_root,
+                     std::map<std::string, AuthoritativeLedger>* cache = nullptr) {
     auto directory = sample_path.parent_path();
-    const auto boundary = std::filesystem::is_regular_file(input_root)
-                              ? input_root.parent_path()
-                              : input_root;
+    const auto boundary =
+        std::filesystem::is_regular_file(input_root) ? input_root.parent_path() : input_root;
     while (true) {
         const auto path = directory / "attempts.jsonl";
         std::error_code status_error;
@@ -354,8 +356,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             const auto normalized_raw = std::filesystem::weakly_canonical(raw_path);
             bool belongs_to_ledger_run = false;
             for (const auto& root : known_run_roots)
-                belongs_to_ledger_run = belongs_to_ledger_run ||
-                                        normalized_raw.string().rfind(root + "/", 0) == 0;
+                belongs_to_ledger_run =
+                    belongs_to_ledger_run || normalized_raw.string().rfind(root + "/", 0) == 0;
             if (belongs_to_ledger_run)
                 continue;
             auto root = normalized_raw.parent_path();
@@ -393,9 +395,9 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                     bool matched_output = false, matched_batch = false;
                     std::filesystem::path run_root;
                     if (entry.value("status", "") != "complete" ||
-                        entry.value("returncode", -1) != 0 ||
-                        !entry.contains("batch") || !entry.at("batch").is_number_unsigned() ||
-                        !entry.contains("command") || !entry.at("command").is_array()) {
+                        entry.value("returncode", -1) != 0 || !entry.contains("batch") ||
+                        !entry.at("batch").is_number_unsigned() || !entry.contains("command") ||
+                        !entry.at("command").is_array()) {
                         study.reasons.push_back("study_manifest_mismatch");
                         continue;
                     }
@@ -404,8 +406,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                         if (!command[i].is_string() || !command[i + 1].is_string())
                             continue;
                         if (command[i] == "--output") {
-                            const std::filesystem::path value =
-                                command[i + 1].get<std::string>();
+                            const std::filesystem::path value = command[i + 1].get<std::string>();
                             if (value.is_absolute()) {
                                 run_root = std::filesystem::weakly_canonical(value);
                                 matched_output = true;
@@ -427,8 +428,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                                            entry.at("batch").get<std::uint64_t>());
                 }
                 for (auto& run : repeated_runs) {
-                    const auto found = listed_batches.find(
-                        std::filesystem::weakly_canonical(run.root).string());
+                    const auto found =
+                        listed_batches.find(std::filesystem::weakly_canonical(run.root).string());
                     if (found != listed_batches.end())
                         run.manifest_batch = found->second;
                 }
@@ -451,13 +452,11 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 study.namespace_status = "unverified";
                 study.batch_namespace.reset();
             }
-            study.coverage_complete = study.namespace_status == "verified" &&
-                                      study.reasons.empty();
+            study.coverage_complete = study.namespace_status == "verified" && study.reasons.empty();
             for (auto& run : repeated_runs) {
                 const auto root = std::filesystem::weakly_canonical(run.root);
-                if (std::find(study.discovered_run_roots.begin(),
-                              study.discovered_run_roots.end(), root) !=
-                    study.discovered_run_roots.end()) {
+                if (std::find(study.discovered_run_roots.begin(), study.discovered_run_roots.end(),
+                              root) != study.discovered_run_roots.end()) {
                     run.namespace_status = study.namespace_status;
                     run.batch_namespace = study.batch_namespace.value_or(run.root);
                     if (!study.coverage_complete)
@@ -505,15 +504,14 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         if (!std::getline(file, line))
             throw std::runtime_error("empty raw record: " + path.string());
         auto header = Json::parse(line);
-        if (header.at("type") != "sample" || header.at("schema") != 1)
+        if (header.at("type") != "sample" || (header.at("schema") != 1 && header.at("schema") != 2))
             throw std::runtime_error("unsupported raw record schema");
         const auto scenario_name =
             header.at("config").value("scenario_name", std::string("standard-tls"));
-        const bool lookup_scenario =
-            scenario_name == "synthetic-lookup-plus-standard-tls" ||
-            (header.at("config").contains("lookup") &&
-             header.at("config").at("lookup").is_object() &&
-             header.at("config").at("lookup").value("enabled", false));
+        const bool lookup_scenario = scenario_name == "synthetic-lookup-plus-standard-tls" ||
+                                     (header.at("config").contains("lookup") &&
+                                      header.at("config").at("lookup").is_object() &&
+                                      header.at("config").at("lookup").value("enabled", false));
         saw_lookup_scenario = saw_lookup_scenario || lookup_scenario;
         std::vector<Json> events;
         while (std::getline(file, line))
@@ -522,6 +520,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         auto parts = partition(header, events);
         const auto io_unavailable = io_events_unavailable_reason(header);
         for (auto& part : parts) {
+            part["prototype"] = prototype_observations(header, events, part.at("connection"));
             const auto reason = io_unavailable.value_or("decoded_sidecar_absent");
             part["record_computation_attribution"] =
                 unavailable_record_computation_attribution(reason);
@@ -556,12 +555,14 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                         if (complete) {
                             for (auto& part : parts) {
                                 const auto index = part.at("connection").get<std::size_t>();
+                                part["prototype"] = prototype_observations(header, events, index,
+                                                                           &connections->at(index));
                                 if (windows.contains(index)) {
                                     part["client_hello_to_finished_send"] = windows.at(index);
                                 }
                                 part["record_computation_attribution"] =
-                                    record_computation_attribution(
-                                        header, events, connections->at(index), part);
+                                    record_computation_attribution(header, events,
+                                                                   connections->at(index), part);
                                 if (header.at("role") == "server")
                                     part[std::string(server_window_name)] =
                                         server_client_hello_to_finished_send_window(
@@ -590,14 +591,13 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                     unavailable_record_computation_attribution(attribution_reason);
                 if (header.at("role") == "server")
                     part[std::string(server_window_name)] =
-                        unavailable_server_client_hello_to_finished_send_window(
-                            attribution_reason);
+                        unavailable_server_client_hello_to_finished_send_window(attribution_reason);
             }
         }
         const auto peer = peer_header(path, header);
         const auto director_reason = director_invalid_reason(path.parent_path());
-        const auto ledger = authoritative_ledger(
-            path, input, repeated_context ? &repeated_ledger_cache : nullptr);
+        const auto ledger =
+            authoritative_ledger(path, input, repeated_context ? &repeated_ledger_cache : nullptr);
         std::optional<std::string> parent_status;
         NetworkEvidence network;
         if (ledger) {
@@ -611,15 +611,14 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 (void)id;
                 attempts.push_back(attempt);
             }
-            network = read_network_evidence(
-                ledger->root,
-                lookup_scenario ? NetworkTopology::lookup_4ns
-                                : NetworkTopology::tls_3ns_or_legacy_4ns,
-                attempts);
+            network =
+                read_network_evidence(ledger->root,
+                                      lookup_scenario ? NetworkTopology::lookup_4ns
+                                                      : NetworkTopology::tls_3ns_or_legacy_4ns,
+                                      attempts);
         }
-        const bool network_handoff =
-            header.at("config").contains("network_handoff") &&
-            header.at("config").at("network_handoff").is_object();
+        const bool network_handoff = header.at("config").contains("network_handoff") &&
+                                     header.at("config").at("network_handoff").is_object();
         const bool network_required = network.present || network_handoff;
         if (!network_required) {
             network.integrity = {{"status", "not_applicable_loopback"},
@@ -627,7 +626,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                                  {"reasons", Json::array()}};
         } else if (!network.present) {
             network.integrity = {
-                {"status", "failed"}, {"eligible", false},
+                {"status", "failed"},
+                {"eligible", false},
                 {"reasons", Json::array({"network_provenance_missing_or_unreadable"})}};
         }
         bool valid = header.value("valid", false);
@@ -666,6 +666,9 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         const auto own_perf = detail::perf_condition(header);
         const auto peer_perf =
             peer.verified ? detail::perf_condition(peer.header) : detail::PerfCondition{};
+        const bool cpu_profiled =
+            header.at("config").value("cpu_profile", false) ||
+            (peer.verified && peer.header.at("config").value("cpu_profile", false));
         Json dimensions = {
             {"role", header.at("role")},
             {"profile_hash", header.at("profile_hash")},
@@ -677,7 +680,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                                    ? Json(nullptr)
                                    : Json(own_context.at("size").get<std::size_t>() > 0)},
             {"context_identity", own_context},
-            {"peer_context_identity", peer.verified ? context_identity(peer.header) : Json(nullptr)},
+            {"peer_context_identity",
+             peer.verified ? context_identity(peer.header) : Json(nullptr)},
             {"socket_settings", socket_settings(header)},
             {"peer_socket_settings", peer.verified ? socket_settings(peer.header) : Json(nullptr)},
             {"library", header.at("declaration").value("library", "")},
@@ -708,8 +712,21 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             {"is_mock", header.at("declaration").value("is_mock", false)},
             {"correction", "raw"},
             {"timing_interpretation",
-             header.at("mode") == "timing" ? "performance" : "diagnostic_only"}};
+             header.at("mode") == "timing" && !cpu_profiled ? "performance" : "diagnostic_only"}};
         dimensions["scenario_name"] = scenario_name;
+        if (header.value("schema", 1) >= 2) {
+            dimensions["tls_scenario"] =
+                header.at("config").at("tls").value("scenario", "client-request");
+            dimensions["send_policy"] =
+                header.at("config").at("tls").value("send_policy", "native");
+            for (const auto* name :
+                 {"source_version", "technique", "implementation", "patch_hash"}) {
+                dimensions[name] = header.at("declaration").value(name, Json(nullptr));
+                dimensions[std::string("peer_") + name] =
+                    peer.verified ? peer.header.at("declaration").value(name, Json(nullptr))
+                                  : Json(nullptr);
+            }
+        }
         dimensions["lookup_requested_identity"] =
             lookup_scenario ? header.at("config").value("lookup", Json(nullptr)) : Json(nullptr);
         dimensions["network_requested_identity"] = nullptr;
@@ -723,6 +740,9 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             !lookup_scenario && (!network_required || network.condition_identity.is_object()) &&
             !own_measurement_contract.is_null() && !peer_measurement_contract.is_null();
         dimensions["run_controls"]["channel_observer"] = channel_observer_enabled(header);
+        dimensions["run_controls"]["tx_timestamps"] =
+            header.at("config").value("tx_timestamps", false);
+        dimensions["run_controls"]["cpu_profile"] = header.at("config").value("cpu_profile", false);
         for (const char* control :
              {"perf", "kernel_timestamps", "isolate", "pin_cores", "tcp_nodelay",
               "socket_send_buffer", "socket_receive_buffer", "event_capacity", "stream_capacity",
@@ -730,8 +750,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             if (header.at("config").contains(control))
                 dimensions["run_controls"][control] = header.at("config").at(control);
         if (detail::has_explicit_perf_condition(header)) {
-            dimensions["run_controls"]["perf_scope"] =
-                own_perf.controls.at("perf_scope");
+            dimensions["run_controls"]["perf_scope"] = own_perf.controls.at("perf_scope");
             dimensions["perf_support"] = own_perf.support;
         }
         if (peer.verified && detail::has_explicit_perf_condition(peer.header)) {
@@ -781,8 +800,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             auto repeated_dimensions = dimensions;
             for (const char* control : {"timeout_ms", "flush_grace_ms"})
                 if (header.at("config").contains(control))
-                    repeated_dimensions["run_controls"][control] =
-                        header.at("config").at(control);
+                    repeated_dimensions["run_controls"][control] = header.at("config").at(control);
             const auto warmups = header.at("config").value("warmups", std::size_t{0});
             const std::optional<std::size_t> measured =
                 header.at("config").contains("connections") &&
@@ -792,20 +810,18 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                     : std::nullopt;
             bool primary_windows_complete = measured.has_value();
             for (const auto& part : parts)
-                primary_windows_complete = primary_windows_complete &&
-                                           part.contains("primary_window") &&
-                                           part.at("primary_window").is_object() &&
-                                           part.at("primary_window").value("available", false) &&
-                                           part.contains("elapsed_ns") &&
-                                           !part.at("elapsed_ns").is_null();
+                primary_windows_complete =
+                    primary_windows_complete && part.contains("primary_window") &&
+                    part.at("primary_window").is_object() &&
+                    part.at("primary_window").value("available", false) &&
+                    part.contains("elapsed_ns") && !part.at("elapsed_ns").is_null();
             const bool metrics_admitted =
                 !network_required || network.integrity.value("eligible", false);
-            const bool comparison_base = metrics_admitted &&
-                                         !own_measurement_contract.is_null() &&
-                                         !peer_measurement_contract.is_null() && own_perf.complete &&
-                                         peer_perf.complete && primary_windows_complete &&
-                                         !native_stream_unobserved(header) &&
-                                         channel_observer_enabled(header);
+            const bool comparison_base =
+                metrics_admitted && !own_measurement_contract.is_null() &&
+                !peer_measurement_contract.is_null() && own_perf.complete && peer_perf.complete &&
+                primary_windows_complete && !native_stream_unobserved(header) &&
+                channel_observer_enabled(header);
             std::vector<std::string> comparison_reasons;
             if (own_measurement_contract.is_null())
                 comparison_reasons.push_back("measurement_contract_revision_unknown");
@@ -815,6 +831,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 comparison_reasons.push_back("perf_condition_unknown");
             if (!peer_perf.complete)
                 comparison_reasons.push_back("peer_perf_condition_unknown");
+            if (cpu_profiled)
+                comparison_reasons.push_back("cpu_profile_diagnostic_only");
             if (!peer.verified || !peer.header.value("valid", false))
                 comparison_reasons.push_back("missing_peer");
             if (!metrics_admitted && network.integrity.contains("reasons") &&
@@ -826,24 +844,23 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 detail::comparison_condition(dimensions, comparison_base);
             if (!repeated_comparison_condition && comparison_reasons.empty())
                 comparison_reasons.push_back("invalid_context");
-            repeated_contexts.push_back(
-                {repeated_run.root,
-                 path,
-                 header.at("sample").get<std::uint64_t>(),
-                 header.at("role").get<std::string>(),
-                 header.at("batch").get<std::uint64_t>(),
-                 measured,
-                 warmups,
-                 valid,
-                 peer.verified,
-                 peer.verified && peer.header.value("valid", false),
-                 lookup_scenario,
-                 repeated_comparison_condition,
-                 std::move(comparison_reasons),
-                 repeated_parent_status,
-                 std::move(repeated_dimensions),
-                 parts,
-                 {}});
+            repeated_contexts.push_back({repeated_run.root,
+                                         path,
+                                         header.at("sample").get<std::uint64_t>(),
+                                         header.at("role").get<std::string>(),
+                                         header.at("batch").get<std::uint64_t>(),
+                                         measured,
+                                         warmups,
+                                         valid,
+                                         peer.verified,
+                                         peer.verified && peer.header.value("valid", false),
+                                         lookup_scenario,
+                                         repeated_comparison_condition,
+                                         std::move(comparison_reasons),
+                                         repeated_parent_status,
+                                         std::move(repeated_dimensions),
+                                         parts,
+                                         {}});
         }
         if (!valid) {
             ++invalid;
@@ -855,8 +872,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             auto& group = collected[dimensions.dump()];
             group.dimensions = dimensions;
             if (own_measurement_contract.is_null())
-                group.comparison_exclusion_reasons.insert(
-                    "measurement_contract_revision_unknown");
+                group.comparison_exclusion_reasons.insert("measurement_contract_revision_unknown");
             if (peer_measurement_contract.is_null())
                 group.comparison_exclusion_reasons.insert(
                     "peer_measurement_contract_revision_unknown");
@@ -864,12 +880,14 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 group.comparison_exclusion_reasons.insert("perf_condition_unknown");
             if (!peer_perf.complete)
                 group.comparison_exclusion_reasons.insert("peer_perf_condition_unknown");
+            if (cpu_profiled)
+                group.comparison_exclusion_reasons.insert("cpu_profile_diagnostic_only");
             const bool metrics_admitted =
                 !network_required || network.integrity.value("eligible", false);
             group.automatic_comparison_eligible =
                 group.automatic_comparison_eligible && metrics_admitted &&
                 !own_measurement_contract.is_null() && !peer_measurement_contract.is_null() &&
-                own_perf.complete && peer_perf.complete;
+                own_perf.complete && peer_perf.complete && !cpu_profiled;
             const bool primary_available =
                 p.contains("primary_window") && p.at("primary_window").is_object() &&
                 p.at("primary_window").value("available", false) && p.contains("elapsed_ns") &&
@@ -902,8 +920,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 if (window.value("available", false) && !window.at("elapsed_ns").is_null())
                     group.metrics[std::string(common_elapsed)].push_back(
                         window.at("elapsed_ns").get<double>());
-                if (window.value("available", false) &&
-                    !window.at("thread_cpu_ns").is_null())
+                if (window.value("available", false) && !window.at("thread_cpu_ns").is_null())
                     group.metrics[std::string(common_thread_cpu)].push_back(
                         window.at("thread_cpu_ns").get<double>());
             }
@@ -912,8 +929,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 if (window.value("available", false) && !window.at("elapsed_ns").is_null())
                     group.metrics[std::string(server_window_elapsed)].push_back(
                         window.at("elapsed_ns").get<double>());
-                if (window.value("available", false) &&
-                    !window.at("thread_cpu_ns").is_null())
+                if (window.value("available", false) && !window.at("thread_cpu_ns").is_null())
                     group.metrics[std::string(server_window_thread_cpu)].push_back(
                         window.at("thread_cpu_ns").get<double>());
                 if (window.value("available", false) && !window.at("cycles").is_null())
@@ -933,8 +949,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                      {"metrics", Json::object()},
                      {"batches", Json::array()},
                      {"comparison_exclusion_reasons", group.comparison_exclusion_reasons},
-                     {"automatic_comparison_eligible",
-                      group.automatic_comparison_eligible}};
+                     {"automatic_comparison_eligible", group.automatic_comparison_eligible}};
         for (const auto& [name, values] : group.metrics)
             item["metrics"][name] = distribution(values);
         if (group.metrics.contains(std::string(alternate_elapsed))) {
@@ -949,8 +964,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             item[std::string(common_window_name)] = {
                 {"definition", common_window_name},
                 {"start", "first_handshake_call_begin"},
-                {"end",
-                 "last_successful_full_application_completion_call_end_for_role"},
+                {"end", "last_successful_full_application_completion_call_end_for_role"},
                 {"client_end_call", "app_recv"},
                 {"server_end_call", "app_send"},
             };
@@ -973,10 +987,10 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             item["batch_ids"].push_back(batch);
             batch_stq.push_back(d["stq2"].get<double>());
         }
-        item["batch_stq2_range_ns"] = batch_stq.empty()
-                                          ? Json(nullptr)
-                                          : Json(*std::max_element(batch_stq.begin(), batch_stq.end()) -
-                                                 *std::min_element(batch_stq.begin(), batch_stq.end()));
+        item["batch_stq2_range_ns"] =
+            batch_stq.empty() ? Json(nullptr)
+                              : Json(*std::max_element(batch_stq.begin(), batch_stq.end()) -
+                                     *std::min_element(batch_stq.begin(), batch_stq.end()));
         if (group.metrics.contains("elapsed_ns")) {
             const auto filename = "distribution-" + std::to_string(group_index++) + ".svg";
             svg(output / filename, group.metrics.at("elapsed_ns"));
@@ -1002,7 +1016,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 continue;
             const auto role = da.at("role").get<std::string>();
             const char* own_adapter = role == "client" ? "client_adapter" : "server_adapter";
-            for (const char* field : {own_adapter, "library", "library_version", "build_options"}) {
+            for (const char* field : {own_adapter, "library", "library_version", "build_options",
+                                      "source_version", "implementation", "patch_hash"}) {
                 da.erase(field);
                 db.erase(field);
             }
@@ -1042,9 +1057,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
     bool has_lookup_artifacts = false;
     if (!std::filesystem::is_regular_file(input)) {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(input)) {
-            if (entry.is_regular_file() &&
-                (entry.path().filename() == "lookup.jsonl" ||
-                 entry.path().filename() == "ca.jsonl")) {
+            if (entry.is_regular_file() && (entry.path().filename() == "lookup.jsonl" ||
+                                            entry.path().filename() == "ca.jsonl")) {
                 has_lookup_artifacts = true;
                 break;
             }
@@ -1052,14 +1066,13 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
     }
     if (saw_lookup_scenario || has_lookup_artifacts) {
         (void)summarize_lookup(input, output);
-        result["lookup_summary"] = {{"path", "lookup-summary.json"},
-                                    {"type", "turtle-lookup-summary"},
-                                    {"schema", 1}};
+        result["lookup_summary"] = {
+            {"path", "lookup-summary.json"}, {"type", "turtle-lookup-summary"}, {"schema", 1}};
     }
     if (repeated_context) {
-        const auto repeated = repeated_context_summary(
-            repeated_selection_scope, std::move(repeated_studies), std::move(repeated_runs),
-            std::move(repeated_contexts));
+        const auto repeated =
+            repeated_context_summary(repeated_selection_scope, std::move(repeated_studies),
+                                     std::move(repeated_runs), std::move(repeated_contexts));
         std::ofstream repeated_out(output / "repeated-context-summary.json");
         repeated_out.exceptions(std::ios::badbit | std::ios::failbit);
         repeated_out << repeated.dump(2) << '\n';

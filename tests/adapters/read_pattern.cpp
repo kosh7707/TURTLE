@@ -62,7 +62,7 @@ struct LoadedAdapter {
         module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
         check(module != nullptr, "dlopen failed: " + std::string(path));
         const auto entry = reinterpret_cast<AdapterEntry>(dlsym(module, adapter_entry_name));
-        check(entry != nullptr, "adapter ABI v2 entry is missing");
+        check(entry != nullptr, "adapter ABI v3 entry is missing");
         api = entry();
         check(api.version == adapter_api_version, "adapter API version mismatch");
         check(api.name && api.declaration && api.setup && api.open && api.handshake_step &&
@@ -159,8 +159,7 @@ void validate_short_reads(const MemoryChannel& sender, const MemoryChannel& rece
         const auto boundary = read.begin < record.header_end ? record.header_end : record.end;
         check(read.requested == boundary - read.begin,
               label + ": adapter did not request the exact header/body remainder");
-        check(read.end == read.begin + std::min(chunk, read.requested) &&
-                  read.end <= boundary,
+        check(read.end == read.begin + std::min(chunk, read.requested) && read.end <= boundary,
               label + ": short receive crossed a header, body, or next-record boundary");
     }
 }
@@ -191,18 +190,17 @@ void exchange(Endpoint& sender, Endpoint& receiver) {
     std::size_t read = 0;
     for (std::size_t iteration = 0; iteration < 10000; ++iteration) {
         if (sent < payload.size()) {
-            const auto result = sender.api.app_send(
-                sender.connection, payload.data() + sent, payload.size() - sent);
+            const auto result = sender.api.app_send(sender.connection, payload.data() + sent,
+                                                    payload.size() - sent);
             check(result.step != Step::Failed,
                   std::string("application send failed: ") + sender.api.error(sender.connection));
             sent += result.bytes;
         }
         if (read < output.size()) {
-            const auto result = receiver.api.app_recv(
-                receiver.connection, output.data() + read, output.size() - read);
-            check(result.step != Step::Failed,
-                  std::string("application receive failed: ") +
-                      receiver.api.error(receiver.connection));
+            const auto result = receiver.api.app_recv(receiver.connection, output.data() + read,
+                                                      output.size() - read);
+            check(result.step != Step::Failed, std::string("application receive failed: ") +
+                                                   receiver.api.error(receiver.connection));
             read += result.bytes;
         }
         if (sent == payload.size() && read == output.size()) {
@@ -213,8 +211,8 @@ void exchange(Endpoint& sender, Endpoint& receiver) {
     throw std::runtime_error("in-memory application exchange did not converge");
 }
 
-void run_condition(const ImplementationApi& api, const std::string& pki,
-                   std::size_t maximum_read, const std::string& condition) {
+void run_condition(const ImplementationApi& api, const std::string& pki, std::size_t maximum_read,
+                   const std::string& condition) {
     TlsConfig config;
     config.ca_file = pki + "/ca.pem";
     config.server_certificate = pki + "/server-chain.pem";
@@ -266,8 +264,7 @@ int main(int argc, char** argv) {
         check(argc == 3, "usage: read_pattern ADAPTER.so PKI_DIR");
         LoadedAdapter adapter(argv[1]);
         const std::string pki = argv[2];
-        run_condition(adapter.api, pki, std::numeric_limits<std::size_t>::max(),
-                      "all-bytes-ready");
+        run_condition(adapter.api, pki, std::numeric_limits<std::size_t>::max(), "all-bytes-ready");
         run_condition(adapter.api, pki, 3, "normal-three-byte-returns");
         std::cout << "PASS real TLS controlled read policy: " << adapter.api.name() << '\n';
         return 0;

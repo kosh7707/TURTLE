@@ -80,13 +80,6 @@ void write_durable(int fd, const Json& row, const std::string& path) {
 const char* service_type(ServiceArtifact artifact) noexcept {
     return artifact == ServiceArtifact::CertificateLookup ? lookup_record_type : ca_record_type;
 }
-const char* service_prefix(ServiceArtifact artifact) noexcept {
-    return artifact == ServiceArtifact::CertificateLookup ? "lookup" : "ca";
-}
-model::HeapDomain service_heap_domain(ServiceArtifact artifact) noexcept {
-    return artifact == ServiceArtifact::CertificateLookup ? model::HeapDomain::Lookup
-                                                           : model::HeapDomain::MockCa;
-}
 
 std::string object_id_string(std::uint64_t object_id) {
     std::ostringstream output;
@@ -140,6 +133,9 @@ Json calibration_json(const model::Calibration& value) {
 
 Json event_json(ServiceArtifact artifact, const ServiceEvent& event) {
     const auto& snapshot = event.snapshot;
+    const auto heap_domain = artifact == ServiceArtifact::CertificateLookup
+                                 ? model::HeapDomain::Lookup
+                                 : model::HeapDomain::MockCa;
     return {{"type", service_type(artifact)},
             {"schema", model::lookup_record_schema},
             {"record_kind", "event"},
@@ -156,7 +152,7 @@ Json event_json(ServiceArtifact artifact, const ServiceEvent& event) {
             {"instructions", nullable(snapshot.instructions)},
             {"perf_enabled", nullable(snapshot.perf_enabled)},
             {"perf_running", nullable(snapshot.perf_running)},
-            {"heap_domain", model::name(service_heap_domain(artifact))},
+            {"heap_domain", model::name(heap_domain)},
             {"heap", snapshot.heap ? heap_json(*snapshot.heap) : Json(nullptr)},
             {"requested", event.requested},
             {"transferred", event.transferred},
@@ -272,9 +268,11 @@ std::size_t ServiceBuffer::reserved_bytes() const noexcept {
 struct ServiceWriter::State {
     State(const std::string& directory, ServiceArtifact value, std::size_t connections,
           ServiceMetadata value_metadata)
-        : artifact(value), metadata(std::move(value_metadata)) {
-        const std::string prefix = service_prefix(artifact);
-        records = open_file(directory + "/" + prefix + ".jsonl");
+        : artifact(value), metadata(std::move(value_metadata)),
+          records(open_file(directory + "/" + (value == ServiceArtifact::CertificateLookup
+                                                   ? lookup_filename
+                                                   : ca_filename))) {
+        const std::string prefix = artifact == ServiceArtifact::CertificateLookup ? "lookup" : "ca";
         streams.reserve(connections * 2);
         for (std::size_t i = 0; i < connections; ++i) {
             const std::string base = directory + "/" + prefix + "-" + std::to_string(i);

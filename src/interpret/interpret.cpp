@@ -348,7 +348,7 @@ Json analyze(const std::filesystem::path& raw, const std::filesystem::path& outp
     if (!std::getline(file, line))
         throw std::runtime_error("missing sample header");
     const auto header = Json::parse(line);
-    if (header.at("schema") != 1 || header.at("type") != "sample")
+    if ((header.at("schema") != 1 && header.at("schema") != 2) || header.at("type") != "sample")
         throw std::runtime_error("unsupported sample schema");
     const auto role = header.at("role").get<std::string>();
     bool stream_available = true;
@@ -365,10 +365,9 @@ Json analyze(const std::filesystem::path& raw, const std::filesystem::path& outp
             (header.contains("config") && header.at("config").is_object() &&
              header.at("config").value("channel_observer", true) == false) ||
             header.value("observation_level", std::string()) == "observer-disabled";
-        const bool native =
-            (header.contains("config") && header.at("config").contains("tls") &&
-             !header.at("config").at("tls").value("framework_io", true)) ||
-            header.value("observation_level", std::string()) == "library-only";
+        const bool native = (header.contains("config") && header.at("config").contains("tls") &&
+                             !header.at("config").at("tls").value("framework_io", true)) ||
+                            header.value("observation_level", std::string()) == "library-only";
         if (native) {
             stream_available = false;
             stream_reason = "legacy_native_socket_io_not_observed";
@@ -404,7 +403,8 @@ Json analyze(const std::filesystem::path& raw, const std::filesystem::path& outp
                  {"availability",
                   {{"tls_stream", {{"available", false}, {"reason", stream_reason}}}}},
                  {"event_annotations", Json::array()},
-                 {"note", "TLS stream decryption unavailable because ciphertext was not observed"}});
+                 {"note",
+                  "TLS stream decryption unavailable because ciphertext was not observed"}});
             continue;
         }
         const auto p = prefix.string() + ".conn-" + std::to_string(index);
@@ -412,8 +412,7 @@ Json analyze(const std::filesystem::path& raw, const std::filesystem::path& outp
         auto decoded =
             role == "client" ? decode(sent, received, keylog) : decode(received, sent, keylog);
         decoded["connection"] = index;
-        decoded["availability"] =
-            {{"tls_stream", {{"available", true}, {"reason", nullptr}}}};
+        decoded["availability"] = {{"tls_stream", {{"available", true}, {"reason", nullptr}}}};
         Json annotations = Json::array();
         for (const auto& event : events) {
             if (event.at("connection") != index)

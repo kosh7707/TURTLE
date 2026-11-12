@@ -1,0 +1,597 @@
+--- a/include/mbedtls/ssl.h
++++ b/include/mbedtls/ssl.h
+@@ -1728,7 +1728,12 @@
+ #endif
+ };
+ 
++#define TURTLE_MBEDTLS_TRACE_PATCH 1
+ struct mbedtls_ssl_context {
++    void (*turtle_trace)(void*, int, int, int, int);
++    void *turtle_trace_context;
++    int turtle_write_ready;
++    int turtle_ping_enabled;
+     const mbedtls_ssl_config *MBEDTLS_PRIVATE(conf); /*!< configuration information          */
+ 
+     /*
+@@ -5352,6 +5357,7 @@
+  * \note           Attempting to write 0 bytes will result in an empty TLS
+  *                 application record being sent.
+  */
++int mbedtls_ssl_turtle_flush_output(mbedtls_ssl_context *ssl);
+ int mbedtls_ssl_write(mbedtls_ssl_context *ssl, const unsigned char *buf, size_t len);
+ 
+ /**
+--- a/library/ssl_client.c
++++ b/library/ssl_client.c
+@@ -18,6 +18,13 @@
+ 
+ #include "ssl_client.h"
+ #include "ssl_misc.h"
++
++static void turtle_span(const mbedtls_ssl_context *ssl, int op, int end, int type, int result)
++{
++    if (ssl->turtle_trace != NULL)
++        ssl->turtle_trace(ssl->turtle_trace_context, op, end, type, result);
++}
++
+ #include "ssl_tls13_keys.h"
+ #include "ssl_debug_helpers.h"
+ 
+@@ -434,7 +441,7 @@
+  * } ClientHello;
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_write_client_hello_body(mbedtls_ssl_context *ssl,
++static int ssl_write_client_hello_body_turtle_body(mbedtls_ssl_context *ssl,
+                                        unsigned char *buf,
+                                        unsigned char *end,
+                                        size_t *out_len,
+@@ -694,6 +701,18 @@
+ 
+     *out_len = (size_t) (p - buf);
+     return 0;
++}
++static int ssl_write_client_hello_body(mbedtls_ssl_context *ssl,
++                                       unsigned char *buf,
++                                       unsigned char *end,
++                                       size_t *out_len,
++                                       size_t *binders_len)
++{
++    int turtle_result;
++    turtle_span(ssl, 0, 0, 1, 0);
++    turtle_result = ssl_write_client_hello_body_turtle_body(ssl, buf, end, out_len, binders_len);
++    turtle_span(ssl, 0, 1, 1, turtle_result);
++    return turtle_result;
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+--- a/library/ssl_msg.c
++++ b/library/ssl_msg.c
+@@ -18,6 +18,13 @@
+ 
+ #include "mbedtls/ssl.h"
+ #include "ssl_misc.h"
++
++static void turtle_span(const mbedtls_ssl_context *ssl, int op, int end, int type, int result)
++{
++    if (ssl->turtle_trace != NULL)
++        ssl->turtle_trace(ssl->turtle_trace_context, op, end, type, result);
++}
++
+ #include "debug_internal.h"
+ #include "mbedtls/error.h"
+ #include "mbedtls/platform_util.h"
+@@ -899,7 +906,7 @@
+ }
+ #endif /* MBEDTLS_SSL_HAVE_AEAD */
+ 
+-int mbedtls_ssl_encrypt_buf(mbedtls_ssl_context *ssl,
++static int mbedtls_ssl_encrypt_buf_turtle_body(mbedtls_ssl_context *ssl,
+                             mbedtls_ssl_transform *transform,
+                             mbedtls_record *rec,
+                             int (*f_rng)(void *, unsigned char *, size_t),
+@@ -1476,8 +1483,21 @@
+ 
+     return 0;
+ }
+-
+-int mbedtls_ssl_decrypt_buf(mbedtls_ssl_context const *ssl,
++int mbedtls_ssl_encrypt_buf(mbedtls_ssl_context *ssl,
++                            mbedtls_ssl_transform *transform,
++                            mbedtls_record *rec,
++                            int (*f_rng)(void *, unsigned char *, size_t),
++                            void *p_rng)
++{
++    int turtle_result;
++    turtle_span(ssl, 2, 0, 0, 0);
++    turtle_result = mbedtls_ssl_encrypt_buf_turtle_body(ssl, transform, rec, f_rng, p_rng);
++    turtle_span(ssl, 2, 1, 0, turtle_result);
++    return turtle_result;
++}
++
++
++static int mbedtls_ssl_decrypt_buf_turtle_body(mbedtls_ssl_context const *ssl,
+                             mbedtls_ssl_transform *transform,
+                             mbedtls_record *rec)
+ {
+@@ -2123,6 +2143,17 @@
+ 
+     return 0;
+ }
++int mbedtls_ssl_decrypt_buf(mbedtls_ssl_context const *ssl,
++                            mbedtls_ssl_transform *transform,
++                            mbedtls_record *rec)
++{
++    int turtle_result;
++    turtle_span(ssl, 3, 0, 0, 0);
++    turtle_result = mbedtls_ssl_decrypt_buf_turtle_body(ssl, transform, rec);
++    turtle_span(ssl, 3, 1, 0, turtle_result);
++    return turtle_result;
++}
++
+ 
+ #undef MAC_NONE
+ #undef MAC_PLAINTEXT
+@@ -6184,6 +6215,9 @@
+ /*
+  * Write application data (public-facing wrapper)
+  */
++int mbedtls_ssl_turtle_flush_output(mbedtls_ssl_context *ssl)
++{ return mbedtls_ssl_flush_output(ssl); }
++
+ int mbedtls_ssl_write(mbedtls_ssl_context *ssl, const unsigned char *buf, size_t len)
+ {
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+@@ -6201,7 +6235,7 @@
+     }
+ #endif
+ 
+-    if (ssl->state != MBEDTLS_SSL_HANDSHAKE_OVER) {
++    if (ssl->state != MBEDTLS_SSL_HANDSHAKE_OVER && !ssl->turtle_write_ready) {
+         if ((ret = mbedtls_ssl_handshake(ssl)) != 0) {
+             MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_handshake", ret);
+             return ret;
+--- a/library/ssl_tls13_client.c
++++ b/library/ssl_tls13_client.c
+@@ -16,6 +16,13 @@
+ #include "mbedtls/platform.h"
+ 
+ #include "ssl_misc.h"
++
++static void turtle_span(const mbedtls_ssl_context *ssl, int op, int end, int type, int result)
++{
++    if (ssl->turtle_trace != NULL)
++        ssl->turtle_trace(ssl->turtle_trace_context, op, end, type, result);
++}
++
+ #include "ssl_client.h"
+ #include "ssl_tls13_keys.h"
+ #include "ssl_debug_helpers.h"
+@@ -1997,6 +2004,7 @@
+ static int ssl_tls13_process_server_hello(mbedtls_ssl_context *ssl)
+ {
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
++    int turtle_begun = 0;
+     unsigned char *buf = NULL;
+     size_t buf_len = 0;
+     int is_hrr = 0;
+@@ -2005,6 +2013,8 @@
+ 
+     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_tls13_fetch_handshake_msg(
+                              ssl, MBEDTLS_SSL_HS_SERVER_HELLO, &buf, &buf_len));
++    turtle_begun = 1;
++    turtle_span(ssl, 1, 0, 2, 0);
+ 
+     ret = ssl_tls13_preprocess_server_hello(ssl, buf, buf + buf_len);
+     if (ret < 0) {
+@@ -2046,6 +2056,7 @@
+     }
+ 
+ cleanup:
++    if (turtle_begun) turtle_span(ssl, 1, 1, 2, ret);
+     MBEDTLS_SSL_DEBUG_MSG(2, ("<= %s ( %s )", __func__,
+                               is_hrr ? "HelloRetryRequest" : "ServerHello"));
+     return ret;
+@@ -2190,6 +2201,7 @@
+ static int ssl_tls13_process_encrypted_extensions(mbedtls_ssl_context *ssl)
+ {
+     int ret;
++    int turtle_begun = 0;
+     unsigned char *buf;
+     size_t buf_len;
+     mbedtls_ssl_handshake_params *handshake = ssl->handshake;
+@@ -2199,6 +2211,8 @@
+     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_tls13_fetch_handshake_msg(
+                              ssl, MBEDTLS_SSL_HS_ENCRYPTED_EXTENSIONS,
+                              &buf, &buf_len));
++    turtle_begun = 1;
++    turtle_span(ssl, 1, 0, 8, 0);
+ 
+     /* Process the message contents */
+     MBEDTLS_SSL_PROC_CHK(
+@@ -2241,7 +2255,7 @@
+             MBEDTLS_SSL_PEND_FATAL_ALERT(
+                 MBEDTLS_SSL_ALERT_MSG_ILLEGAL_PARAMETER,
+                 MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER);
+-            return MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER;
++            { ret = MBEDTLS_ERR_SSL_ILLEGAL_PARAMETER; goto cleanup; }
+         }
+ 
+         ssl->early_data_state = MBEDTLS_SSL_EARLY_DATA_STATE_ACCEPTED;
+@@ -2279,6 +2293,7 @@
+ #endif
+ 
+ cleanup:
++    if (turtle_begun) turtle_span(ssl, 1, 1, 8, ret);
+ 
+     MBEDTLS_SSL_DEBUG_MSG(2, ("<= parse encrypted extensions"));
+     return ret;
+@@ -2519,6 +2534,7 @@
+ static int ssl_tls13_process_certificate_request(mbedtls_ssl_context *ssl)
+ {
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
++    int turtle_begun = 0;
+ 
+     MBEDTLS_SSL_DEBUG_MSG(2, ("=> parse certificate request"));
+ 
+@@ -2531,6 +2547,8 @@
+         MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_tls13_fetch_handshake_msg(
+                                  ssl, MBEDTLS_SSL_HS_CERTIFICATE_REQUEST,
+                                  &buf, &buf_len));
++    turtle_begun = 1;
++    turtle_span(ssl, 1, 0, 13, 0);
+ 
+         MBEDTLS_SSL_PROC_CHK(ssl_tls13_parse_certificate_request(
+                                  ssl, buf, buf + buf_len));
+@@ -2549,6 +2567,7 @@
+     mbedtls_ssl_handshake_set_state(ssl, MBEDTLS_SSL_SERVER_CERTIFICATE);
+ 
+ cleanup:
++    if (turtle_begun) turtle_span(ssl, 1, 1, 13, ret);
+ 
+     MBEDTLS_SSL_DEBUG_MSG(2, ("<= parse certificate request"));
+     return ret;
+--- a/library/ssl_tls13_generic.c
++++ b/library/ssl_tls13_generic.c
+@@ -20,6 +20,13 @@
+ #include "mbedtls/psa_util.h"
+ 
+ #include "ssl_misc.h"
++
++static void turtle_span(const mbedtls_ssl_context *ssl, int op, int end, int type, int result)
++{
++    if (ssl->turtle_trace != NULL)
++        ssl->turtle_trace(ssl->turtle_trace_context, op, end, type, result);
++}
++
+ #include "ssl_tls13_invasive.h"
+ #include "ssl_tls13_keys.h"
+ #include "ssl_debug_helpers.h"
+@@ -348,6 +355,7 @@
+ 
+ #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED)
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
++    int turtle_begun = 0;
+     unsigned char verify_buffer[SSL_VERIFY_STRUCT_MAX_SIZE];
+     size_t verify_buffer_len;
+     unsigned char transcript[MBEDTLS_TLS1_3_MD_MAX_SIZE];
+@@ -360,6 +368,8 @@
+     MBEDTLS_SSL_PROC_CHK(
+         mbedtls_ssl_tls13_fetch_handshake_msg(
+             ssl, MBEDTLS_SSL_HS_CERTIFICATE_VERIFY, &buf, &buf_len));
++    turtle_begun = 1;
++    turtle_span(ssl, 1, 0, 15, 0);
+ 
+     /* Need to calculate the hash of the transcript first
+      * before reading the message since otherwise it gets
+@@ -374,7 +384,7 @@
+         MBEDTLS_SSL_PEND_FATAL_ALERT(
+             MBEDTLS_SSL_ALERT_MSG_INTERNAL_ERROR,
+             MBEDTLS_ERR_SSL_INTERNAL_ERROR);
+-        return ret;
++        goto cleanup;
+     }
+ 
+     MBEDTLS_SSL_DEBUG_BUF(3, "handshake hash", transcript, transcript_len);
+@@ -398,6 +408,7 @@
+                              buf, buf_len));
+ 
+ cleanup:
++    if (turtle_begun) turtle_span(ssl, 1, 1, 15, ret);
+ 
+     MBEDTLS_SSL_DEBUG_MSG(2, ("<= parse certificate verify"));
+     MBEDTLS_SSL_DEBUG_RET(1, "mbedtls_ssl_tls13_process_certificate_verify", ret);
+@@ -704,6 +715,7 @@
+ int mbedtls_ssl_tls13_process_certificate(mbedtls_ssl_context *ssl)
+ {
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
++    int turtle_begun = 0;
+     MBEDTLS_SSL_DEBUG_MSG(2, ("=> parse certificate"));
+ 
+ #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED)
+@@ -713,6 +725,8 @@
+     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_tls13_fetch_handshake_msg(
+                              ssl, MBEDTLS_SSL_HS_CERTIFICATE,
+                              &buf, &buf_len));
++    turtle_begun = 1;
++    turtle_span(ssl, 1, 0, 11, 0);
+ 
+     /* Parse the certificate chain sent by the peer. */
+     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_tls13_parse_certificate(ssl, buf,
+@@ -729,6 +743,7 @@
+ #endif /* MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED */
+ 
+     MBEDTLS_SSL_DEBUG_MSG(2, ("<= parse certificate"));
++    if (turtle_begun) turtle_span(ssl, 1, 1, 11, ret);
+     return ret;
+ }
+ #if defined(MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED)
+@@ -757,7 +772,7 @@
+  *    } Certificate;
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
++static int ssl_tls13_write_certificate_body_turtle_body(mbedtls_ssl_context *ssl,
+                                             unsigned char *buf,
+                                             unsigned char *end,
+                                             size_t *out_len)
+@@ -820,6 +835,18 @@
+ 
+     return 0;
+ }
++static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
++                                            unsigned char *buf,
++                                            unsigned char *end,
++                                            size_t *out_len)
++{
++    int turtle_result;
++    turtle_span(ssl, 0, 0, 11, 0);
++    turtle_result = ssl_tls13_write_certificate_body_turtle_body(ssl, buf, end, out_len);
++    turtle_span(ssl, 0, 1, 11, turtle_result);
++    return turtle_result;
++}
++
+ 
+ int mbedtls_ssl_tls13_write_certificate(mbedtls_ssl_context *ssl)
+ {
+@@ -896,7 +923,7 @@
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_certificate_verify_body(mbedtls_ssl_context *ssl,
++static int ssl_tls13_write_certificate_verify_body_turtle_body(mbedtls_ssl_context *ssl,
+                                                    unsigned char *buf,
+                                                    unsigned char *end,
+                                                    size_t *out_len)
+@@ -1021,6 +1048,18 @@
+ 
+     return 0;
+ }
++static int ssl_tls13_write_certificate_verify_body(mbedtls_ssl_context *ssl,
++                                                   unsigned char *buf,
++                                                   unsigned char *end,
++                                                   size_t *out_len)
++{
++    int turtle_result;
++    turtle_span(ssl, 0, 0, 15, 0);
++    turtle_result = ssl_tls13_write_certificate_verify_body_turtle_body(ssl, buf, end, out_len);
++    turtle_span(ssl, 0, 1, 15, turtle_result);
++    return turtle_result;
++}
++
+ 
+ int mbedtls_ssl_tls13_write_certificate_verify(mbedtls_ssl_context *ssl)
+ {
+@@ -1125,6 +1164,7 @@
+ int mbedtls_ssl_tls13_process_finished_message(mbedtls_ssl_context *ssl)
+ {
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
++    int turtle_begun = 0;
+     unsigned char *buf;
+     size_t buf_len;
+ 
+@@ -1132,6 +1172,8 @@
+ 
+     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_tls13_fetch_handshake_msg(
+                              ssl, MBEDTLS_SSL_HS_FINISHED, &buf, &buf_len));
++    turtle_begun = 1;
++    turtle_span(ssl, 1, 0, 20, 0);
+ 
+     /* Preprocessing step: Compute handshake digest */
+     MBEDTLS_SSL_PROC_CHK(ssl_tls13_preprocess_finished_message(ssl));
+@@ -1145,6 +1187,7 @@
+ cleanup:
+ 
+     MBEDTLS_SSL_DEBUG_MSG(2, ("<= parse finished message"));
++    if (turtle_begun) turtle_span(ssl, 1, 1, 20, ret);
+     return ret;
+ }
+ 
+@@ -1179,7 +1222,7 @@
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_finished_message_body(mbedtls_ssl_context *ssl,
++static int ssl_tls13_write_finished_message_body_turtle_body(mbedtls_ssl_context *ssl,
+                                                  unsigned char *buf,
+                                                  unsigned char *end,
+                                                  size_t *out_len)
+@@ -1198,6 +1241,18 @@
+     *out_len = verify_data_len;
+     return 0;
+ }
++static int ssl_tls13_write_finished_message_body(mbedtls_ssl_context *ssl,
++                                                 unsigned char *buf,
++                                                 unsigned char *end,
++                                                 size_t *out_len)
++{
++    int turtle_result;
++    turtle_span(ssl, 0, 0, 20, 0);
++    turtle_result = ssl_tls13_write_finished_message_body_turtle_body(ssl, buf, end, out_len);
++    turtle_span(ssl, 0, 1, 20, turtle_result);
++    return turtle_result;
++}
++
+ 
+ /* Main entry point: orchestrates the other functions */
+ int mbedtls_ssl_tls13_write_finished_message(mbedtls_ssl_context *ssl)
+@@ -1236,7 +1291,8 @@
+     mbedtls_ssl_set_inbound_transform(ssl, ssl->transform_application);
+ 
+     MBEDTLS_SSL_DEBUG_MSG(1, ("Switch to application keys for outbound traffic"));
+-    mbedtls_ssl_set_outbound_transform(ssl, ssl->transform_application);
++    if (ssl->transform_out != ssl->transform_application)
++        mbedtls_ssl_set_outbound_transform(ssl, ssl->transform_application);
+ 
+     /*
+      * Free the previous session and switch to the current one.
+--- a/library/ssl_tls13_server.c
++++ b/library/ssl_tls13_server.c
+@@ -17,6 +17,13 @@
+ #include "mbedtls/psa_util.h"
+ 
+ #include "ssl_misc.h"
++
++static void turtle_span(const mbedtls_ssl_context *ssl, int op, int end, int type, int result)
++{
++    if (ssl->turtle_trace != NULL)
++        ssl->turtle_trace(ssl->turtle_trace_context, op, end, type, result);
++}
++
+ #include "ssl_tls13_keys.h"
+ #include "ssl_debug_helpers.h"
+ 
+@@ -1950,6 +1957,7 @@
+ {
+ 
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
++    int turtle_begun = 0;
+     unsigned char *buf = NULL;
+     size_t buflen = 0;
+     int parse_client_hello_ret;
+@@ -1959,6 +1967,8 @@
+     MBEDTLS_SSL_PROC_CHK(mbedtls_ssl_tls13_fetch_handshake_msg(
+                              ssl, MBEDTLS_SSL_HS_CLIENT_HELLO,
+                              &buf, &buflen));
++    turtle_begun = 1;
++    turtle_span(ssl, 1, 0, 1, 0);
+ 
+     MBEDTLS_SSL_PROC_CHK_NEG(ssl_tls13_parse_client_hello(ssl, buf,
+                                                           buf + buflen));
+@@ -1983,12 +1993,12 @@
+             MBEDTLS_SSL_PEND_FATAL_ALERT(
+                 MBEDTLS_SSL_ALERT_MSG_PROTOCOL_VERSION,
+                 MBEDTLS_ERR_SSL_BAD_PROTOCOL_VERSION);
+-            return MBEDTLS_ERR_SSL_BAD_PROTOCOL_VERSION;
++            { ret = MBEDTLS_ERR_SSL_BAD_PROTOCOL_VERSION; goto cleanup; }
+         }
+         ssl->keep_current_message = 1;
+         ssl->tls_version = MBEDTLS_SSL_VERSION_TLS1_2;
+         MBEDTLS_SSL_DEBUG_MSG(1, ("non-1.3 ClientHello left for later processing"));
+-        return 0;
++        { ret = 0; goto cleanup; }
+     }
+ 
+     MBEDTLS_SSL_PROC_CHK(
+@@ -2002,6 +2012,7 @@
+     }
+ 
+ cleanup:
++    if (turtle_begun) turtle_span(ssl, 1, 1, 1, ret);
+ 
+     MBEDTLS_SSL_DEBUG_MSG(2, ("<= parse client hello"));
+     return ret;
+@@ -2259,7 +2270,7 @@
+  *    } ServerHello;
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
++static int ssl_tls13_write_server_hello_body_turtle_body(mbedtls_ssl_context *ssl,
+                                              unsigned char *buf,
+                                              unsigned char *end,
+                                              size_t *out_len,
+@@ -2398,6 +2409,18 @@
+ 
+     return ret;
+ }
++static int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
++                                             unsigned char *buf,
++                                             unsigned char *end,
++                                             size_t *out_len,
++                                             int is_hrr)
++{
++    int turtle_result;
++    turtle_span(ssl, 0, 0, 2, 0);
++    turtle_result = ssl_tls13_write_server_hello_body_turtle_body(ssl, buf, end, out_len, is_hrr);
++    turtle_span(ssl, 0, 1, 2, turtle_result);
++    return turtle_result;
++}
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+ static int ssl_tls13_finalize_server_hello(mbedtls_ssl_context *ssl)
+@@ -2542,7 +2565,7 @@
+  *
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_encrypted_extensions_body(mbedtls_ssl_context *ssl,
++static int ssl_tls13_write_encrypted_extensions_body_turtle_body(mbedtls_ssl_context *ssl,
+                                                      unsigned char *buf,
+                                                      unsigned char *end,
+                                                      size_t *out_len)
+@@ -2604,6 +2627,17 @@
+         3, MBEDTLS_SSL_HS_ENCRYPTED_EXTENSIONS, ssl->handshake->sent_extensions);
+ 
+     return 0;
++}
++static int ssl_tls13_write_encrypted_extensions_body(mbedtls_ssl_context *ssl,
++                                                     unsigned char *buf,
++                                                     unsigned char *end,
++                                                     size_t *out_len)
++{
++    int turtle_result;
++    turtle_span(ssl, 0, 0, 8, 0);
++    turtle_result = ssl_tls13_write_encrypted_extensions_body_turtle_body(ssl, buf, end, out_len);
++    turtle_span(ssl, 0, 1, 8, turtle_result);
++    return turtle_result;
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+@@ -2691,7 +2725,7 @@
+  *
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_certificate_request_body(mbedtls_ssl_context *ssl,
++static int ssl_tls13_write_certificate_request_body_turtle_body(mbedtls_ssl_context *ssl,
+                                                     unsigned char *buf,
+                                                     const unsigned char *end,
+                                                     size_t *out_len)
+@@ -2739,6 +2773,17 @@
+         3, MBEDTLS_SSL_HS_CERTIFICATE_REQUEST, ssl->handshake->sent_extensions);
+ 
+     return 0;
++}
++static int ssl_tls13_write_certificate_request_body(mbedtls_ssl_context *ssl,
++                                                    unsigned char *buf,
++                                                    const unsigned char *end,
++                                                    size_t *out_len)
++{
++    int turtle_result;
++    turtle_span(ssl, 0, 0, 13, 0);
++    turtle_result = ssl_tls13_write_certificate_request_body_turtle_body(ssl, buf, end, out_len);
++    turtle_span(ssl, 0, 1, 13, turtle_result);
++    return turtle_result;
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+@@ -2916,7 +2961,10 @@
+     mbedtls_ssl_set_inbound_transform(ssl, ssl->handshake->transform_handshake);
+ 
+     ssl_tls13_prepare_for_handshake_second_flight(ssl);
+-
++    if (ssl->turtle_ping_enabled) {
++        mbedtls_ssl_set_outbound_transform(ssl, ssl->transform_application);
++        ssl->turtle_write_ready = 1;
++    }
+     return 0;
+ }
+ 

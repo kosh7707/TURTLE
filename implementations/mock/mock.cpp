@@ -17,7 +17,7 @@ struct MockConnection : Connection {
     std::uint8_t marker = 42;
     MockConnection(MockContext* c, const Io& i) : context(c), io(i) {}
 };
-Step status(IoResult r) {
+Step status(const IoResult& r) {
     switch (r.status) {
     case IoStatus::Ok:
         return Step::Done;
@@ -110,8 +110,19 @@ void teardown(Context* c) noexcept {
     delete c;
 }
 } // namespace
-extern "C" turtle::ImplementationApi turtle_adapter_v2() {
-    return {turtle::adapter_api_version, name, declaration, setup, open,  handshake, verify,
-            negotiated,                   send, recv,        error, close, save,
+extern "C" turtle::ImplementationApi turtle_adapter_v3() {
+    return {turtle::adapter_api_version,
+            name,
+            declaration,
+            setup,
+            open,
+            handshake,
+            verify,
+            negotiated,
+            send,
+            recv,
+            error,
+            close,
+            save,
             teardown};
 }

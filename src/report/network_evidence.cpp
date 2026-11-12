@@ -250,13 +250,17 @@ AuthoritativeLedger read_authoritative_ledger(const std::filesystem::path& path)
             break;
         }
 
+        if (!row.is_object() || !row.contains("type") || !row.at("type").is_string() ||
+            row.at("type") != "turtle-attempt-ledger" || !row.contains("schema") ||
+            !row.at("schema").is_number_integer() || row.at("schema") != 1 ||
+            !row.contains("record_kind") || !row.at("record_kind").is_string())
+            throw std::runtime_error(
+                std::string("authoritative attempt ledger has invalid ") +
+                (header_seen ? "row: " : "run_config: ") + path.string());
+
+        const auto kind = row.at("record_kind").get<std::string>();
         if (!header_seen) {
-            if (!row.is_object() || !row.contains("type") || !row.at("type").is_string() ||
-                row.at("type") != "turtle-attempt-ledger" || !row.contains("schema") ||
-                !row.at("schema").is_number_integer() || row.at("schema") != 1 ||
-                !row.contains("record_kind") || !row.at("record_kind").is_string() ||
-                row.at("record_kind") != "run_config" ||
-                !row.contains("requested_count") ||
+            if (kind != "run_config" || !row.contains("requested_count") ||
                 !row.at("requested_count").is_number_unsigned())
                 throw std::runtime_error("authoritative attempt ledger has invalid run_config: " +
                                          path.string());
@@ -269,13 +273,6 @@ AuthoritativeLedger read_authoritative_ledger(const std::filesystem::path& path)
             continue;
         }
 
-        if (!row.is_object() || !row.contains("type") || !row.at("type").is_string() ||
-            row.at("type") != "turtle-attempt-ledger" || !row.contains("schema") ||
-            !row.at("schema").is_number_integer() || row.at("schema") != 1 ||
-            !row.contains("record_kind") || !row.at("record_kind").is_string())
-            throw std::runtime_error("authoritative attempt ledger has invalid row: " +
-                                     path.string());
-        const auto kind = row.at("record_kind").get<std::string>();
         if (kind == "run_summary") {
             if (!ledger.run_summary.is_null() || row.contains("attempt_id"))
                 throw std::runtime_error("authoritative attempt ledger has invalid run_summary: " +
@@ -403,6 +400,24 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
             ? stable_identity(provenance.at("condition_identity"))
             : Json(nullptr);
     validate_topology(provenance, expected_topology, reasons);
+    const bool kernel_requested = provenance.value("condition_identity", Json::object())
+                                      .value("requested", Json::object())
+                                      .value("kernel_events", false);
+    if (kernel_requested) {
+        const auto kernel = read_json(root / "kernel-events.json");
+        bool complete = kernel.is_object() && kernel.value("type", "") == "turtle-kernel-events" &&
+                        kernel.value("schema", 0) == 1 && kernel.value("status", "") == "complete" &&
+                        kernel.value("buffer_lost", -1) == 0 &&
+                        kernel.value("cleanup_errors", Json(nullptr)) == Json::array() &&
+                        kernel.value("targeted_loss_complete", false);
+        const auto failures = kernel.is_object() ? kernel.value("failures", Json(nullptr)) : Json(nullptr);
+        complete = complete && failures.is_object() && !failures.empty();
+        if (failures.is_object())
+            for (const auto& value : failures)
+                complete = complete && value.is_number_integer() && value == 0;
+        if (!complete)
+            reasons.push_back("requested_kernel_collection_or_targeted_loss_incomplete");
+    }
 
     const auto status = provenance.value("status", "");
     const auto returncode = provenance.value("director", Json::object()).value("returncode", -999);
@@ -480,7 +495,7 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
         reasons.push_back("cleanup_or_provenance_sidecar_is_partial");
 
     std::set<std::string> helpers;
-    bool observer_done = false, fatal_not_reaped = false;
+    bool observer_done = false, kernel_observer_done = false, fatal_not_reaped = false;
     for (const auto& item : provenance.value("cleanup", Json::array())) {
         if (!item.is_object())
             continue;
@@ -491,11 +506,16 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
             (item.at("observer") == "reaped" ||
              item.at("observer") == "killed-after-500ms"))
             observer_done = true;
+        if (item.value("kernel_observer", "") == "reaped" &&
+            item.value("returncode", -1) == 0 && item.value("collection_complete", false))
+            kernel_observer_done = true;
         for (auto it = item.begin(); it != item.end(); ++it)
             fatal_not_reaped = fatal_not_reaped || it.value() == "fatal-not-reaped";
     }
     if (fatal_not_reaped)
         reasons.push_back("owned_process_not_reaped");
+    if (kernel_requested && !kernel_observer_done)
+        reasons.push_back("owned_kernel_observer_cleanup_incomplete");
     if (!trace_known)
         reasons.push_back("trace_request_identity_missing");
     if (helpers != expected(expected_topology).helpers || (trace_requested && !observer_done) ||
@@ -508,6 +528,7 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
         {"eligible", reasons.empty()},
         {"expected_director_failure", expected_failure},
         {"trace_requested", trace_known ? Json(trace_requested) : Json(nullptr)},
+        {"kernel_events_requested", kernel_requested},
         {"reasons", reasons}};
     return evidence;
 }

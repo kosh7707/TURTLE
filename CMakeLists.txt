@@ -8,6 +8,8 @@ option(TURTLE_WARNINGS_AS_ERRORS "Treat TURTLE compiler warnings as errors" OFF)
 option(TURTLE_WITH_OPENSSL "Build the OpenSSL adapter" ON)
 option(TURTLE_WITH_WOLFSSL "Build the pinned wolfSSL adapter" OFF)
 option(TURTLE_WITH_MBEDTLS "Build the pinned Mbed TLS adapter" OFF)
+option(TURTLE_WITH_BITHAC "Build the pinned author BiTHaC baseline and caching pair" OFF)
+option(TURTLE_WITH_MLKEM "Build the same-source wolfSSL ML-KEM C and AVX2 pair" OFF)
 option(TURTLE_WITH_INTERPRETER "Build the offline TLS interpreter" ON)
 set(TURTLE_DEPS_ROOT "$ENV{TURTLE_DEPS_ROOT}" CACHE PATH "Locally built TLS dependencies")
 if(NOT TURTLE_DEPS_ROOT)
@@ -29,8 +31,12 @@ find_package(Git QUIET)
 if(Git_FOUND)
   execute_process(COMMAND "${GIT_EXECUTABLE}" describe --always --dirty
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    OUTPUT_VARIABLE TURTLE_SOURCE_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE _turtle_git_status
+    OUTPUT_VARIABLE _turtle_git_revision OUTPUT_STRIP_TRAILING_WHITESPACE
     ERROR_QUIET)
+  if(_turtle_git_status EQUAL 0)
+    set(TURTLE_SOURCE_REVISION "${_turtle_git_revision}")
+  endif()
 endif()
 set(TURTLE_BUILD_INFORMATION
   "compiler=${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}; path=${CMAKE_CXX_COMPILER}; type=${CMAKE_BUILD_TYPE}; flags=${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${build_type_upper}}; standard=C++20; warnings=-Wall -Wextra -Wpedantic; werror=${TURTLE_WARNINGS_AS_ERRORS}; source=${TURTLE_SOURCE_REVISION}")
@@ -65,4 +71,10 @@ if(TURTLE_WITH_WOLFSSL)
 endif()
 if(TURTLE_WITH_MBEDTLS)
   add_subdirectory(implementations/mbedtls)
+endif()
+if(TURTLE_WITH_BITHAC)
+  add_subdirectory(implementations/bithac)
+endif()
+if(TURTLE_WITH_MLKEM)
+  add_subdirectory(implementations/mlkem)
 endif()

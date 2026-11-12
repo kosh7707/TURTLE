@@ -38,13 +38,27 @@ std::string json_escape(std::string_view value) {
     std::string result;
     for (const unsigned char ch : value) {
         switch (ch) {
-        case '"': result += "\\\""; break;
-        case '\\': result += "\\\\"; break;
-        case '\b': result += "\\b"; break;
-        case '\f': result += "\\f"; break;
-        case '\n': result += "\\n"; break;
-        case '\r': result += "\\r"; break;
-        case '\t': result += "\\t"; break;
+        case '"':
+            result += "\\\"";
+            break;
+        case '\\':
+            result += "\\\\";
+            break;
+        case '\b':
+            result += "\\b";
+            break;
+        case '\f':
+            result += "\\f";
+            break;
+        case '\n':
+            result += "\\n";
+            break;
+        case '\r':
+            result += "\\r";
+            break;
+        case '\t':
+            result += "\\t";
+            break;
         default:
             if (ch < 0x20) {
                 result += "\\u00";
@@ -60,9 +74,12 @@ std::string json_escape(std::string_view value) {
 
 const char* verification_name(Verification value) {
     switch (value) {
-    case Verification::Passed: return "passed";
-    case Verification::Failed: return "failed";
-    case Verification::NotApplicable: return "not_applicable";
+    case Verification::Passed:
+        return "passed";
+    case Verification::Failed:
+        return "failed";
+    case Verification::NotApplicable:
+        return "not_applicable";
     }
     return "unknown";
 }
@@ -110,8 +127,7 @@ Options parse_options(int argc, char** argv) {
                 have_role && have_port,
             "usage: --adapter FILE --role client|server --pki DIR --auth server|mutual "
             "--port PORT --result FILE");
-    require(options.auth == "server" || options.auth == "mutual",
-            "auth must be server or mutual");
+    require(options.auth == "server" || options.auth == "mutual", "auth must be server or mutual");
     require(options.role == Role::Server || options.port != 0,
             "client role requires a nonzero port");
     return options;
@@ -143,8 +159,7 @@ std::string socket_error(const char* operation) {
 
 void make_nonblocking(int socket) {
     const int flags = fcntl(socket, F_GETFL, 0);
-    require(flags >= 0 && fcntl(socket, F_SETFL, flags | O_NONBLOCK) == 0,
-            socket_error("fcntl"));
+    require(flags >= 0 && fcntl(socket, F_SETFL, flags | O_NONBLOCK) == 0, socket_error("fcntl"));
 }
 
 int remaining_ms(Clock::time_point deadline) {
@@ -160,8 +175,7 @@ void wait_socket(int socket, short events, Clock::time_point deadline) {
     do {
         status = poll(&descriptor, 1, remaining_ms(deadline));
     } while (status < 0 && errno == EINTR);
-    require(status > 0, status == 0 ? "common 10 second deadline exceeded"
-                                    : socket_error("poll"));
+    require(status > 0, status == 0 ? "common 10 second deadline exceeded" : socket_error("poll"));
     require((descriptor.revents & (POLLERR | POLLNVAL)) == 0, "socket poll failure");
 }
 
@@ -262,9 +276,9 @@ std::size_t send_application(const ImplementationApi& api, Connection* connectio
                              std::string_view value, Clock::time_point deadline) {
     std::size_t offset = 0;
     while (offset < value.size()) {
-        const auto result = api.app_send(
-            connection, reinterpret_cast<const std::uint8_t*>(value.data()) + offset,
-            value.size() - offset);
+        const auto result =
+            api.app_send(connection, reinterpret_cast<const std::uint8_t*>(value.data()) + offset,
+                         value.size() - offset);
         require(result.step != Step::Failed,
                 "application send failed: " + adapter_error(api, connection));
         require(result.bytes <= value.size() - offset, "adapter over-reported sent bytes");
@@ -284,9 +298,9 @@ std::string receive_application(const ImplementationApi& api, Connection* connec
     std::string received(expected.size(), '\0');
     std::size_t offset = 0;
     while (offset < expected.size()) {
-        const auto result = api.app_recv(
-            connection, reinterpret_cast<std::uint8_t*>(received.data()) + offset,
-            received.size() - offset);
+        const auto result =
+            api.app_recv(connection, reinterpret_cast<std::uint8_t*>(received.data()) + offset,
+                         received.size() - offset);
         require(result.step != Step::Failed,
                 "application receive failed: " + adapter_error(api, connection));
         require(result.bytes <= received.size() - offset, "adapter over-reported received bytes");
@@ -361,9 +375,8 @@ std::string source_basis(std::string_view adapter, std::string_view field) {
         if (field == "hello_retry_request")
             return "inferred from the adapter's single permitted group; no runtime HRR query";
     }
-    if (adapter == "Mbed TLS" &&
-        (field == "group" || field == "signature" || field == "resumed" ||
-         field == "hello_retry_request"))
+    if (adapter == "Mbed TLS" && (field == "group" || field == "signature" || field == "resumed" ||
+                                  field == "hello_retry_request"))
         return "inferred from the adapter's fixed configuration; no runtime query";
     return "not exposed by the adapter";
 }
@@ -382,8 +395,8 @@ void write_result(const Options& options, const Evidence& evidence) {
            << ", \"library\": " << quoted(evidence.declaration.library)
            << ", \"version\": " << quoted(evidence.declaration.version)
            << ", \"build_options\": " << quoted(evidence.declaration.build_options)
-           << ", \"callback_io\": "
-           << (evidence.declaration.callback_io ? "true" : "false") << "},\n"
+           << ", \"callback_io\": " << (evidence.declaration.callback_io ? "true" : "false")
+           << "},\n"
            << "  \"verification\": " << quoted(verification_name(evidence.verification))
            << ",\n  \"negotiated\": {\n"
            << "    \"version\": " << quoted(evidence.negotiated.version)
@@ -399,7 +412,8 @@ void write_result(const Options& options, const Evidence& evidence) {
     const char* separator = "";
     for (const auto field : {"version", "cipher", "group", "signature", "resumed",
                              "hello_retry_request", "peer_certificate_present"}) {
-        output << separator << quoted(field) << ": " << quoted(source_for(evidence.adapter_name, field));
+        output << separator << quoted(field) << ": "
+               << quoted(source_for(evidence.adapter_name, field));
         separator = ", ";
     }
     output << "},\n  \"negotiated_source_basis\": {";
@@ -410,8 +424,8 @@ void write_result(const Options& options, const Evidence& evidence) {
                << quoted(source_basis(evidence.adapter_name, field));
         separator = ", ";
     }
-    output << "},\n  \"application\": {\"expected_sent\": "
-           << quoted(evidence.expected_sent) << ", \"sent_bytes\": " << evidence.sent
+    output << "},\n  \"application\": {\"expected_sent\": " << quoted(evidence.expected_sent)
+           << ", \"sent_bytes\": " << evidence.sent
            << ", \"expected_received\": " << quoted(evidence.expected_received)
            << ", \"received\": " << quoted(evidence.received)
            << ", \"received_bytes\": " << evidence.received.size() << "},\n"
@@ -453,7 +467,8 @@ int main(int argc, char** argv) {
         config.mutual_auth = options.auth == "mutual";
         config.framework_io = true;
         config.tickets = 0;
-        services.key_log = {&key_log_lines, [](void* state, const char*, std::size_t size) noexcept {
+        services.key_log = {&key_log_lines,
+                            [](void* state, const char*, std::size_t size) noexcept {
                                 if (size != 0)
                                     ++*static_cast<std::size_t*>(state);
                                 return true;
@@ -467,7 +482,7 @@ int main(int argc, char** argv) {
         auto entry = reinterpret_cast<AdapterEntry>(dlsym(module, adapter_entry_name));
         const char* symbol_error = dlerror();
         require(symbol_error == nullptr && entry != nullptr,
-                std::string("adapter ABI v2 entry turtle_adapter_v2 is missing: ") +
+                std::string("adapter ABI v3 entry turtle_adapter_v3 is missing: ") +
                     (symbol_error ? symbol_error : "unknown"));
         api = entry();
         require(api.version == adapter_api_version, "adapter API version mismatch");
@@ -505,13 +520,12 @@ int main(int argc, char** argv) {
         complete_handshake(api, connection, socket, deadline);
 
         evidence.verification = api.peer_verification(connection);
-        const auto expected_verification =
-            options.role == Role::Server && !config.mutual_auth ? Verification::NotApplicable
-                                                                : Verification::Passed;
+        const auto expected_verification = options.role == Role::Server && !config.mutual_auth
+                                               ? Verification::NotApplicable
+                                               : Verification::Passed;
         require(evidence.verification == expected_verification, "peer verification mismatch");
         evidence.negotiated = api.negotiated(connection);
-        require(evidence.negotiated.version == "TLS1.3" ||
-                    evidence.negotiated.version == "TLSv1.3",
+        require(evidence.negotiated.version == "TLS1.3" || evidence.negotiated.version == "TLSv1.3",
                 "negotiated version is not TLS1.3");
         require(evidence.negotiated.cipher == config.cipher, "negotiated cipher mismatch");
         require(evidence.negotiated.peer_certificate_present ==
@@ -542,7 +556,8 @@ int main(int argc, char** argv) {
             evidence.sent = send_application(api, connection, socket, client_ping, deadline);
             evidence.received = receive_application(api, connection, socket, server_pong, deadline);
         } else {
-            evidence.received = receive_application(api, connection, socket, openssl_ping, deadline);
+            evidence.received =
+                receive_application(api, connection, socket, openssl_ping, deadline);
             evidence.sent = send_application(api, connection, socket, turtle_pong, deadline);
         }
         evidence.key_log_lines = key_log_lines;

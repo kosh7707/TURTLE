@@ -53,6 +53,15 @@ template <class Meter> struct Capture {
         recorded.sequence = ++capture.sequence;
         recorded.call = capture.call;
         recorded.call_id = capture.call_id;
+        recorded.batch_id = observation.batch_id;
+        if (observation.buffered) {
+            recorded.kind = model::EventKind::OutputAccepted;
+            recorded.location = model::Location::Framework;
+            recorded.transferred = observation.result.bytes;
+            recorded.snapshot = capture.snapshot();
+            capture.buffer.append(recorded);
+            return;
+        }
         if (observation.entering)
             recorded.snapshot = capture.snapshot();
         recorded.kind = observation.sending
@@ -79,10 +88,10 @@ template <class Meter> struct Capture {
         auto* return_event = capture.buffer.prepare_event(recorded);
         model::Event* kernel_event = nullptr;
         if (observation.result.bytes) {
-            capture.buffer.append_bytes(
-                capture.connection,
-                observation.sending ? model::Direction::Sent : model::Direction::Received,
-                {observation.data, observation.result.bytes});
+            capture.buffer.append_bytes(capture.connection,
+                                        observation.sending ? model::Direction::Sent
+                                                            : model::Direction::Received,
+                                        {observation.data, observation.result.bytes});
             if (!observation.sending && !capture.first_receive)
                 capture.first_receive = recorded.sequence;
             if (observation.kernel_realtime_ns) {
@@ -104,6 +113,41 @@ template <class Meter> struct Capture {
             kernel_event->snapshot = return_snapshot;
     }
 
+    static void observe_tx(void* context, const transport::TxObservation& source) noexcept {
+        auto& capture = *static_cast<Capture*>(context);
+        model::Event event;
+        event.kind = source.kind;
+        event.location = model::Location::Kernel;
+        event.connection = capture.connection;
+        event.sequence = ++capture.sequence;
+        event.raw_timestamp_ns = source.realtime_ns;
+        event.timestamp_id = source.byte_id;
+        event.stream_end = static_cast<std::uint64_t>(source.byte_id) + 1;
+        // A request's last byte is known; the timestamp does not describe an
+        // exact full packet/record byte range. ACK is cumulative, ignoring SACK.
+        event.timestamp_coverage_exact = false;
+        event.snapshot = capture.snapshot(); // userspace collection time
+        capture.buffer.append(event);
+    }
+
+    static bool trace(void* context, const TraceEvent& source) noexcept {
+        auto& capture = *static_cast<Capture*>(context);
+        model::Event event;
+        event.kind = source.phase == TracePhase::Begin ? model::EventKind::InternalBegin
+                                                       : model::EventKind::InternalEnd;
+        event.location = model::Location::Library;
+        event.connection = capture.connection;
+        event.sequence = ++capture.sequence;
+        event.call = capture.call;
+        event.call_id = capture.call_id;
+        event.trace_operation = source.operation;
+        event.message_id = source.message_id;
+        event.message_type = source.message_type;
+        event.result = source.result;
+        event.snapshot = capture.snapshot();
+        return capture.buffer.append(event);
+    }
+
     template <class Function>
     auto invoke(model::Call operation, Function&& function, std::size_t requested = 0) {
         call = operation;
@@ -118,8 +162,7 @@ template <class Meter> struct Capture {
         } else if constexpr (std::is_enum_v<decltype(result)>) {
             code = static_cast<int>(result);
         }
-        event(model::EventKind::CallEnd, model::Location::Boundary, code, requested,
-              transferred);
+        event(model::EventKind::CallEnd, model::Location::Boundary, code, requested, transferred);
         return result;
     }
 };

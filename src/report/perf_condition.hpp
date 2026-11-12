@@ -16,13 +16,6 @@ inline bool perf_scope(const Json& value) {
             value.get_ref<const std::string&>() == "user+kernel");
 }
 
-inline bool perf_status(const Json& value) {
-    return value.is_string() &&
-           (value.get_ref<const std::string&>() == "disabled" ||
-            value.get_ref<const std::string&>() == "available" ||
-            value.get_ref<const std::string&>() == "unsupported");
-}
-
 inline Json value_or_null(const Json& object, std::string_view key) {
     const auto name = std::string(key);
     return object.contains(name) ? object.at(name) : Json(nullptr);
@@ -48,8 +41,7 @@ inline bool complete_perf_condition(const Json& controls, const Json& support) {
     const auto& status = support.at("perf_status");
     const auto& effective = support.at("perf_effective_scope");
     if (!enabled.is_boolean() || !perf_scope(requested) ||
-        !perf_scope(measured_requested) || requested != measured_requested ||
-        !perf_status(status))
+        !perf_scope(measured_requested) || requested != measured_requested)
         return false;
 
     if (status == "available")

@@ -1,0 +1,124 @@
+--- a/include/openssl/ssl.h.in
++++ b/include/openssl/ssl.h.in
+@@ -1201,6 +1201,8 @@
+ /* fatal */
+ # define SSL_AD_INAPPROPRIATE_FALLBACK   TLS1_AD_INAPPROPRIATE_FALLBACK
+ # define SSL_AD_NO_APPLICATION_PROTOCOL  TLS1_AD_NO_APPLICATION_PROTOCOL
++# define TURTLE_OPENSSL_TRACE_PATCH 1
++# define SSL_CTRL_TURTLE_SERVER_HELLO_FIRST 21590
+ # define SSL_ERROR_NONE                  0
+ # define SSL_ERROR_SSL                   1
+ # define SSL_ERROR_WANT_READ             2
+--- a/ssl/ssl_local.h
++++ b/ssl/ssl_local.h
+@@ -1244,6 +1244,7 @@
+ struct ssl_connection_st {
+     /* type identifier and common data */
+     struct ssl_st ssl;
++    int turtle_server_hello_first;
+ 
+     /*
+      * The actual end user's SSL object. Could be different to this one for
+--- a/ssl/ssl_lib.c
++++ b/ssl/ssl_lib.c
+@@ -2995,6 +2995,9 @@
+         return 0;
+ 
+     switch (cmd) {
++    case SSL_CTRL_TURTLE_SERVER_HELLO_FIRST:
++        sc->turtle_server_hello_first = larg != 0;
++        return 1;
+     case SSL_CTRL_GET_READ_AHEAD:
+         return RECORD_LAYER_get_read_ahead(&sc->rlayer);
+     case SSL_CTRL_SET_READ_AHEAD:
+--- a/ssl/statem/statem.c
++++ b/ssl/statem/statem.c
+@@ -21,6 +21,13 @@
+ #include "statem_local.h"
+ #include <assert.h>
+ 
++
++static void turtle_span(SSL_CONNECTION *s, int op, int end, int type, int result)
++{
++    if (s->msg_callback != NULL)
++        s->msg_callback(0, 0x5455, (op << 16) | (end << 8) | (type & 255),
++                        &result, sizeof(result), SSL_CONNECTION_GET_SSL(s), s->msg_callback_arg);
++}
+ /*
+  * This file implements the SSL/TLS/DTLS state machines.
+  *
+@@ -686,7 +693,9 @@
+                 SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
+                 return SUB_STATE_ERROR;
+             }
++            turtle_span(s, 1, 0, s->s3.tmp.message_type, 0);
+             ret = process_message(s, &pkt);
++            turtle_span(s, 1, 1, s->s3.tmp.message_type, ret);
+ 
+             /* Discard the packet data */
+             s->init_num = 0;
+@@ -714,7 +723,9 @@
+             break;
+ 
+         case READ_STATE_POST_PROCESS:
++            turtle_span(s, 1, 0, s->s3.tmp.message_type, 0);
+             st->read_state_work = post_process_message(s, st->read_state_work);
++            turtle_span(s, 1, 1, s->s3.tmp.message_type, st->read_state_work);
+             switch (st->read_state_work) {
+             case WORK_ERROR:
+                 check_fatal(s);
+@@ -899,7 +910,9 @@
+             if (confunc != NULL) {
+                 CON_FUNC_RETURN tmpret;
+ 
+-                tmpret = confunc(s, &pkt);
++                turtle_span(s, 0, 0, mt, 0);
++            tmpret = confunc(s, &pkt);
++            turtle_span(s, 0, 1, mt, tmpret);
+                 if (tmpret == CON_FUNC_ERROR) {
+                     WPACKET_cleanup(&pkt);
+                     check_fatal(s);
+--- a/ssl/statem/statem_srvr.c
++++ b/ssl/statem/statem_srvr.c
+@@ -925,6 +925,9 @@
+         break;
+ 
+     case TLS_ST_SW_SRVR_HELLO:
++        if (s->turtle_server_hello_first && SSL_CONNECTION_IS_TLS13(s)
++                && statem_flush(s) != 1)
++            return WORK_MORE_A;
+         if (SSL_CONNECTION_IS_TLS13(s)
+             && s->hello_retry_request == SSL_HRR_PENDING) {
+             if ((s->options & SSL_OP_ENABLE_MIDDLEBOX_COMPAT) == 0
+--- a/ssl/record/methods/tls13_meth.c
++++ b/ssl/record/methods/tls13_meth.c
+@@ -82,7 +82,7 @@
+     return OSSL_RECORD_RETURN_SUCCESS;
+ }
+ 
+-static int tls13_cipher(OSSL_RECORD_LAYER *rl, TLS_RL_RECORD *recs,
++static int tls13_cipher_turtle_body(OSSL_RECORD_LAYER *rl, TLS_RL_RECORD *recs,
+                         size_t n_recs, int sending, SSL_MAC_BUF *mac,
+                         size_t macsize)
+ {
+@@ -247,6 +247,20 @@
+ 
+     return 1;
+ }
++static int tls13_cipher(OSSL_RECORD_LAYER *rl, TLS_RL_RECORD *recs,
++                        size_t n_recs, int sending, SSL_MAC_BUF *mac,
++                        size_t macsize)
++{
++    int turtle_result;
++    if (rl->msg_callback != NULL)
++        rl->msg_callback(sending, 0x5455, (sending ? 2 : 3) << 16, NULL, 0, rl->cbarg);
++    turtle_result = tls13_cipher_turtle_body(rl, recs, n_recs, sending, mac, macsize);
++    if (rl->msg_callback != NULL)
++        rl->msg_callback(sending, 0x5455, ((sending ? 2 : 3) << 16) | 256,
++                          &turtle_result, sizeof(turtle_result), rl->cbarg);
++    return turtle_result;
++}
++
+ 
+ static int tls13_validate_record_header(OSSL_RECORD_LAYER *rl,
+                                         TLS_RL_RECORD *rec)

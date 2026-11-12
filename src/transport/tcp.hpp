@@ -30,6 +30,19 @@ int connect_ipv4(const std::string& source_address, const Endpoint& destination)
 Endpoint local_endpoint(int fd);
 Endpoint peer_endpoint(int fd);
 
+// Prepared before the trial; owns no descriptors. The role runtime owns the
+// listener and each newly created connection. Completion is nonblocking.
+struct DialAddress {
+    std::uint32_t source = 0;
+    std::uint32_t target = 0;
+    std::uint16_t port = 0;
+};
+DialAddress prepare_dial(const std::string& source, const Endpoint& target);
+int begin_connect(const DialAddress& address);
+void finish_connect(int fd);
+void nonblocking_listener(int fd);
+int try_accept(int listener); // -1 means retry after readability
+
 // Empty if `fd` is an established TCP connection with nothing unread;
 // otherwise the reason it is not ready for a TLS handshake.
 std::string check_ready(int fd);

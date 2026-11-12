@@ -57,7 +57,7 @@ struct Endpoint {
         module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
         check(module, "dlopen failed: " + std::string(path));
         auto entry = reinterpret_cast<AdapterEntry>(dlsym(module, adapter_entry_name));
-        check(entry, "adapter ABI v2 entry turtle_adapter_v2 is missing");
+        check(entry, "adapter ABI v3 entry turtle_adapter_v3 is missing");
         api = entry();
         check(api.version == adapter_api_version, "adapter API mismatch");
         check(api.name && api.declaration && api.setup && api.open && api.handshake_step &&
@@ -91,8 +91,8 @@ int main(int argc, char** argv) {
         Endpoint client, server;
         client.load(argv[1]);
         server.load(argv[2]);
-        for (const auto* cipher : {"TLS_AES_256_GCM_SHA384",
-                                  "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384"}) {
+        for (const auto* cipher :
+             {"TLS_AES_256_GCM_SHA384", "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384"}) {
             auto unsupported = config;
             unsupported.cipher = cipher;
             for (auto* endpoint : {&client, &server}) {
@@ -120,8 +120,8 @@ int main(int argc, char** argv) {
                         if (pending && endpoint->api.handshake_step(pending) == Step::Failed &&
                             endpoint->api.error) {
                             const auto* reason = endpoint->api.error(pending);
-                            rejected = reason && std::string(reason).find("TLS_AES_128_GCM_SHA256") !=
-                                                     std::string::npos;
+                            rejected = reason && std::string(reason).find(
+                                                     "TLS_AES_128_GCM_SHA256") != std::string::npos;
                         }
                     }
                 } catch (const std::exception& error) {

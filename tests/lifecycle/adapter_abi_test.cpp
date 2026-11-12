@@ -68,11 +68,10 @@ int main(int argc, char** argv) {
         artifact << attempts.rdbuf();
         require(attempts.good() || attempts.eof(), "attempt ledger is unavailable");
         const auto attempt_text = artifact.str();
-        if (attempt_text.find("adapter ABI v2 entry turtle_adapter_v2 is missing") ==
+        if (attempt_text.find("adapter ABI v3 entry turtle_adapter_v3 is missing") ==
             std::string::npos) {
             throw std::runtime_error(
-                "production lifecycle did not preserve the explicit ABI refusal: " +
-                attempt_text);
+                "production lifecycle did not preserve the explicit ABI refusal: " + attempt_text);
         }
 
         // Keep a direct symbol check as a secondary fixture sanity check. The

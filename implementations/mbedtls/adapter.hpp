@@ -1,4 +1,5 @@
 #pragma once
+#include "../common/trace.hpp"
 
 #include <turtle/adapter.hpp>
 
@@ -48,6 +49,8 @@ struct MbedConnection final : Connection {
     std::array<char, 256> error_text{};
     int last_error = 0;
     bool key_log_failed = false;
+    adapter_detail::TraceForwarder trace;
+    bool ping_reported = false;
     bool handshake_done = false;
 };
 

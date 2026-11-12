@@ -1,0 +1,2 @@
+# 통합 diff의 빈 문맥 줄과 마지막 문맥 줄에 필요한 공백을 보존합니다.
+implementations/*/*.patch whitespace=-blank-at-eol,-blank-at-eof

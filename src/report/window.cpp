@@ -210,12 +210,15 @@ Json common_window(const Json& header, const Json& connection,
     if (!connection.value("application_verified", false))
         return unavailable("application_not_verified");
     if (!header.contains("config") || !header.at("config").is_object() ||
-        !header.at("config").contains("tls") ||
-        !header.at("config").at("tls").is_object() ||
+        !header.at("config").contains("tls") || !header.at("config").at("tls").is_object() ||
         !header.at("config").at("tls").contains("application_bytes"))
         return unavailable("application_bytes_missing");
-    const auto expected_value =
-        nonnegative_integer(header.at("config").at("tls").at("application_bytes"));
+    const auto& tls = header.at("config").at("tls");
+    const bool server_first = tls.value("scenario", "client-request") == "server-ping" ||
+                              tls.value("scenario", "client-request") == "finished-ping";
+    const auto expected_value = nonnegative_integer(
+        tls.value(server_first ? "client_application_bytes" : "server_application_bytes",
+                  tls.at("application_bytes")));
     if (!expected_value || *expected_value == 0)
         return unavailable("application_bytes_invalid");
     const auto expected = *expected_value;
@@ -226,7 +229,7 @@ Json common_window(const Json& header, const Json& connection,
     std::optional<std::uint64_t> previous_sequence;
     std::optional<std::uint64_t> previous_time;
     bool target_call_active = false;
-    const auto target = header.at("role") == "client" ? "app_recv" : "app_send";
+    const auto target = (header.at("role") == "client") != server_first ? "app_recv" : "app_send";
     for (const auto* event : events) {
         if (!event->contains("sequence") || !event->contains("monotonic_ns"))
             return unavailable("boundary_event_fields_missing");
@@ -284,8 +287,7 @@ Json common_window(const Json& header, const Json& connection,
         return unavailable("handshake_call_begin_missing");
     if (end == nullptr || transferred != expected)
         return unavailable("application_completion_missing");
-    if (end->at("sequence").get<std::uint64_t>() <=
-            start->at("sequence").get<std::uint64_t>() ||
+    if (end->at("sequence").get<std::uint64_t>() <= start->at("sequence").get<std::uint64_t>() ||
         time(*end) < time(*start))
         return unavailable("common_boundary_order_or_time_regression");
 
@@ -409,8 +411,7 @@ Json call_boundary(std::string_view boundary_kind, const Json& event) {
 
 const Json* matching_send_return(const std::vector<const Json*>& events, std::size_t enter_index) {
     const auto& enter = *events.at(enter_index);
-    if (!enter.contains("connection") || !enter.contains("call_id") ||
-        !enter.contains("sequence"))
+    if (!enter.contains("connection") || !enter.contains("call_id") || !enter.contains("sequence"))
         return nullptr;
     for (std::size_t i = enter_index + 1; i < events.size(); ++i) {
         const auto& candidate = *events[i];
@@ -492,10 +493,10 @@ Json record_computation_attribution(const Json& header, const std::vector<Json>&
         return result;
     }
     const bool client = header.at("role") == "client";
-    const auto* received = decoded_direction(decoded_connection,
-                                             client ? "server_sent" : "client_sent");
-    const auto* sent = decoded_direction(decoded_connection,
-                                         client ? "client_sent" : "server_sent");
+    const auto* received =
+        decoded_direction(decoded_connection, client ? "server_sent" : "client_sent");
+    const auto* sent =
+        decoded_direction(decoded_connection, client ? "client_sent" : "server_sent");
     if (received == nullptr || sent == nullptr) {
         result["reason"] = "decoded_record_mapping_unavailable";
         return result;
@@ -554,8 +555,8 @@ Json record_computation_attribution(const Json& header, const std::vector<Json>&
         } else if (begin_event->value("kind", "") == "IO_RECV_RETURN") {
             const auto indices = completed_records(*received, *begin_event);
             if (!indices.empty())
-                segment["start"] = record_boundary("after_receive", *begin_event,
-                                                    *begin_event, *received, indices);
+                segment["start"] = record_boundary("after_receive", *begin_event, *begin_event,
+                                                   *received, indices);
         }
 
         if (end_event->value("kind", "") == "CALL_END") {
@@ -564,8 +565,8 @@ Json record_computation_attribution(const Json& header, const std::vector<Json>&
             if (const auto* returned = matching_send_return(events, end_event_index)) {
                 const auto indices = overlapping_records(*sent, *returned);
                 if (!indices.empty())
-                    segment["end"] = record_boundary("before_send", *end_event, *returned,
-                                                      *sent, indices);
+                    segment["end"] =
+                        record_boundary("before_send", *end_event, *returned, *sent, indices);
             }
         }
         attributed.push_back(std::move(segment));
@@ -580,8 +581,7 @@ Json server_client_hello_to_finished_send_window(const Json& header,
                                                  const std::vector<Json>& events,
                                                  const Json& decoded_connection) {
     if (header.value("role", "") != "server")
-        return unavailable_server_client_hello_to_finished_send_window(
-            "server_role_required");
+        return unavailable_server_client_hello_to_finished_send_window("server_role_required");
     if (const auto reason = io_events_unavailable_reason(header))
         return unavailable_server_client_hello_to_finished_send_window(*reason);
     if (!decoded_connection.value("decryption_complete", false))
@@ -597,15 +597,13 @@ Json server_client_hello_to_finished_send_window(const Json& header,
     if (client_hello == nullptr || finished == nullptr ||
         !client_hello->contains("record_stream_ranges") ||
         client_hello->at("record_stream_ranges").empty() ||
-        !finished->contains("record_stream_ranges") ||
-        finished->at("record_stream_ranges").empty())
+        !finished->contains("record_stream_ranges") || finished->at("record_stream_ranges").empty())
         return unavailable_server_client_hello_to_finished_send_window(
             "server_window_record_mapping_unavailable");
 
     std::uint64_t client_hello_begin = std::numeric_limits<std::uint64_t>::max();
     for (const auto& range : client_hello->at("record_stream_ranges"))
-        client_hello_begin =
-            std::min(client_hello_begin, range.at("begin").get<std::uint64_t>());
+        client_hello_begin = std::min(client_hello_begin, range.at("begin").get<std::uint64_t>());
     std::uint64_t finished_end = 0;
     for (const auto& range : finished->at("record_stream_ranges"))
         finished_end = std::max(finished_end, range.at("end").get<std::uint64_t>());
@@ -615,8 +613,7 @@ Json server_client_hello_to_finished_send_window(const Json& header,
     const Json* end = nullptr;
     for (const auto& event : events) {
         if (event.value("connection", std::size_t(-1)) != connection || !boundary(event) ||
-            !event.contains("sequence") ||
-            event.value("result", std::int64_t{-1}) != 0 ||
+            !event.contains("sequence") || event.value("result", std::int64_t{-1}) != 0 ||
             event.value("transferred", std::uint64_t{0}) == 0 ||
             event.value("stream_end", std::uint64_t{0}) <=
                 event.value("stream_begin", std::uint64_t{0}))
@@ -659,8 +656,7 @@ Json server_client_hello_to_finished_send_window(const Json& header,
             result["thread_cpu_ns"] = *last - *first;
     }
     if (header.value("perf_complete", false) && start->contains("cycles") &&
-        end->contains("cycles") && !start->at("cycles").is_null() &&
-        !end->at("cycles").is_null()) {
+        end->contains("cycles") && !start->at("cycles").is_null() && !end->at("cycles").is_null()) {
         const auto first = nonnegative_integer(start->at("cycles"));
         const auto last = nonnegative_integer(end->at("cycles"));
         if (first && last && *last >= *first)
@@ -679,7 +675,8 @@ Json partition(const Json& header, const std::vector<Json>& input) {
         for (const auto& e : input)
             if (e.at("connection") == index && boundary(e))
                 events.push_back(&e);
-        const bool functional_valid = conn.value("application_verified", false);
+        const bool functional_valid =
+            conn.value("scenario_completed", conn.value("application_verified", false));
         const auto common = common_window(header, conn, events);
         bool primary_observable = true;
         std::string primary_reason;
@@ -695,25 +692,25 @@ Json partition(const Json& header, const std::vector<Json>& input) {
         }
         Json result = {{"connection", index}, {"valid", functional_valid}};
         result[std::string(common_window_name)] = common;
-        result["primary_window"] =
-            {{"available", primary_observable},
-             {"reason", primary_observable || primary_reason.empty() ? Json(nullptr)
-                                                                       : Json(primary_reason)}};
+        result["primary_window"] = {{"available", primary_observable},
+                                    {"reason", primary_observable || primary_reason.empty()
+                                                   ? Json(nullptr)
+                                                   : Json(primary_reason)}};
         if (!primary_observable) {
             result["reason"] = primary_reason;
             result["io_breakdown"] = {
                 {"available", false},
                 {"reason", io_events_observed(header)
                                ? Json(primary_reason.empty() ? "measurement_boundaries_incomplete"
-                                                            : primary_reason)
+                                                             : primary_reason)
                                : Json("io_events_not_observed")}};
             results.push_back(result);
             continue;
         }
         if (events.empty()) {
             result["valid"] = false;
-            result["primary_window"] =
-                {{"available", false}, {"reason", "missing_boundary_events"}};
+            result["primary_window"] = {{"available", false},
+                                        {"reason", "missing_boundary_events"}};
             result["reason"] = "missing boundary events";
             results.push_back(result);
             continue;
@@ -730,38 +727,44 @@ Json partition(const Json& header, const std::vector<Json>& input) {
                 start = time(*e);
                 start_event = e;
             }
-            if (k == "CALL_END" && e->at("call") == (client ? "app_recv" : "app_send") &&
-                e->value("result", 0LL) == 2) {
+            const bool revised = header.value("measurement_contract_revision", 0) >= 3;
+            if ((revised && conn.contains("end_sequence") &&
+                 e->at("sequence") == conn.at("end_sequence")) ||
+                (!revised && k == "CALL_END" &&
+                 e->at("call") == (client ? "app_recv" : "app_send") &&
+                 e->value("result", 0LL) == 2)) {
                 end = time(*e);
                 end_event = e;
             }
         }
         if (!start || !end || *end < *start) {
             result["valid"] = false;
-            result["primary_window"] =
-                {{"available", false}, {"reason", "missing_successful_measurement_boundaries"}};
+            result["primary_window"] = {{"available", false},
+                                        {"reason", "missing_successful_measurement_boundaries"}};
             result["reason"] = "missing successful measurement boundaries";
             results.push_back(result);
             continue;
         }
         const bool io_observed = io_events_observed(header);
         if (!io_observed) {
-            result.update({{"valid", functional_valid},
-                           {"start_ns", *start},
-                           {"end_ns", *end},
-                           {"elapsed_ns", *end - *start},
-                           {"computation_ns", nullptr},
-                           {"io_ns", nullptr},
-                           {"wait_ns", nullptr},
-                           {"gap_ns", nullptr},
-                           {"segments", Json::array()},
-                           {"end_definition", "successful_application_call_end"},
-                           {"io_breakdown",
-                            {{"available", false}, {"reason", "io_events_not_observed"}}}});
+            result.update(
+                {{"valid", functional_valid},
+                 {"start_ns", *start},
+                 {"end_ns", *end},
+                 {"elapsed_ns", *end - *start},
+                 {"computation_ns", nullptr},
+                 {"io_ns", nullptr},
+                 {"wait_ns", nullptr},
+                 {"gap_ns", nullptr},
+                 {"segments", Json::array()},
+                 {"end_definition", header.value("measurement_contract_revision", 0) >= 3
+                                        ? "scenario_complete"
+                                        : "successful_application_call_end"},
+                 {"io_breakdown", {{"available", false}, {"reason", "io_events_not_observed"}}}});
             for (const char* metric : {"thread_cpu_ns", "cycles", "instructions"}) {
                 result[metric] = nullptr;
-                const bool supported = std::string(metric) == "thread_cpu_ns" ||
-                                       header.value("perf_complete", false);
+                const bool supported =
+                    std::string(metric) == "thread_cpu_ns" || header.value("perf_complete", false);
                 if (supported && start_event->contains(metric) && end_event->contains(metric) &&
                     !start_event->at(metric).is_null() && !end_event->at(metric).is_null()) {
                     const auto a = start_event->at(metric).get<std::uint64_t>();
@@ -832,7 +835,9 @@ Json partition(const Json& header, const std::vector<Json>& input) {
                        {"wait_ns", wait},
                        {"gap_ns", gap},
                        {"segments", segments},
-                       {"end_definition", "successful_application_call_end"}});
+                       {"end_definition", header.value("measurement_contract_revision", 0) >= 3
+                                              ? "scenario_complete"
+                                              : "successful_application_call_end"}});
         for (const char* metric : {"thread_cpu_ns", "cycles", "instructions"}) {
             result[metric] = nullptr;
             const bool supported =

@@ -35,8 +35,8 @@ int main() {
         const auto path = (dir / "profile.json").string();
         std::ofstream(path)
             << R"({"name":"test","pki":"certs","tls":{"tickets":0,"mutual_auth":true},"measurement":{"samples":3,"connections":2}})";
-        const auto a = parse({"turtle", "run", "--samples", "7", "--connections", "3",
-                              "--profile", path, "--no-perf"})
+        const auto a = parse({"turtle", "run", "--samples", "7", "--connections", "3", "--profile",
+                              path, "--no-perf"})
                            .run;
         require(a.samples == 7 && a.connections == 3 && a.tls.mutual_auth && !a.perf,
                 "CLI must override profile independent of order");
@@ -59,16 +59,15 @@ int main() {
         require(parse({"turtle", "capabilities"}).action ==
                     turtle::config::Command::Action::Capabilities,
                 "capabilities action");
-        require(parse({"turtle", "run"}).run.connections == 1,
-                "default connection count changed");
-        const auto profiles = std::filesystem::path(__FILE__).parent_path().parent_path()
-                                  .parent_path() / "examples/profiles";
+        require(parse({"turtle", "run"}).run.connections == 1, "default connection count changed");
+        const auto profiles =
+            std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+            "examples/profiles";
         const auto repeated_profile = (profiles / "repeated-context.json").string();
         const auto repeated = parse({"turtle", "run", "--profile", repeated_profile}).run;
         const auto standard =
             parse({"turtle", "run", "--profile", (profiles / "server-auth.json").string()}).run;
-        require(repeated.connections == 16 && repeated.warmups == 0 &&
-                    repeated.timeout_ms == 30000,
+        require(repeated.connections == 16 && repeated.warmups == 0 && repeated.timeout_ms == 30000,
                 "repeated-context pilot settings were not parsed");
         require(repeated.tls.cipher == standard.tls.cipher &&
                     repeated.tls.group == standard.tls.group &&
@@ -87,8 +86,37 @@ int main() {
                 "explicit connection count did not override the pilot profile");
         require(parse({"turtle", "run"}).run.channel_observer,
                 "channel observer default must remain enabled");
-        require(parse({"turtle", "run"}).run.perf_scope ==
-                    turtle::model::PerfScope::User,
+        const auto defaults = parse({"turtle", "run"}).run;
+        require(!defaults.tx_timestamps && !defaults.cpu_profile,
+                "diagnostic instrumentation must be opt-in");
+        const auto profiled = parse({"turtle", "run", "--cpu-profile"}).run;
+        require(profiled.cpu_profile && profiled.profile_hash == defaults.profile_hash,
+                "CPU sampling marker changed the TLS workload identity");
+        require(rejects({"turtle", "run", "--cpu-profile", "--mode", "trace"}) &&
+                    rejects({"turtle", "run", "--cpu-profile", "--mode", "memory"}),
+                "CPU sampling was mixed with another diagnostic mode");
+        require(rejects({"turtle", "run", "--tx-timestamps"}) &&
+                    rejects({"turtle", "run", "--tx-timestamps", "--mode", "trace", "--native-io"}),
+                "TX timestamps accepted an unobserved transport");
+        require(parse({"turtle", "run", "--tx-timestamps", "--mode", "trace"}).run.tx_timestamps,
+                "TX timestamp option was not applied");
+        const auto diagnostic_path = (dir / "diagnostic-profile.json").string();
+        std::ofstream(diagnostic_path) << R"({"measurement":{"cpu_profile":true}})";
+        require(parse({"turtle", "run", "--profile", diagnostic_path}).run.cpu_profile,
+                "profile CPU sampling marker was not applied");
+        std::ofstream(diagnostic_path)
+            << R"({"measurement":{"mode":"trace","tx_timestamps":true}})";
+        require(parse({"turtle", "run", "--profile", diagnostic_path}).run.tx_timestamps,
+                "profile TX timestamp option was not applied");
+        std::ofstream(diagnostic_path)
+            << R"({"measurement":{"mode":"trace","tx_timestamps":true,"channel_observer":false}})";
+        require(rejects({"turtle", "run", "--profile", diagnostic_path}),
+                "TX timestamps accepted a disabled channel observer");
+        std::ofstream(diagnostic_path)
+            << R"({"lookup":{"enabled":true},"measurement":{"cpu_profile":true}})";
+        require(rejects({"turtle", "run", "--profile", diagnostic_path}),
+                "TLS-only profiler accepted a lookup run");
+        require(parse({"turtle", "run"}).run.perf_scope == turtle::model::PerfScope::User,
                 "perf scope default must remain user");
         const auto perf_scope_path = (dir / "perf-scope-profile.json").string();
         std::ofstream(perf_scope_path)
@@ -100,32 +128,29 @@ int main() {
             << R"({"measurement":{"perf":false,"perf_scope":"user+kernel"}})";
         require(rejects({"turtle", "run", "--profile", perf_scope_path}),
                 "disabled perf accepted a kernel-inclusive scope");
-        std::ofstream(perf_scope_path)
-            << R"({"measurement":{"perf_scope":"system"}})";
+        std::ofstream(perf_scope_path) << R"({"measurement":{"perf_scope":"system"}})";
         require(rejects({"turtle", "run", "--profile", perf_scope_path}),
                 "unknown perf scope was accepted");
         const auto observer_path = (dir / "observer-profile.json").string();
-        std::ofstream(observer_path)
-            << R"({"measurement":{"channel_observer":false}})";
+        std::ofstream(observer_path) << R"({"measurement":{"channel_observer":false}})";
         const auto observer_off = parse({"turtle", "run", "--profile", observer_path}).run;
         require(!observer_off.channel_observer,
                 "measurement.channel_observer=false was not applied");
         require(observer_off.profile_hash == parse({"turtle", "run"}).run.profile_hash,
                 "observer execution setting must not fragment TLS profile identity");
-        require(parse({"turtle", "run", "--warmups", "1024", "--connections", "1"})
-                        .run.connections == 1,
-                "maximum combined connection count was rejected");
+        require(
+            parse({"turtle", "run", "--warmups", "1024", "--connections", "1"}).run.connections ==
+                1,
+            "maximum combined connection count was rejected");
         require(turtle::config::usage().find("--connections N") != std::string::npos &&
                     turtle::config::usage().find("Warm-up connections") != std::string::npos,
                 "help does not distinguish measured and warm-up connections");
-        require(rejects({"turtle", "run", "--samples", "-1"}),
-                "negative sample count accepted");
+        require(rejects({"turtle", "run", "--samples", "-1"}), "negative sample count accepted");
         require(rejects({"turtle", "run", "--connections", "0"}),
                 "zero measured connections accepted");
         require(rejects({"turtle", "run", "--connections", "1026"}),
                 "too many measured connections accepted");
-        require(rejects(
-                    {"turtle", "run", "--warmups", "1024", "--connections", "2"}),
+        require(rejects({"turtle", "run", "--warmups", "1024", "--connections", "2"}),
                 "too many combined connections accepted");
         require(parse({"turtle", "run"}).run.tls.cipher == "TLS_AES_128_GCM_SHA256",
                 "fixed cipher suite default changed");
@@ -151,8 +176,7 @@ int main() {
                     lookup.flush_grace_ms == 750 && lookup.ca_cpu == 7,
                 "attempt policy settings were not applied");
 
-        const auto fallback =
-            parse({"turtle", "run", "--pki", (dir / "other-pki").string()}).run;
+        const auto fallback = parse({"turtle", "run", "--pki", (dir / "other-pki").string()}).run;
         require(!fallback.lookup.enabled &&
                     fallback.lookup.cache_mode == turtle::model::CacheMode::Empty &&
                     fallback.lookup.snapshot_file.empty() &&
@@ -176,14 +200,11 @@ int main() {
                "\"router_client_ca\":\"rcca\",\"router_ca\":\"rca0\"},"
                "\"net_profile\":{\"type\":\"turtle-netem-profile\",\"schema\":1},"
                "\"provenance_file\":\""
-            << (output / "network-provenance.json").string()
-            << "\",\"observations_file\":\""
-            << (output / "network-observations.jsonl").string()
-            << "\",\"phase_control_fd\":13}";
-        const auto network =
-            parse({"turtle", "run", "--network-manifest", manifest_path, "--output",
-                   output.string()})
-                .run;
+            << (output / "network-provenance.json").string() << "\",\"observations_file\":\""
+            << (output / "network-observations.jsonl").string() << "\",\"phase_control_fd\":13}";
+        const auto network = parse({"turtle", "run", "--network-manifest", manifest_path,
+                                    "--output", output.string()})
+                                 .run;
         require(network.network_manifest == manifest_path && network.network_handoff.has_value(),
                 "network manifest was not loaded");
         require(network.network_handoff->client_namespace_fd == 10 &&
@@ -204,14 +225,12 @@ int main() {
                "\"router_client_tls\":\"rctls\",\"router_server\":\"rstls\"},"
                "\"net_profile\":{\"type\":\"turtle-netem-profile\",\"schema\":1},"
                "\"provenance_file\":\""
-            << (output / "pure-network-provenance.json").string()
-            << "\",\"observations_file\":\""
+            << (output / "pure-network-provenance.json").string() << "\",\"observations_file\":\""
             << (output / "pure-network-observations.jsonl").string()
             << "\",\"phase_control_fd\":22}";
-        const auto pure_network =
-            parse({"turtle", "run", "--network-manifest", pure_manifest_path, "--output",
-                   output.string()})
-                .run;
+        const auto pure_network = parse({"turtle", "run", "--network-manifest", pure_manifest_path,
+                                         "--output", output.string()})
+                                      .run;
         require(pure_network.network_handoff.has_value() &&
                     pure_network.network_handoff->client_namespace_fd == 20 &&
                     pure_network.network_handoff->server_namespace_fd == 21 &&
@@ -226,9 +245,8 @@ int main() {
                 "lookup-disabled network manifest did not preserve absent CA members");
         std::ofstream(lookup_path)
             << R"({"lookup":{"enabled":true,"object_file":"objects/chain.pem"}})";
-        require(rejects({"turtle", "run", "--profile", lookup_path,
-                         "--network-manifest", pure_manifest_path, "--output",
-                         output.string()}),
+        require(rejects({"turtle", "run", "--profile", lookup_path, "--network-manifest",
+                         pure_manifest_path, "--output", output.string()}),
                 "lookup-enabled run accepted a network manifest without CA members");
         require(turtle::config::usage().find("--network-manifest FILE") != std::string::npos,
                 "network manifest option is missing from help");
@@ -251,8 +269,7 @@ int main() {
         require(rejects({"turtle", "run", "--profile", lookup_path}),
                 "unknown failure policy was accepted");
         for (const char* grace : {"0", "5001"}) {
-            std::ofstream(lookup_path)
-                << "{\"measurement\":{\"flush_grace_ms\":" << grace << "}}";
+            std::ofstream(lookup_path) << "{\"measurement\":{\"flush_grace_ms\":" << grace << "}}";
             require(rejects({"turtle", "run", "--profile", lookup_path}),
                     "out-of-range flush grace was accepted");
         }
@@ -261,28 +278,27 @@ int main() {
                 "invalid CA CPU was accepted");
         require(rejects({"turtle", "run", "--attempts", "3"}),
                 "separate attempts CLI was accepted");
-        require(rejects({"turtle", "run", "--lookup", "true"}),
-                "lookup CLI synonym was accepted");
-        require(rejects({"turtle", "run", "--network-manifest", manifest_path,
-                         "--network-manifest", manifest_path, "--output", output.string()}),
+        require(rejects({"turtle", "run", "--lookup", "true"}), "lookup CLI synonym was accepted");
+        require(rejects({"turtle", "run", "--network-manifest", manifest_path, "--network-manifest",
+                         manifest_path, "--output", output.string()}),
                 "duplicate network manifest was accepted");
         const auto invalid_manifest = (dir / "invalid-network-manifest.json").string();
         std::ofstream(invalid_manifest) << R"({"type":"wrong","schema":1})";
-        require(rejects({"turtle", "run", "--network-manifest", invalid_manifest,
-                         "--output", output.string()}),
+        require(rejects({"turtle", "run", "--network-manifest", invalid_manifest, "--output",
+                         output.string()}),
                 "invalid network manifest type was accepted");
 
         for (const auto* cipher : {"TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256",
-                                  "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384"}) {
+                                   "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384"}) {
             require(rejects({"turtle", "run", "--cipher", cipher}),
                     "out-of-scope cipher suite accepted");
             std::ofstream(path) << "{\"tls\":{\"cipher\":\"" << cipher << "\"}}";
             require(rejects({"turtle", "run", "--profile", path}),
                     "out-of-scope profile cipher accepted");
-            require(parse({"turtle", "run", "--profile", path, "--cipher",
-                           "TLS_AES_128_GCM_SHA256"}).run.tls.cipher ==
-                        "TLS_AES_128_GCM_SHA256",
-                    "explicit fixed cipher override was rejected");
+            require(
+                parse({"turtle", "run", "--profile", path, "--cipher", "TLS_AES_128_GCM_SHA256"})
+                        .run.tls.cipher == "TLS_AES_128_GCM_SHA256",
+                "explicit fixed cipher override was rejected");
         }
         std::filesystem::remove_all(dir);
     } catch (const std::exception& error) {

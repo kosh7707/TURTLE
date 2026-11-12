@@ -256,8 +256,7 @@ void export_keys_callback(void* opaque, mbedtls_ssl_key_export_type type,
     // callback allocation-free and reject unexpected sizes rather than truncate.
     std::array<char, 192> line{};
     const std::size_t label_size = std::strlen(label);
-    const std::size_t required = label_size + 1 + 64 + 1 + secret_size * 2 + 1;
-    if (required > line.size()) {
+    if (secret_size > 32 || label_size > 40) {
         connection.key_log_failed = true;
         return;
     }
@@ -287,6 +286,22 @@ const char* name() noexcept {
 turtle::Declaration declaration(const turtle::Context* base) {
     turtle::Declaration result;
     result.library = kLibraryName;
+    result.source_version = MBEDTLS_VERSION_STRING_FULL;
+    result.source_url = "https://github.com/Mbed-TLS/mbedtls/tree/mbedtls-3.6.4";
+#ifdef TURTLE_MBEDTLS_TRACE_PATCH
+    result.patch_hash = TURTLE_PATCH_SHA256;
+    result.scenarios.push_back(turtle::Scenario::FinishedPing);
+    result.send_policies.push_back(turtle::SendPolicy::ServerHelloFirst);
+    result.internal_events = {
+        turtle::TraceOperation::MessageGenerate, turtle::TraceOperation::MessageProcess,
+        turtle::TraceOperation::RecordEncrypt, turtle::TraceOperation::RecordDecrypt};
+    result.internal_events_note =
+        "Hello/extensions/certificate-request/certificate/verify/Finished body construction; "
+        "Hello/extensions/certificate-request/certificate/verify/Finished processing after fetch; "
+        "record encrypt/decrypt; generation excludes outer prepare/finalize and record/I/O";
+    result.server_ping_note = "application outbound transform after ServerFinished; explicit flush "
+                              "then yield; wrapup preserves outbound sequence";
+#endif
     result.version = MBEDTLS_VERSION_STRING_FULL;
     result.build_options =
         "TLS 1.3; callback I/O; ECDSA P-256; AES-128-GCM; MBEDTLS_PLATFORM_MEMORY; "
@@ -420,13 +435,26 @@ turtle::Connection* open(turtle::Context* base, const turtle::Io& io) {
         delete connection;
         return nullptr;
     }
+    connection->trace.sink = context.services->trace;
+    connection->trace.enabled = context.services->trace_mode;
+#ifdef TURTLE_MBEDTLS_TRACE_PATCH
+    connection->ssl.turtle_trace_context = connection;
+    if (context.services->trace_mode)
+        connection->ssl.turtle_trace = [](void* arg, int op, int end, int type, int result) {
+            static_cast<MbedConnection*>(arg)->trace.emit(op, end, type, result);
+        };
+    connection->ssl.turtle_ping_enabled =
+        context.role == turtle::Role::Server &&
+        (context.config->scenario == turtle::Scenario::ServerPing ||
+         context.config->scenario == turtle::Scenario::FinishedPing);
+#endif
     mbedtls_ssl_set_bio(&connection->ssl, connection, send_callback, recv_callback, nullptr);
     mbedtls_ssl_set_export_keys_cb(&connection->ssl, export_keys_callback, connection);
     return connection;
 }
 
 turtle::Step translate_result(MbedConnection& connection, int result) noexcept {
-    if (connection.key_log_failed) {
+    if (connection.key_log_failed || connection.trace.failed) {
         connection.set_error("key log sink rejected exported TLS secrets");
         return turtle::Step::Failed;
     }
@@ -448,9 +476,22 @@ turtle::Step handshake_step(turtle::Connection* base) {
         return turtle::Step::Failed;
     }
     auto& connection = *static_cast<MbedConnection*>(base);
+#ifdef TURTLE_MBEDTLS_TRACE_PATCH
+    if (connection.ping_reported)
+        connection.ssl.turtle_write_ready = 0;
+#endif
     while (!mbedtls_ssl_is_handshake_over(&connection.ssl)) {
+#ifdef TURTLE_MBEDTLS_TRACE_PATCH
+        if (connection.ssl.turtle_write_ready && !connection.ping_reported) {
+            const int flush = mbedtls_ssl_turtle_flush_output(&connection.ssl);
+            if (flush != 0)
+                return translate_result(connection, flush);
+            connection.ping_reported = true;
+            return turtle::Step::ApplicationWriteReady;
+        }
+#endif
         const int result = mbedtls_ssl_handshake_step(&connection.ssl);
-        if (connection.key_log_failed) {
+        if (connection.key_log_failed || connection.trace.failed) {
             connection.set_error("key log sink rejected exported TLS secrets");
             return turtle::Step::Failed;
         }
@@ -563,7 +604,7 @@ void teardown(turtle::Context* base) noexcept {
 
 } // namespace
 
-extern "C" turtle::ImplementationApi turtle_adapter_v2() {
+extern "C" turtle::ImplementationApi turtle_adapter_v3() {
     return {turtle::adapter_api_version,
             name,
             declaration,

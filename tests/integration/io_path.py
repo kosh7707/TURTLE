@@ -228,7 +228,7 @@ def validate_role(raw: Path, role: str, framework_io: bool, mutual_auth: bool,
                   interpret: Path) -> dict[str, object]:
     rows = read_jsonl(raw)
     header = rows[0]
-    check(header.get("type") == "sample" and header.get("schema") == 1,
+    check(header.get("type") == "sample" and header.get("schema") == 2,
           f"{raw}: wrong sample header")
     check(header.get("valid") is True, f"{raw}: invalid sample: {header.get('invalid_reason')}")
     declaration = header.get("declaration", {})

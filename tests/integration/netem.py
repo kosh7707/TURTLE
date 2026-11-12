@@ -106,6 +106,25 @@ def main():
                                 for name in ("tls_c2s", "tls_s2c")}
         check(runner.validate_net_profile(tls_profile) == tls_profile,
               "valid TLS-only profile was rejected")
+        shaped = json.loads(json.dumps(tls_profile))
+        shaped.update(schema=2, initial_cwnd={"client": 4, "server": None})
+        for policy in shaped["paths"].values():
+            policy["rate_bps"] = 1000000
+        check(runner.validate_net_profile(shaped) == shaped, "rate and cwnd profile changed")
+        kernel = json.loads(json.dumps(shaped))
+        kernel.update(schema=3, kernel_events=True, trace=True,
+                      targeted_drop={"tls_c2s": 0, "tls_s2c": 16384})
+        kernel["offload"] = dict(tso=False, gso=False, gro=False)
+        check(runner.validate_net_profile(kernel) == kernel, "kernel loss profile changed")
+        kernel["kernel_events"] = False
+        try: runner.validate_net_profile(kernel)
+        except ValueError: pass
+        else: raise RuntimeError("targeted loss accepted without its observation")
+        readback = {"tls_s2c": {"interface": "rctls", "root_kind": "netem",
+                    "requested": shaped["paths"]["tls_s2c"],
+                    "raw": [{"root": True, "options": {"rate": {"rate": 125000}}}]}}
+        check(runner.OwnedTopology._stable_qdisc(readback)["tls_s2c"]["rate_bps"] == 1000000,
+              "kernel byte rate was not converted to bits per second")
         legacy_profile = json.loads(json.dumps(profile))
         legacy_profile["paths"]["ca_c2s"]["delay_ms"] = 777
         legacy_profile["paths"]["ca_s2c"]["loss_percent"] = 99.0

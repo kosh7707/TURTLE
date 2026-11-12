@@ -88,10 +88,15 @@ void keylog(const SSL* ssl, const char* line) {
     if (sink.append && !sink.append(sink.context, line, std::strlen(line)))
         s.sink_failed = true;
 }
-void message(int outgoing, int, int type, const void* bytes, std::size_t size, SSL* ssl, void*) {
+void message(int outgoing, int version, int type, const void* bytes, std::size_t size, SSL* ssl,
+             void*) {
     auto* session = static_cast<Session*>(SSL_get_app_data(ssl));
     if (!session)
         return;
+    if (version == 0x5455) {
+        session->trace.message(version, type, bytes, size);
+        return;
+    }
     const auto* data = static_cast<const std::uint8_t*>(bytes);
     constexpr std::uint8_t random[] = {0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11,
                                        0xbe, 0x1d, 0x8c, 0x02, 0x1e, 0x65, 0xb8, 0x91,
@@ -106,7 +111,7 @@ void message(int outgoing, int, int type, const void* bytes, std::size_t size, S
         session->sink_failed = true;
 }
 Step result(Session& s, int rc) {
-    if (s.sink_failed) {
+    if (s.sink_failed || s.trace.failed) {
         set_error_text(s, "capture sink exhausted");
         return Step::Failed;
     }
@@ -200,6 +205,13 @@ Connection* open(Context* context, const Io& io) {
     s->ssl = SSL_new(state.ssl);
     require(s->ssl, "SSL_new failed");
     SSL_set_app_data(s->ssl, s.get());
+    s->trace.sink = state.services.trace;
+    s->trace.enabled = state.services.trace_mode;
+#ifdef TURTLE_OPENSSL_TRACE_PATCH
+    require(SSL_ctrl(s->ssl, SSL_CTRL_TURTLE_SERVER_HELLO_FIRST,
+                     state.config.send_policy == SendPolicy::ServerHelloFirst, nullptr) == 1,
+            "OpenSSL instrumentation header/library mismatch");
+#endif
     if (state.config.framework_io) {
         require(io.send && io.recv, "transport callbacks missing");
         BIO* bio = BIO_new(state.method);
@@ -221,6 +233,19 @@ Declaration declaration(const Context* context) {
     const auto& s = *static_cast<const State*>(context);
     Declaration d;
     d.library = "OpenSSL";
+    d.source_version = OPENSSL_VERSION_TEXT;
+    d.source_url = "https://github.com/openssl/openssl/tree/openssl-3.5.4";
+#ifdef TURTLE_OPENSSL_TRACE_PATCH
+    d.patch_hash = TURTLE_PATCH_SHA256;
+    d.internal_events = {TraceOperation::MessageGenerate, TraceOperation::MessageProcess,
+                         TraceOperation::RecordEncrypt, TraceOperation::RecordDecrypt};
+    d.internal_events_note = "construct function; process and post-process work segments; "
+                             "tls13_cipher; excludes separate state pre/post work and socket waits";
+    d.send_policies.push_back(SendPolicy::ServerHelloFirst);
+#endif
+    d.scenarios.push_back(Scenario::FinishedPing);
+    d.server_ping_note = "TLS 1.3 server application traffic keys after ServerFinished; before "
+                         "ClientFinished processing; no client early data";
     d.version = OpenSSL_version(OPENSSL_VERSION);
     d.build_options = OpenSSL_version(OPENSSL_CFLAGS);
     d.callback_io = s.config.framework_io;
@@ -273,7 +298,7 @@ Verification verification(Connection* connection) {
 } // namespace
 } // namespace turtle::openssl_adapter
 
-extern "C" turtle::ImplementationApi turtle_adapter_v2() {
+extern "C" turtle::ImplementationApi turtle_adapter_v3() {
     using namespace turtle;
     using namespace turtle::openssl_adapter;
     return {
@@ -285,6 +310,23 @@ extern "C" turtle::ImplementationApi turtle_adapter_v2() {
         [](Connection* c) {
             auto& s = *static_cast<Session*>(c);
             ERR_clear_error();
+            if (s.state.role == Role::Server &&
+                (s.state.config.scenario == Scenario::ServerPing ||
+                 s.state.config.scenario == Scenario::FinishedPing) &&
+                !s.readiness_reported) {
+                unsigned char unused = 0;
+                std::size_t bytes = 0;
+                const int rc = SSL_read_early_data(s.ssl, &unused, 1, &bytes);
+                if (rc == SSL_READ_EARLY_DATA_ERROR)
+                    return result(s, 0);
+                if (rc != SSL_READ_EARLY_DATA_FINISH || bytes || SSL_is_init_finished(s.ssl)) {
+                    set_error_text(s, "server application readiness did not match full TLS 1.3");
+                    return Step::Failed;
+                }
+                s.write_ready = s.readiness_reported = true;
+                return Step::ApplicationWriteReady;
+            }
+            s.write_ready = false;
             return result(s, SSL_do_handshake(s.ssl));
         },
         verification,
@@ -293,7 +335,8 @@ extern "C" turtle::ImplementationApi turtle_adapter_v2() {
             auto& s = *static_cast<Session*>(c);
             std::size_t bytes = 0;
             ERR_clear_error();
-            int rc = SSL_write_ex(s.ssl, p, n, &bytes);
+            int rc = s.write_ready ? SSL_write_early_data(s.ssl, p, n, &bytes)
+                                   : SSL_write_ex(s.ssl, p, n, &bytes);
             return AppResult{result(s, rc), bytes};
         },
         [](Connection* c, std::uint8_t* p, std::size_t n) {

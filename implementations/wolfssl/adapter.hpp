@@ -1,4 +1,5 @@
 #pragma once
+#include "../common/trace.hpp"
 
 #include <turtle/adapter.hpp>
 
@@ -31,6 +32,8 @@ struct WolfConnection final : Connection {
     Io io;
     WOLFSSL* ssl = nullptr;
     std::string last_error;
+    adapter_detail::TraceForwarder trace;
+    bool ping_reported = false;
     bool handshake_done = false;
 
     WolfConnection(WolfContext* value_context, const Io& value_io)

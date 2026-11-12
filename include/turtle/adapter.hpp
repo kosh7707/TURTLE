@@ -11,7 +11,36 @@
 namespace turtle {
 
 enum class Role { Client, Server };
-enum class Step { WantRead, WantWrite, Done, Failed };
+// Keep completion/failure numeric values stable in historical raw events.
+enum class Step { WantRead, WantWrite, Complete, Done = Complete, Failed, ApplicationWriteReady };
+enum class Scenario { Handshake, ServerPing, FinishedPing, ClientRequest };
+enum class SendPolicy { Native, ServerHelloFirst };
+enum class TraceOperation {
+    MessageGenerate,
+    MessageProcess,
+    RecordEncrypt,
+    RecordDecrypt,
+    LibraryMessageWrite,
+    CachedCertificateWrite,
+    KemKeygen,
+    KemEncapsulate,
+    KemDecapsulate,
+    KemPolynomialKeygen,
+    KemPolynomialEncapsulate,
+    KemPolynomialDecapsulate
+};
+enum class TracePhase { Begin, End };
+struct TraceEvent {
+    TraceOperation operation;
+    TracePhase phase;
+    std::uint64_t message_id = 0; // stable across retries, scoped to this connection
+    unsigned message_type = 0;
+    int result = 0;
+};
+struct TraceSink {
+    void* context = nullptr;
+    bool (*append)(void*, const TraceEvent&) noexcept = nullptr;
+};
 enum class Verification { Passed, Failed, NotApplicable };
 enum class IoStatus { Ok, WantRead, WantWrite, Closed, Failed };
 
@@ -57,6 +86,7 @@ struct HostServices {
     PlaintextSink plaintext;
     bool memory_mode = false;
     bool trace_mode = false;
+    TraceSink trace{};
 };
 
 struct TlsConfig {
@@ -73,12 +103,27 @@ struct TlsConfig {
     bool compatibility_ccs = true;
     bool framework_io = true;
     std::uint32_t tickets = 0;
-    std::size_t application_bytes = 32;
+    Scenario scenario = Scenario::ClientRequest;
+    SendPolicy send_policy = SendPolicy::Native;
+    std::size_t application_bytes = 32; // fallback for either direction
+    std::optional<std::size_t> client_application_bytes;
+    std::optional<std::size_t> server_application_bytes;
     std::size_t record_size_limit = 0; // zero means no requested extension
     bool certificate_compression = false;
 };
 
 struct Declaration {
+    std::vector<Scenario> scenarios{Scenario::Handshake, Scenario::ClientRequest,
+                                    Scenario::ServerPing};
+    std::vector<SendPolicy> send_policies{SendPolicy::Native};
+    std::vector<TraceOperation> internal_events;
+    std::string internal_events_note = "internal generation/processing/record spans unavailable";
+    std::string server_ping_note = "application write after local handshake API completion";
+    std::string source_version;
+    std::string source_url;
+    std::string technique = "standard-tls13";
+    std::string implementation = "baseline";
+    std::string patch_hash;
     std::string library;
     std::string version;
     std::string build_options;
@@ -116,7 +161,7 @@ struct Connection {
 // Config and HostServices outlive Context; Io outlives Connection. A retry uses
 // the same operation and buffer until that operation reports progress or Done.
 struct ImplementationApi {
-    std::uint32_t version = 2;
+    std::uint32_t version = 3;
     const char* (*name)() noexcept = nullptr;
     Declaration (*declaration)(const Context*) = nullptr;
     Context* (*setup)(Role, const TlsConfig&, const HostServices&,
@@ -134,11 +179,11 @@ struct ImplementationApi {
 };
 
 using AdapterEntry = ImplementationApi (*)();
-inline constexpr std::uint32_t adapter_api_version = 2;
-inline constexpr const char* adapter_entry_name = "turtle_adapter_v2";
+inline constexpr std::uint32_t adapter_api_version = 3;
+inline constexpr const char* adapter_entry_name = "turtle_adapter_v3";
 
 } // namespace turtle
 
 // Each adapter module exports this function. It returns a function table by
 // value, not a singleton instance. Library initialization belongs to setup().
-extern "C" turtle::ImplementationApi turtle_adapter_v2();
+extern "C" turtle::ImplementationApi turtle_adapter_v3();

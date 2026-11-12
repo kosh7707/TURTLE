@@ -12,11 +12,11 @@
 
 namespace turtle::model {
 
-inline constexpr unsigned record_schema = 1;
+inline constexpr unsigned record_schema = 2;
 // Identifies the measurement boundary semantics independently of the additive
-// raw record schema. Revision 2 includes TLS key-share generation in the
-// handshake window and framework return-path capture work in the I/O segment.
-inline constexpr unsigned measurement_contract_revision = 2;
+// raw record schema. Revision 3 creates TCP per trial after readiness and
+// distinguishes application scenarios, directional sizes and submission batches.
+inline constexpr unsigned measurement_contract_revision = 3;
 inline constexpr const char* framework_version = "0.1.0";
 
 enum class Mode { Timing, Memory, Trace };
@@ -36,9 +36,29 @@ enum class Call {
     AppRecv,
     Close,
     Save,
-    Teardown
+    Teardown,
+    Flush
 };
 enum class EventKind {
+    ModuleBegin,
+    ModuleEnd,
+    TcpConnectBegin,
+    TcpConnectEnd,
+    AcceptBegin,
+    AcceptEnd,
+    HandshakeComplete,
+    ApplicationWriteBegin,
+    ApplicationWriteEnd,
+    ApplicationReadBegin,
+    ApplicationFirstByte,
+    ApplicationReadEnd,
+    PayloadPrepareBegin,
+    PayloadPrepareEnd,
+    OutputAccepted,
+    OutputFlushBegin,
+    OutputFlushEnd,
+    InternalBegin,
+    InternalEnd,
     SetupBegin,
     SetupEnd,
     TcpReady,
@@ -104,6 +124,10 @@ struct Event {
     std::uint64_t call_id = 0;
     std::size_t connection = 0;
     Snapshot snapshot;
+    std::optional<TraceOperation> trace_operation;
+    std::uint64_t message_id = 0;
+    unsigned message_type = 0;
+    std::uint64_t batch_id = 0;
     std::uint64_t requested = 0;
     std::uint64_t transferred = 0;
     std::uint64_t stream_begin = 0;
@@ -176,6 +200,9 @@ struct SocketSettings {
     int send_buffer = 0;
     int receive_buffer = 0;
     bool kernel_timestamps = false;
+    bool kernel_tx_timestamps = false;
+    int kernel_tx_timestamp_error = 0;
+    int kernel_tx_drain_error = 0;
 };
 
 // A disengaged field is unsupported or was not collected; it is never an
@@ -191,6 +218,8 @@ struct TcpInfoSnapshot {
     std::optional<std::uint32_t> lost;
     std::optional<std::uint32_t> snd_mss;
     std::optional<std::uint32_t> rcv_mss;
+    std::optional<std::uint32_t> snd_cwnd;
+    std::optional<std::uint32_t> snd_ssthresh;
     std::optional<std::uint32_t> segs_out;
     std::optional<std::uint32_t> segs_in;
     std::optional<std::uint32_t> data_segs_out;
@@ -205,6 +234,7 @@ struct ConnectionInfo {
     bool warmup = false;
     Verification verification = Verification::Failed;
     Negotiated negotiated;
+    bool scenario_completed = false;
     bool application_verified = false;
     // The primary measurement start is absent when its observation boundary
     // cannot be seen (not an observed sequence zero).
@@ -217,6 +247,9 @@ struct ConnectionInfo {
     std::optional<TcpInfoSnapshot> tcp_end;
 };
 
+const char* name(Scenario value) noexcept;
+const char* name(SendPolicy value) noexcept;
+const char* name(TraceOperation value) noexcept;
 const char* name(Role value) noexcept;
 const char* name(Mode value) noexcept;
 const char* name(PerfScope value) noexcept;

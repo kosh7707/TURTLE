@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import copy
 import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -122,11 +123,6 @@ def dump_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
-def dump_json_exclusive(path: Path, value: Any) -> None:
-    with path.open("x", encoding="utf-8") as stream:
-        stream.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
-
-
 def append_json(path: Path, value: Any) -> None:
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
@@ -152,9 +148,7 @@ def make_snapshot(object_file: Path) -> dict[str, Any]:
 def profile_lookup_enabled(value: Any) -> bool:
     if not isinstance(value, dict):
         raise ValueError("profile must be an object")
-    if "lookup" not in value:
-        return False
-    lookup = value["lookup"]
+    lookup = value.get("lookup", {})
     if not isinstance(lookup, dict):
         raise ValueError("lookup must be an object")
     enabled = lookup.get("enabled", False)
@@ -164,10 +158,16 @@ def profile_lookup_enabled(value: Any) -> bool:
 
 
 def validate_net_profile(value: Any, lookup_enabled: bool = False) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {
-            "type", "schema", "qdisc", "mtu", "offload", "trace", "loss_seed", "paths"}:
+    if not isinstance(value, dict):
         raise ValueError("net profile has unknown or missing top-level fields")
-    if value["type"] != "turtle-netem-profile" or value["schema"] != 1:
+    fields = {"type", "schema", "qdisc", "mtu", "offload", "trace", "loss_seed", "paths"}
+    if value.get("schema") in (2, 3):
+        fields.add("initial_cwnd")
+    if value.get("schema") == 3:
+        fields.update(("kernel_events", "targeted_drop"))
+    if set(value) != fields:
+        raise ValueError("net profile has unknown or missing top-level fields")
+    if value["type"] != "turtle-netem-profile" or value["schema"] not in (1, 2, 3):
         raise ValueError("unsupported net profile type or schema")
     if value["qdisc"] not in ("none", "netem"):
         raise ValueError("qdisc must be none or netem")
@@ -192,19 +192,45 @@ def validate_net_profile(value: Any, lookup_enabled: bool = False) -> dict[str, 
         requirement = "all four directional paths" if lookup_enabled else "exactly two TLS paths or all four legacy paths"
         raise ValueError(f"{requirement} are required")
     normalized = copy.deepcopy(value)
+    if value["schema"] >= 2:
+        cwnd = value["initial_cwnd"]
+        if not isinstance(cwnd, dict) or set(cwnd) != {"client", "server"}:
+            raise ValueError("initial_cwnd must contain client and server")
+        if any(item is not None and (type(item) is not int or not 1 <= item <= 1000)
+               for item in cwnd.values()):
+            raise ValueError("initial_cwnd values must be null (kernel default) or 1..1000 segments")
     for name, policy in normalized["paths"].items():
-        if not isinstance(policy, dict) or set(policy) != {"delay_ms", "loss_percent", "limit_packets"}:
+        path_fields = {"delay_ms", "loss_percent", "limit_packets"}
+        if value["schema"] >= 2:
+            path_fields.add("rate_bps")
+        if not isinstance(policy, dict) or set(policy) != path_fields:
             raise ValueError(f"{name} must contain delay_ms, loss_percent, limit_packets")
+        rate = policy.get("rate_bps")
+        if rate is not None and (type(rate) is not int or not 8 <= rate <= 100000000000 or rate % 8):
+            raise ValueError(f"{name}.rate_bps must be null or a multiple of 8 in 8..100000000000")
         delay, loss, limit = policy["delay_ms"], policy["loss_percent"], policy["limit_packets"]
         if type(delay) is not int or not 0 <= delay <= 1000:
             raise ValueError(f"{name}.delay_ms must be an integer in 0..1000")
         if isinstance(loss, bool) or not isinstance(loss, (int, float)) or not 0 <= loss <= 100:
             raise ValueError(f"{name}.loss_percent must be a finite number in 0..100")
-        if not float(loss) == loss or type(limit) is not int or not 1 <= limit <= 100000:
+        if type(limit) is not int or not 1 <= limit <= 100000:
             raise ValueError(f"{name} has an invalid loss or queue limit")
         policy["loss_percent"] = float(loss)
-        if normalized["qdisc"] == "none" and (delay != 0 or loss != 0):
-            raise ValueError("qdisc none requires zero delay and loss on every path")
+        if normalized["qdisc"] == "none" and (delay != 0 or loss != 0 or rate is not None):
+            raise ValueError("qdisc none requires zero delay/loss and no rate on every path")
+    if value["schema"] == 3:
+        if type(value["kernel_events"]) is not bool:
+            raise ValueError("kernel_events must be boolean")
+        drops = value["targeted_drop"]
+        if not isinstance(drops, dict) or set(drops) != set(TLS_PATHS):
+            raise ValueError("targeted_drop must contain exactly two TLS directions")
+        if any(offset is not None and (type(offset) is not int or not 0 <= offset < 2**31)
+               for offset in drops.values()):
+            raise ValueError("targeted_drop offsets must be null or 0..2^31-1 TLS stream bytes")
+        if any(offset is not None for offset in drops.values()) and not value["kernel_events"]:
+            raise ValueError("targeted_drop requires kernel_events")
+        if value["kernel_events"] and (not value["trace"] or any(value["offload"].values())):
+            raise ValueError("kernel_events requires packet trace and disabled TSO/GSO/GRO")
     return normalized
 
 
@@ -262,6 +288,8 @@ class OwnedTopology:
         self.ns_fds: dict[str, int] = {}
         self.observer: subprocess.Popen[str] | None = None
         self.marker: socket.socket | None = None
+        self.kernel_observer: subprocess.Popen | None = None
+        self.kernel_control: socket.socket | None = None
         self.provenance: dict[str, Any] = {
             "type": "turtle-network-provenance", "schema": 1,
             "status": "initializing", "reason": None,
@@ -333,6 +361,10 @@ class OwnedTopology:
             version = subprocess.run([path, version_flag], text=True, capture_output=True, timeout=2)
             self.provenance["tools"][f"{tool}_version"] = (version.stdout + version.stderr).strip()
         self.provenance["tools"]["kernel_release"] = os.uname().release
+        self.provenance["condition_identity"]["privilege"] = {
+            "uid": os.geteuid(),
+            "user_namespace_kind": "initial" if self.profile.get("kernel_events", False) else "isolated",
+        }
         owner_user_inode = os.stat("/proc/self/ns/user").st_ino
         self.provenance["lifecycle"]["user_namespace_inode"] = owner_user_inode
         for name in self.namespace_names:
@@ -359,8 +391,10 @@ class OwnedTopology:
             routes += [("client", "10.203.4.0/30", "10.203.3.1", "cca"),
                        ("ca", "10.203.3.0/30", "10.203.4.1", "ca0")]
         for owner, network, gateway, interface in routes:
+            cwnd = self.profile.get("initial_cwnd", {}).get(owner) if interface in ("ctls", "stls") else None
             self.commands.ns(self.helpers[owner].pid,
-                             ["ip", "route", "add", network, "via", gateway, "dev", interface])
+                             ["ip", "route", "add", network, "via", gateway, "dev", interface] +
+                             (["initcwnd", str(cwnd)] if cwnd is not None else []))
         requested = self.profile["offload"]
         for owner, interface in self._owned_interfaces():
             argv = ["ethtool", "-K", interface]
@@ -381,6 +415,42 @@ class OwnedTopology:
             child.close()
             self._marker({"kind": "capture-start", "monotonic_ns": time.monotonic_ns()})
         self.provenance["status"] = "ready"
+        self.save()
+
+    def start_kernel_observer(self, build: Path) -> None:
+        if not self.profile.get("kernel_events", False):
+            return
+        obj = build.resolve() / "kernel-observer.bpf.o"
+        manifest = obj.with_suffix(".json")
+        if not obj.is_file() or not manifest.is_file():
+            raise SetupUnsupported("run scripts/build-kernel-observer.py before kernel-events experiments")
+        provenance = json.loads(manifest.read_text())
+        source = Path(__file__).with_name("kernel-observer.bpf.c")
+        if (provenance["object_sha256"] != hashlib.sha256(obj.read_bytes()).hexdigest() or
+                provenance["source_sha256"] != hashlib.sha256(source.read_bytes()).hexdigest()):
+            raise SetupUnsupported("kernel observer object does not match its source/build manifest")
+        dump_json(self.output / "kernel-observer-build.json", provenance)
+        parent, child = socket.socketpair()
+        self.kernel_control = parent
+        command = [sys.executable, str(Path(__file__).with_name("kernel_observer.py").resolve()),
+                   "--object", str(obj), "--output", str(self.output / "kernel-events.json"),
+                   "--control-fd", str(child.fileno())]
+        for name in ("client", "server", "router"):
+            command += [f"--{name}-fd", str(self.ns_fds[name])]
+        for direction, option in (("tls_c2s", "--c2s-target"), ("tls_s2c", "--s2c-target")):
+            offset = self.profile["targeted_drop"][direction]
+            if offset is not None: command += [option, str(offset)]
+        try:
+            with (self.output / "kernel-observer.log").open("w") as log:
+                self.kernel_observer = subprocess.Popen(command, stdout=log, stderr=log,
+                    pass_fds=(child.fileno(), *(self.ns_fds[name] for name in ("client", "server", "router"))))
+        finally:
+            child.close()
+        ready, _, _ = select.select([parent], [], [], 10)
+        if not ready or parent.recv(1) != b"R":
+            raise SetupUnsupported("kernel observer did not become ready; see kernel-observer.log and kernel-events.json")
+        self.provenance["kernel_observer"] = {"pid": self.kernel_observer.pid,
+            "status": "ready", "source": "kernel-events.json", "object_sha256": provenance["object_sha256"]}
         self.save()
 
     def _owned_interfaces(self) -> list[tuple[str, str]]:
@@ -429,6 +499,12 @@ class OwnedTopology:
                             if item[:3] == (owner, destination, source))
             if not readback or readback[0].get("dev") != expected[3] or readback[0].get("gateway") != expected[4]:
                 raise SetupUnsupported(f"route readback differs for {owner} to {destination}")
+            requested_cwnd = self.profile.get("initial_cwnd", {}).get(owner) if expected[3] in ("ctls", "stls") else None
+            if requested_cwnd is not None:
+                metrics = readback[0].get("metrics", [])
+                actual_cwnd = next((item.get("initcwnd") for item in metrics if "initcwnd" in item), None)
+                if actual_cwnd != requested_cwnd:
+                    raise SetupUnsupported(f"initial cwnd route readback differs for {owner}")
             self.provenance["routes"].append({"namespace": owner, "destination": destination,
                                                "source": source, "readback": readback, "verified": True})
 
@@ -459,6 +535,9 @@ class OwnedTopology:
                 "delay_ms": delay_ms, "loss_percent": loss_percent,
                 "limit_packets": options.get("limit"),
             }
+            if "rate_bps" in value["requested"]:
+                rate = options.get("rate", {}).get("rate")
+                stable[path]["rate_bps"] = rate * 8 if rate else None
         return stable
 
     def reset_qdiscs(self) -> dict[str, Any]:
@@ -469,7 +548,8 @@ class OwnedTopology:
                 policy = self.profile["paths"][path]
                 self.commands.ns(router, ["tc", "qdisc", "add", "dev", interface, "root", "netem",
                                           "limit", str(policy["limit_packets"]), "delay", f'{policy["delay_ms"]}ms',
-                                          "loss", f'{policy["loss_percent"]:.12g}%'])
+                                          "loss", f'{policy["loss_percent"]:.12g}%'] +
+                                 (["rate", f'{policy["rate_bps"]}bit'] if policy.get("rate_bps") is not None else []))
         readback = self._qdisc_readback()
         expected = "netem" if self.profile["qdisc"] == "netem" else None
         for path, value in readback.items():
@@ -483,12 +563,15 @@ class OwnedTopology:
                 requested = self.profile["paths"][path]
                 if (abs(actual["delay_ms"] - requested["delay_ms"]) > .001 or
                         abs(actual["loss_percent"] - requested["loss_percent"]) > .001 or
-                        actual["limit_packets"] != requested["limit_packets"]):
+                        actual["limit_packets"] != requested["limit_packets"] or
+                        actual.get("rate_bps") != requested.get("rate_bps")):
                     raise SetupUnsupported(f"netem readback differs from request on {path}")
         self.provenance["condition_identity"]["actual"] = {
             "qdisc": self.profile["qdisc"], "paths": stable,
             "loss_seed": {"requested": None, "supported": False},
         }
+        if "initial_cwnd" in self.profile:
+            self.provenance["condition_identity"]["actual"]["initial_cwnd"] = self.profile["initial_cwnd"]
         self.provenance["applied_qdisc_readback"] = readback
         return readback
 
@@ -525,6 +608,22 @@ class OwnedTopology:
 
     def cleanup(self) -> list[str]:
         failures: list[str] = []
+        if getattr(self, "kernel_control", None):
+            try: self.kernel_control.sendall(b"S")
+            except OSError: pass  # setup failure can already have closed this owned channel
+            self.kernel_control.close(); self.kernel_control = None
+        if getattr(self, "kernel_observer", None):
+            try: self.kernel_observer.wait(5)
+            except subprocess.TimeoutExpired:
+                self.kernel_observer.kill(); self.kernel_observer.wait()
+            complete = False
+            path = self.output / "kernel-events.json"
+            if path.is_file():
+                complete = json.loads(path.read_text()).get("status") == "complete"
+            self.provenance["cleanup"].append({"kernel_observer": "reaped",
+                "returncode": self.kernel_observer.returncode, "collection_complete": complete})
+            if self.kernel_observer.returncode != 0 or not complete:
+                failures.append("kernel observer collection or cleanup incomplete")
         deadline = time.monotonic() + .5
         if self.marker:
             try: self._marker({"kind": "capture-stop", "monotonic_ns": time.monotonic_ns()})
@@ -622,7 +721,8 @@ def validate_phase(value: Any) -> dict[str, Any]:
 def run_coordinator(args: argparse.Namespace) -> int:
     output = Path(args.output).resolve()
     if output.exists():
-        print(f"output already exists: {output}", file=sys.stderr); return 2
+        print(f"output already exists: {output}", file=sys.stderr)
+        return 2
     output.mkdir(parents=True)
     observations = output / "network-observations.jsonl"
     topology: OwnedTopology | None = None
@@ -659,7 +759,9 @@ def run_coordinator(args: argparse.Namespace) -> int:
         run_profile = json.loads(Path(args.profile).read_text())
         lookup_enabled = profile_lookup_enabled(run_profile)
         profile = validate_net_profile(json.loads(Path(args.net_profile).read_text()), lookup_enabled)
-        topology = OwnedTopology(profile, output, lookup_enabled); topology.setup()
+        topology = OwnedTopology(profile, output, lookup_enabled)
+        topology.setup()
+        topology.start_kernel_observer(Path(args.build))
         phase_parent, phase_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         director_names = ("client", "server", "ca") if lookup_enabled else ("client", "server")
         manifest = {
@@ -670,8 +772,10 @@ def run_coordinator(args: argparse.Namespace) -> int:
             "provenance_file": str(topology.provenance_path),
             "observations_file": str(observations), "phase_control_fd": phase_child.fileno(),
         }
-        manifest_path = output / "network-manifest.json"; dump_json(manifest_path, manifest)
+        manifest_path = output / "network-manifest.json"
+        dump_json(manifest_path, manifest)
         command = [str((Path(args.build).resolve() / "turtle")), "run", "--profile", str(Path(args.profile).resolve()),
+                   "--client", getattr(args, "client", "openssl"), "--server", getattr(args, "server", "openssl"),
                    "--samples", str(args.samples), "--output", str(output),
                    "--network-manifest", str(manifest_path)]
         pass_fds = tuple(topology.ns_fds[name] for name in director_names) + (phase_child.fileno(),)
@@ -682,13 +786,15 @@ def run_coordinator(args: argparse.Namespace) -> int:
         phase_child.close()
         while director.poll() is None and not stop:
             ready, _, _ = select.select([phase_parent], [], [], .1)
-            if not ready: continue
+            if not ready:
+                continue
             line = recv_line(phase_parent, buffer)
             if line is None:
                 # Closing the inherited phase fd and process exit are distinct
                 # kernel observations.  Give an already-finalizing director the
                 # bounded runner cleanup interval before deciding it is stuck.
-                try: director.wait(.5)
+                try:
+                    director.wait(.5)
                 except subprocess.TimeoutExpired:
                     protocol_failure = "director remained alive after phase-control EOF"
                     # The EOF wait consumed the runner's 500 ms grace.  Do not
@@ -721,30 +827,37 @@ def run_coordinator(args: argparse.Namespace) -> int:
         topology.provenance["director"]["returncode"] = director.returncode
         topology.provenance["status"] = "complete" if director.returncode == 0 else "director-failed"
         terminal_code = 130 if stop else director.returncode
-        return terminal_code
     except SetupUnsupported as error:
         if topology:
             if buffer:
                 topology.provenance["phase_control_partial"] = {
                     "status": "partial", "bytes_hex": bytes(buffer).hex()}
-            topology.provenance.update(status="unsupported", reason=str(error)); topology.save()
+            topology.provenance.update(status="unsupported", reason=str(error))
+            topology.save()
         else:
             dump_json(output / "network-provenance.json", {"type": "turtle-network-provenance", "schema": 1,
                       "status": "unsupported", "reason": str(error)})
-        print(error, file=sys.stderr); terminal_code = 2; return terminal_code
+        print(error, file=sys.stderr)
+        terminal_code = 2
     except Exception as error:
         if topology:
             if buffer:
                 topology.provenance["phase_control_partial"] = {
                     "status": "partial", "bytes_hex": bytes(buffer).hex()}
-            topology.provenance.update(status="error", reason=str(error)); topology.save()
-        print(error, file=sys.stderr); terminal_code = 1; return terminal_code
+            topology.provenance.update(status="error", reason=str(error))
+            topology.save()
+        print(error, file=sys.stderr)
+        terminal_code = 1
     finally:
-        signal.signal(signal.SIGINT, old_int); signal.signal(signal.SIGTERM, old_term)
-        if phase_parent: phase_parent.close()
+        signal.signal(signal.SIGINT, old_int)
+        signal.signal(signal.SIGTERM, old_term)
+        if phase_parent:
+            phase_parent.close()
         if phase_child:
-            try: phase_child.close()
-            except OSError: pass
+            try:
+                phase_child.close()
+            except OSError:
+                pass
         if director and director.poll() is None:
             evidence = topology.provenance["cleanup"] if topology else []
             terminate_group(director, .5, evidence)
@@ -753,14 +866,17 @@ def run_coordinator(args: argparse.Namespace) -> int:
         while True:
             try:
                 pid, _ = os.waitpid(-1, os.WNOHANG)
-                if pid <= 0: break
-            except ChildProcessError: break
+                if pid <= 0:
+                    break
+            except ChildProcessError:
+                break
         if topology:
             cleanup_failures = topology.cleanup()
             if cleanup_failures:
                 print("; ".join(cleanup_failures), file=sys.stderr)
                 if terminal_code == 0:
-                    return 1
+                    terminal_code = 1
+    return terminal_code
 
 
 def outer_isolated(command: str, args: argparse.Namespace) -> int:
@@ -777,10 +893,22 @@ def outer_isolated(command: str, args: argparse.Namespace) -> int:
             "status": "unsupported", "reason": "host network identity could not be observed",
             "host_network_identity": {"before": before, "after": None, "unchanged": None}})
         return 2
-    argv = ["unshare", "--user", "--map-root-user", "--net", "--",
+    # Full validation remains in the coordinator, which preserves unsupported
+    # conditions in the output artifact before attempting topology setup.
+    profile = json.loads(Path(args.net_profile).read_text())
+    privileged = isinstance(profile, dict) and profile.get("kernel_events") is True
+    if privileged and (os.geteuid() != 0 or os.stat("/proc/self/ns/user").st_ino != os.stat("/proc/1/ns/user").st_ino):
+        output.mkdir(parents=True)
+        dump_json(output / "network-provenance.json", {
+            "type": "turtle-network-provenance", "schema": 1, "status": "unsupported",
+            "reason": "kernel_events requires sudo in the initial user namespace",
+            "host_network_identity": {"before": before, "after": before, "unchanged": True}})
+        return 2
+    argv = ["unshare", *([] if privileged else ["--user", "--map-root-user"]), "--net", "--",
             sys.executable, str(Path(__file__).resolve()), "_coordinator", command,
             "--build", str(Path(args.build).resolve()), "--profile", str(Path(args.profile).resolve()),
             "--net-profile", str(Path(args.net_profile).resolve()), "--samples", str(args.samples),
+            "--client", getattr(args, "client", "openssl"), "--server", getattr(args, "server", "openssl"),
             "--output", str(Path(args.output).resolve())]
     try:
         returncode = subprocess.run(argv).returncode
@@ -808,6 +936,10 @@ def outer_isolated(command: str, args: argparse.Namespace) -> int:
     if unchanged is False:
         print("host network identity changed during isolated run", file=sys.stderr)
         return returncode if returncode != 0 else 1
+    if privileged and os.environ.get("SUDO_UID") and output.is_dir():
+        uid, gid = int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"])
+        for path in [*output.rglob("*"), output]:
+            os.chown(path, uid, gid, follow_symlinks=False)
     return returncode
 
 
@@ -885,26 +1017,37 @@ def probe(args: argparse.Namespace) -> int:
 
 
 def probe_coordinator(args: argparse.Namespace) -> int:
-    output = Path(args.output).resolve(); topology = None; terminal_code = 1
+    output = Path(args.output).resolve()
+    topology = None
+    terminal_code = 1
     try:
         profile = validate_net_profile(json.loads(Path(args.net_profile).read_text()), True)
-        topology = OwnedTopology(profile, output, True); topology.setup()
+        topology = OwnedTopology(profile, output, True)
+        topology.setup()
         topology.provenance["tcp_info_probe"] = probe_tcp_info(topology)
-        topology.provenance["status"] = "probe-complete"; topology.save()
-        terminal_code = 0; return terminal_code
+        topology.provenance["status"] = "probe-complete"
+        topology.save()
+        terminal_code = 0
     except SetupUnsupported as error:
-        if topology: topology.provenance.update(status="unsupported", reason=str(error)); topology.save()
-        print(error, file=sys.stderr); terminal_code = 2; return terminal_code
+        if topology:
+            topology.provenance.update(status="unsupported", reason=str(error))
+            topology.save()
+        print(error, file=sys.stderr)
+        terminal_code = 2
     except Exception as error:
-        if topology: topology.provenance.update(status="error", reason=str(error)); topology.save()
-        print(error, file=sys.stderr); terminal_code = 1; return terminal_code
+        if topology:
+            topology.provenance.update(status="error", reason=str(error))
+            topology.save()
+        print(error, file=sys.stderr)
+        terminal_code = 1
     finally:
         if topology:
             failures = topology.cleanup()
             if failures:
                 print("; ".join(failures), file=sys.stderr)
                 if terminal_code == 0:
-                    return 1
+                    terminal_code = 1
+    return terminal_code
 
 
 def probe_tcp_info(topology: OwnedTopology) -> dict[str, Any]:
@@ -1308,7 +1451,13 @@ def observer(args: argparse.Namespace) -> int:
         sockets[raw] = interface
     append_json(output, {"type": "turtle-packet-trace", "schema": 1, "record_kind": "header",
                          "clock": "CLOCK_MONOTONIC", "observation_point": "router-veth-af_packet",
+                         "raw_capture": "packets.pcap", "raw_capture_clock": "CLOCK_REALTIME",
+                         "timestamp_location": "userspace_after_recvfrom",
                          "packet_unit": "observed-skb-not-physical-wire", "interfaces": list(sockets.values())})
+    pcap = output.with_suffix('.pcap').open('wb')
+    # Nanosecond pcap, Ethernet frames. JSON rows retain interface and direction.
+    pcap.write(struct.pack('<IHHIIII', 0xa1b23c4d, 2, 4, 0, 0, 65535, 1))
+    packet_index = 0
     buffer = bytearray(); running = True
     while running:
         ready, _, _ = select.select([control, *sockets], [], [], .1)
@@ -1325,8 +1474,21 @@ def observer(args: argparse.Namespace) -> int:
             else:
                 try: frame, address = source.recvfrom(65535)
                 except BlockingIOError: continue
+                clock_begin = time.monotonic_ns()
+                realtime = time.time_ns()
+                clock_end = time.monotonic_ns()
+                offset = pcap.tell()
+                pcap.write(struct.pack('<IIII', realtime // 1000000000,
+                                       realtime % 1000000000, len(frame), len(frame)))
+                pcap.write(frame)
                 row = decode_packet(frame, sockets[source], address[2] == getattr(socket, "PACKET_OUTGOING", 4))
-                if row: append_json(output, row)
+                if row:
+                    row.update(packet_index=packet_index, pcap_offset=offset,
+                               realtime_ns=realtime, clock_monotonic_begin_ns=clock_begin,
+                               clock_monotonic_end_ns=clock_end)
+                    append_json(output, row)
+                packet_index += 1
+    pcap.close()
     stats = {}
     for raw, interface in sockets.items():
         try:
@@ -1346,6 +1508,8 @@ def decode_packet(frame: bytes, interface: str, outgoing: bool) -> dict[str, Any
     source_port, destination_port, sequence, acknowledgement = struct.unpack_from("!HHII", frame, tcp)
     data_offset = (frame[tcp + 12] >> 4) * 4
     total = struct.unpack_from("!H", frame, 16)[0]
+    if ihl < 20 or data_offset < 20 or total < ihl + data_offset or len(frame) < 14 + total:
+        return None
     direction = "egress" if outgoing else "ingress"
     mapping = {("rctls", "ingress"): "tls_c2s", ("rctls", "egress"): "tls_s2c",
                ("rstls", "ingress"): "tls_s2c", ("rstls", "egress"): "tls_c2s",
@@ -1357,28 +1521,61 @@ def decode_packet(frame: bytes, interface: str, outgoing: bool) -> dict[str, Any
             "flow": {"source": source, "source_port": source_port,
                      "destination": destination, "destination_port": destination_port, "protocol": "tcp"},
             "tcp": {"sequence": sequence, "acknowledgement": acknowledgement,
-                    "flags": frame[tcp + 13], "payload_length": max(0, total - ihl - data_offset)},
+                    "flags": frame[tcp + 13], "payload_length": total - ihl - data_offset,
+                    "header_bytes": data_offset, "options_hex": frame[tcp+20:tcp+data_offset].hex()},
+            "ip": {"header_bytes": ihl, "total_bytes": total,
+                   "options_hex": frame[34:14+ihl].hex()},
+            "payload_offset": tcp + data_offset,
             "frame_length": len(frame), "packet_unit": "observed-skb-not-physical-wire"}
 
 
-def parser() -> argparse.ArgumentParser:
-    main = argparse.ArgumentParser(description=__doc__); sub = main.add_subparsers(dest="command", required=True)
-    snap = sub.add_parser("snapshot"); snap.add_argument("--object", type=Path, required=True); snap.add_argument("--output", type=Path, required=True)
-    probe_p = sub.add_parser("probe"); probe_p.add_argument("--output", type=Path, required=True)
-    run = sub.add_parser("run"); run.add_argument("--build", type=Path, required=True); run.add_argument("--profile", type=Path, required=True); run.add_argument("--net-profile", type=Path, required=True); run.add_argument("--samples", type=int); run.add_argument("--output", type=Path, required=True)
-    verify_p = sub.add_parser("verify"); verify_p.add_argument("--build", type=Path, required=True); verify_p.add_argument("--pki", type=Path, required=True); verify_p.add_argument("--output", type=Path, required=True); verify_p.add_argument("--require-supported", action="store_true")
-    hidden = sub.add_parser("_coordinator"); hidden.add_argument("mode", choices=("run",)); hidden.add_argument("--build", required=True); hidden.add_argument("--profile", required=True); hidden.add_argument("--net-profile", required=True); hidden.add_argument("--samples", type=int, required=True); hidden.add_argument("--output", required=True)
-    hidden_probe = sub.add_parser("_probe"); hidden_probe.add_argument("--net-profile", required=True); hidden_probe.add_argument("--output", required=True)
-    obs = sub.add_parser("_observer"); obs.add_argument("--router-fd", type=int, required=True); obs.add_argument("--control-fd", type=int, required=True); obs.add_argument("--interfaces", required=True); obs.add_argument("--output", required=True)
-    return main
-
-
 def main() -> int:
-    args = parser().parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    snapshot_parser = sub.add_parser("snapshot")
+    snapshot_parser.add_argument("--object", type=Path, required=True)
+    snapshot_parser.add_argument("--output", type=Path, required=True)
+    probe_parser = sub.add_parser("probe")
+    probe_parser.add_argument("--output", type=Path, required=True)
+    run = sub.add_parser("run")
+    run.add_argument("--build", type=Path, required=True)
+    run.add_argument("--profile", type=Path, required=True)
+    run.add_argument("--net-profile", type=Path, required=True)
+    run.add_argument("--samples", type=int)
+    run.add_argument("--output", type=Path, required=True)
+    run.add_argument("--client", default="openssl")
+    run.add_argument("--server", default="openssl")
+    verify_parser = sub.add_parser("verify")
+    verify_parser.add_argument("--build", type=Path, required=True)
+    verify_parser.add_argument("--pki", type=Path, required=True)
+    verify_parser.add_argument("--output", type=Path, required=True)
+    verify_parser.add_argument("--require-supported", action="store_true")
+    coordinator = sub.add_parser("_coordinator")
+    coordinator.add_argument("mode", choices=("run",))
+    coordinator.add_argument("--build", required=True)
+    coordinator.add_argument("--profile", required=True)
+    coordinator.add_argument("--net-profile", required=True)
+    coordinator.add_argument("--samples", type=int, required=True)
+    coordinator.add_argument("--output", required=True)
+    coordinator.add_argument("--client", default="openssl")
+    coordinator.add_argument("--server", default="openssl")
+    hidden_probe = sub.add_parser("_probe")
+    hidden_probe.add_argument("--net-profile", required=True)
+    hidden_probe.add_argument("--output", required=True)
+    observer_parser = sub.add_parser("_observer")
+    observer_parser.add_argument("--router-fd", type=int, required=True)
+    observer_parser.add_argument("--control-fd", type=int, required=True)
+    observer_parser.add_argument("--interfaces", required=True)
+    observer_parser.add_argument("--output", required=True)
+    args = parser.parse_args()
     try:
         if args.command == "snapshot":
-            dump_json_exclusive(args.output, make_snapshot(args.object)); return 0
-        if args.command == "probe": return probe(args)
+            snapshot = make_snapshot(args.object)
+            with args.output.open("x", encoding="utf-8") as stream:
+                stream.write(json.dumps(snapshot, indent=2, sort_keys=True) + "\n")
+            return 0
+        if args.command == "probe":
+            return probe(args)
         if args.command == "run":
             document = json.loads(args.profile.read_text())
             args.samples = resolve_samples(document, args.samples)
@@ -1386,14 +1583,20 @@ def main() -> int:
             if not executable.is_file() or not os.access(executable, os.X_OK):
                 raise SetupUnsupported("built turtle executable is missing or not executable")
             return outer_isolated("run", args)
-        if args.command == "verify": return verify(args)
-        if args.command == "_coordinator": return run_coordinator(args)
-        if args.command == "_probe": return probe_coordinator(args)
-        if args.command == "_observer": return observer(args)
+        if args.command == "verify":
+            return verify(args)
+        if args.command == "_coordinator":
+            return run_coordinator(args)
+        if args.command == "_probe":
+            return probe_coordinator(args)
+        if args.command == "_observer":
+            return observer(args)
     except SetupUnsupported as error:
-        print(error, file=sys.stderr); return 2
-    except (OSError, ValueError, json.JSONDecodeError) as error:
-        print(error, file=sys.stderr); return 1
+        print(error, file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as error:
+        print(error, file=sys.stderr)
+        return 1
     return 1
 
 

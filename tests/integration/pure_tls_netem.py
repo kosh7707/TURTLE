@@ -201,7 +201,7 @@ def validate_network(output, delay_ms):
 def validate_role(raw, role, interpret):
     rows = read_jsonl(raw)
     header = rows[0]
-    check(header.get("type") == "sample" and header.get("schema") == 1 and header.get("valid"),
+    check(header.get("type") == "sample" and header.get("schema") == 2 and header.get("valid"),
           f"{raw}: invalid sample: {header.get('invalid_reason')}")
     check(header["role"] == role and not header["declaration"]["is_mock"],
           f"{raw}: role or actual-TLS declaration changed")
@@ -334,9 +334,41 @@ def main():
             validate_ledger(output)
             validate_network(output, delay_ms)
             validate_artifacts(output, interpret)
+            for raw in sorted(output.glob('sample-*/*.jsonl')):
+                if raw.stem not in ('client', 'server'):
+                    continue
+                correlated = raw.with_suffix('.tcp.json')
+                run(sys.executable, netem.parent / 'tcp-correlate.py',
+                    output / 'packets.jsonl', raw, correlated)
+                evidence = json.loads(correlated.read_text())
+                check(evidence['status'] == 'available' and evidence['capture_complete'],
+                      'raw packet/TLS byte mapping unavailable')
+                for conn in evidence['connections']:
+                    check(conn['status'] == 'available' and conn['stream_bytes_verified'] > 0,
+                          'TCP byte reconstruction incomplete')
+                    finished = next(m for m in conn['messages'] if m['name'] == 'Finished')
+                    check(finished['packet_indices'] and finished['socket_submission_events'] and
+                          finished['cumulative_ack_status'] == 'observed',
+                          'Finished record/submission/packet/ACK mapping incomplete')
         combined_report = root / "combined-report"
         run(report, runs, combined_report)
         validate_combined_report(combined_report)
+        # Requested kernel evidence that was not collected must remain missing,
+        # while the already completed real TLS exchange remains in the report.
+        output = runs / "tls-0ms"
+        provenance_path = output / "network-provenance.json"
+        original = provenance_path.read_text()
+        provenance = json.loads(original)
+        provenance["condition_identity"]["requested"]["kernel_events"] = True
+        provenance_path.write_text(json.dumps(provenance))
+        missing_report = root / "missing-kernel-report"
+        run(report, output, missing_report)
+        missing = json.loads((missing_report / "summary.json").read_text())
+        check(all("requested_kernel_collection_or_targeted_loss_incomplete" in
+                  sample["network_integrity"]["reasons"] and
+                  not sample["network_integrity"]["eligible"] for sample in missing["samples"]),
+              "missing requested kernel observations were accepted")
+        provenance_path.write_text(original)
         shutil.rmtree(root)
         print("PASS pure TLS netem: 0/20ms, four attempts, TLS decode, cleanup, grouped report")
     except Exception:

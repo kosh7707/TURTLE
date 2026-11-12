@@ -1,0 +1,36 @@
+{
+  "type": "turtle-netem-profile",
+  "schema": 3,
+  "qdisc": "netem",
+  "mtu": 1500,
+  "offload": {
+    "tso": false,
+    "gso": false,
+    "gro": false
+  },
+  "trace": true,
+  "loss_seed": null,
+  "initial_cwnd": {
+    "client": null,
+    "server": null
+  },
+  "paths": {
+    "tls_c2s": {
+      "delay_ms": 0,
+      "loss_percent": 0,
+      "limit_packets": 10000,
+      "rate_bps": null
+    },
+    "tls_s2c": {
+      "delay_ms": 0,
+      "loss_percent": 0,
+      "limit_packets": 10000,
+      "rate_bps": null
+    }
+  },
+  "kernel_events": true,
+  "targeted_drop": {
+    "tls_c2s": null,
+    "tls_s2c": null
+  }
+}

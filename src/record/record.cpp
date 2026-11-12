@@ -70,15 +70,19 @@ Json tls_json(const TlsConfig& v) {
             {"framework_io", v.framework_io},
             {"tickets", v.tickets},
             {"application_bytes", v.application_bytes},
+            {"scenario", model::name(v.scenario)},
+            {"send_policy", model::name(v.send_policy)},
+            {"client_application_bytes", v.client_application_bytes.value_or(v.application_bytes)},
+            {"server_application_bytes", v.server_application_bytes.value_or(v.application_bytes)},
             {"record_size_limit", v.record_size_limit},
             {"certificate_compression", v.certificate_compression}};
 }
 Json lookup_json(const model::LookupConfig& value) {
-    return {{"enabled", value.enabled},
-            {"cache_mode", model::name(value.cache_mode)},
-            {"object_file", value.object_file.empty() ? Json(nullptr) : Json(value.object_file)},
-            {"snapshot_file",
-             value.snapshot_file.empty() ? Json(nullptr) : Json(value.snapshot_file)}};
+    return {
+        {"enabled", value.enabled},
+        {"cache_mode", model::name(value.cache_mode)},
+        {"object_file", value.object_file.empty() ? Json(nullptr) : Json(value.object_file)},
+        {"snapshot_file", value.snapshot_file.empty() ? Json(nullptr) : Json(value.snapshot_file)}};
 }
 Json network_handoff_json(const std::optional<model::NetworkHandoff>& value) {
     if (!value)
@@ -90,50 +94,68 @@ Json network_handoff_json(const std::optional<model::NetworkHandoff>& value) {
                                 : Json::parse(value->net_profile_document)}};
 }
 Json config_json(const model::RunConfig& v) {
-    return {{"client_adapter", v.client_adapter},
-            {"server_adapter", v.server_adapter},
-            {"adapter_directory", v.adapter_directory},
-            {"output_directory", v.output_directory},
-            {"profile_name", v.profile_name},
-            {"profile_hash", v.profile_hash},
-            {"profile_document", v.profile_document},
-            {"context_directory", v.context_directory},
-            {"samples", v.samples},
-            {"warmups", v.warmups},
-            {"connections", v.connections},
-            {"batch", v.batch},
-            {"seed", v.seed},
-            {"timeout_ms", v.timeout_ms},
-            {"flush_grace_ms", v.flush_grace_ms},
-            {"failure_policy", model::name(v.failure_policy)},
-            {"scenario_name",
-             v.lookup.enabled ? model::lookup_scenario_name : "standard-tls"},
-            {"lookup", lookup_json(v.lookup)},
-            {"network_manifest",
-             v.network_manifest.empty() ? Json(nullptr) : Json(v.network_manifest)},
-            {"network_handoff", network_handoff_json(v.network_handoff)},
-            {"event_capacity", v.event_capacity},
-            {"stream_capacity", v.stream_capacity},
-            {"keylog_capacity", v.keylog_capacity},
-            {"calibration_samples", v.calibration_samples},
-            {"tcp_nodelay", v.tcp_nodelay},
-            {"socket_send_buffer", v.socket_send_buffer},
-            {"socket_receive_buffer", v.socket_receive_buffer},
-            {"kernel_timestamps", v.kernel_timestamps},
-            {"channel_observer", v.channel_observer},
-            {"perf", v.perf},
-            {"perf_scope", model::name(v.perf_scope)},
-            {"isolate", v.isolate},
-            {"pin_cores", v.pin_cores},
-            {"director_cpu", v.director_cpu},
-            {"client_cpu", v.client_cpu},
-            {"server_cpu", v.server_cpu},
-            {"ca_cpu", v.ca_cpu},
-            {"tls", tls_json(v.tls)},
-            {"mode", model::name(v.mode)}};
+    return {
+        {"client_adapter", v.client_adapter},
+        {"server_adapter", v.server_adapter},
+        {"adapter_directory", v.adapter_directory},
+        {"output_directory", v.output_directory},
+        {"profile_name", v.profile_name},
+        {"profile_hash", v.profile_hash},
+        {"profile_document", v.profile_document},
+        {"context_directory", v.context_directory},
+        {"samples", v.samples},
+        {"warmups", v.warmups},
+        {"connections", v.connections},
+        {"batch", v.batch},
+        {"seed", v.seed},
+        {"timeout_ms", v.timeout_ms},
+        {"flush_grace_ms", v.flush_grace_ms},
+        {"failure_policy", model::name(v.failure_policy)},
+        {"scenario_name", v.lookup.enabled ? model::lookup_scenario_name : "standard-tls"},
+        {"lookup", lookup_json(v.lookup)},
+        {"network_manifest", v.network_manifest.empty() ? Json(nullptr) : Json(v.network_manifest)},
+        {"network_handoff", network_handoff_json(v.network_handoff)},
+        {"event_capacity", v.event_capacity},
+        {"stream_capacity", v.stream_capacity},
+        {"keylog_capacity", v.keylog_capacity},
+        {"calibration_samples", v.calibration_samples},
+        {"tcp_nodelay", v.tcp_nodelay},
+        {"socket_send_buffer", v.socket_send_buffer},
+        {"socket_receive_buffer", v.socket_receive_buffer},
+        {"kernel_timestamps", v.kernel_timestamps},
+        {"tx_timestamps", v.tx_timestamps},
+        {"cpu_profile", v.cpu_profile},
+        {"channel_observer", v.channel_observer},
+        {"perf", v.perf},
+        {"perf_scope", model::name(v.perf_scope)},
+        {"isolate", v.isolate},
+        {"pin_cores", v.pin_cores},
+        {"director_cpu", v.director_cpu},
+        {"client_cpu", v.client_cpu},
+        {"server_cpu", v.server_cpu},
+        {"ca_cpu", v.ca_cpu},
+        {"tls", tls_json(v.tls)},
+        {"mode", model::name(v.mode)}};
 }
 Json declaration_json(const Declaration& v) {
-    return {{"library", v.library},
+    Json scenarios = Json::array(), policies = Json::array(), events = Json::array();
+    for (auto item : v.scenarios)
+        scenarios.push_back(model::name(item));
+    for (auto item : v.send_policies)
+        policies.push_back(model::name(item));
+    for (auto item : v.internal_events)
+        events.push_back(model::name(item));
+    return {{"scenarios", scenarios},
+            {"send_policies", policies},
+            {"internal_events", events},
+            {"internal_events_note", v.internal_events_note},
+            {"server_ping_note", v.server_ping_note},
+            {"source_version", v.source_version},
+            {"source_url", v.source_url},
+            {"technique", v.technique},
+            {"implementation", v.implementation},
+            {"patch_hash", v.patch_hash.empty() ? Json(nullptr) : Json(v.patch_hash)},
+            {"library", v.library},
             {"version", v.version},
             {"build_options", v.build_options},
             {"context_description", v.context_description},
@@ -173,9 +195,9 @@ Json environment_json(const model::Environment& v) {
             {"environment_hash", v.environment_hash},
             {"wsl", v.wsl},
             {"perf_event_paranoid", nullable(v.perf_event_paranoid)},
-            {"perf_event_paranoid_reason",
-             v.perf_event_paranoid_reason.empty() ? Json(nullptr)
-                                                  : Json(v.perf_event_paranoid_reason)},
+            {"perf_event_paranoid_reason", v.perf_event_paranoid_reason.empty()
+                                               ? Json(nullptr)
+                                               : Json(v.perf_event_paranoid_reason)},
             {"allowed_cpus", v.allowed_cpus},
             {"physical_cpus", v.physical_cpus},
             {"cpu_topology", cpu_topology_json(v.cpu_topology)},
@@ -189,8 +211,7 @@ Json capabilities_json(const model::Capabilities& v) {
             {"perf_requested_scope", model::name(v.perf_requested_scope)},
             {"perf_status", model::name(v.perf_status)},
             {"perf_effective_scope",
-             v.perf_effective_scope ? Json(model::name(*v.perf_effective_scope))
-                                    : Json(nullptr)},
+             v.perf_effective_scope ? Json(model::name(*v.perf_effective_scope)) : Json(nullptr)},
             {"perf_failure_stage",
              v.perf_failure_stage ? Json(model::name(*v.perf_failure_stage)) : Json(nullptr)},
             {"perf_error_number", nullable(v.perf_error_number)},
@@ -242,24 +263,30 @@ Json socket_json(const std::optional<model::SocketSettings>& v) {
             {"tcp_nodelay", v->tcp_nodelay},
             {"send_buffer", v->send_buffer},
             {"receive_buffer", v->receive_buffer},
-            {"kernel_timestamps", v->kernel_timestamps}};
+            {"kernel_timestamps", v->kernel_timestamps},
+            {"kernel_tx_timestamps", v->kernel_tx_timestamps},
+            {"kernel_tx_timestamp_error", v->kernel_tx_timestamp_error},
+            {"kernel_tx_drain_error", v->kernel_tx_drain_error}};
 }
 Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
+    auto config = config_json(v.config);
+    if (v.declaration.technique != "standard-tls13")
+        config["scenario_name"] = "research-tls13";
     Json connections = Json::array();
     for (const auto& c : v.connections) {
-        connections.push_back({{"index", c.index},
-                               {"warmup", c.warmup},
-                               {"verification", model::name(c.verification)},
-                               {"negotiated", negotiated_json(c.negotiated)},
-                               {"application_verified", c.application_verified},
-                               {"start_sequence", nullable(c.start_sequence)},
-                               {"end_sequence", c.end_sequence},
-                               {"primary_window",
-                                availability(c.primary_window_available,
-                                             c.primary_window_reason)},
-                               {"socket", socket_json(c.socket)},
-                               {"tcp_start", detail::tcp_json(c.tcp_start)},
-                               {"tcp_end", detail::tcp_json(c.tcp_end)}});
+        connections.push_back(
+            {{"index", c.index},
+             {"warmup", c.warmup},
+             {"verification", model::name(c.verification)},
+             {"negotiated", negotiated_json(c.negotiated)},
+             {"scenario_completed", c.scenario_completed},
+             {"application_verified", c.application_verified},
+             {"start_sequence", nullable(c.start_sequence)},
+             {"end_sequence", c.end_sequence},
+             {"primary_window", availability(c.primary_window_available, c.primary_window_reason)},
+             {"socket", socket_json(c.socket)},
+             {"tcp_start", detail::tcp_json(c.tcp_start)},
+             {"tcp_end", detail::tcp_json(c.tcp_end)}});
     }
     std::string reason = v.invalid_reason;
     if (buffer.overflowed()) {
@@ -279,7 +306,7 @@ Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
             {"invalid_reason", reason},
             {"profile_hash", v.config.profile_hash},
             {"environment_hash", v.environment.environment_hash},
-            {"config", config_json(v.config)},
+            {"config", config},
             {"declaration", declaration_json(v.declaration)},
             {"environment", environment_json(v.environment)},
             {"capabilities", capabilities_json(v.capabilities)},
@@ -292,8 +319,7 @@ Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
              {{"tls_stream", availability(v.tls_stream_available, v.tls_stream_reason)},
               {"io_events", availability(v.io_events_available, v.io_events_reason)},
               {"kernel_receive_events",
-               availability(v.kernel_receive_events_available,
-                            v.kernel_receive_events_reason)}}},
+               availability(v.kernel_receive_events_available, v.kernel_receive_events_reason)}}},
             {"incomplete", v.incomplete},
             {"saved_context_size", v.saved_context_size},
             {"loaded_context_size", v.loaded_context_size},
@@ -318,6 +344,11 @@ Json event_json(const model::SampleInfo& info, const model::Event& v) {
             {"location", model::name(v.location)},
             {"call", model::name(v.call)},
             {"call_id", v.call_id},
+            {"trace_operation",
+             v.trace_operation ? Json(model::name(*v.trace_operation)) : Json(nullptr)},
+            {"message_id", v.message_id},
+            {"message_type", v.message_type},
+            {"batch_id", v.batch_id},
             {"monotonic_ns", s.monotonic_ns},
             {"thread_cpu_ns", s.thread_cpu_ns},
             {"cycles", nullable(s.cycles)},
@@ -377,7 +408,7 @@ model::Event* Buffer::prepare_event(model::Event event) noexcept {
     *slot = event;
     return slot;
 }
-bool Buffer::append(model::Event event) noexcept {
+bool Buffer::append(const model::Event& event) noexcept {
     return prepare_event(event) != nullptr;
 }
 bool Buffer::append_bytes(std::size_t connection, model::Direction direction,

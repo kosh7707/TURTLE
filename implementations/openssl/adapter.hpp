@@ -1,4 +1,5 @@
 #pragma once
+#include "../common/trace.hpp"
 #include <array>
 #include <openssl/ssl.h>
 #include <turtle/adapter.hpp>
@@ -18,8 +19,12 @@ struct Session final : Connection {
     State& state;
     const Io& io;
     SSL* ssl = nullptr;
+    adapter_detail::TraceForwarder trace;
+    bool ping_reported = false;
     bool hrr = false;
     bool sink_failed = false;
+    bool write_ready = false;
+    bool readiness_reported = false;
     std::array<char, 256> error{};
     Session(State& s, const Io& i) : state(s), io(i) {}
     ~Session() override;

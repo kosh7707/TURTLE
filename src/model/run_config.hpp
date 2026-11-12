@@ -37,6 +37,8 @@ struct RunConfig {
     int socket_send_buffer = 65536;
     int socket_receive_buffer = 65536;
     bool kernel_timestamps = true;
+    bool tx_timestamps = false; // separate, opt-in trace diagnostic
+    bool cpu_profile = false;   // separate sampling run; perf.data proves collection
     bool channel_observer = true;
     bool perf = true;
     PerfScope perf_scope = PerfScope::User;
