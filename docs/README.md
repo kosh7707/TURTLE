@@ -41,6 +41,7 @@
 | [구현 보고서](project/implementation-report.md) | 현재 검증 목록에서 재생성한 실행·분석 근거와 확인 한계 |
 | [구현 결정](project/DECISIONS.md) | 현재 설계와 선택 이유 |
 | [검증 범위](project/validation.md) | 빌드·실제 TLS·회귀 검증 근거와 재확인 명령 |
+| [의도된 동작 점검](project/intent-audit.md) | 정상 시나리오 198쌍의 독립 대조, 발견한 기록·표시 오류와 수정 근거 |
 | [로컬 웹·재현](project/local-web-reproduction.md) | 별도 실험 웹, 새 소스·의존성·설치 재현, 산출물 보관 목록 |
 
 ## 논문과 RFC 원문

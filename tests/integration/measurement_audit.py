@@ -80,6 +80,21 @@ def verify_partition(part, local, start, end, heap):
     return expected
 
 
+def verify_flush_calls(events):
+    ends = [e for e in events if e['kind'] == 'CALL_END' and e['call'] == 'output_flush']
+    require(ends, 'Finished+Ping has no output flush boundary')
+    for end in ends:
+        call = [e for e in events if e['call_id'] == end['call_id']]
+        begin = next(e for e in call if e['kind'] == 'CALL_BEGIN')
+        sends = [e for e in call if e['kind'] == 'IO_SEND_RETURN']
+        require(len(sends) == 1, 'flush must describe one socket submission')
+        sent = sends[0]
+        require(begin['requested'] == sent['requested'] == end['requested'] > 0,
+                'flush requested bytes differ from socket submission')
+        for field in ('result', 'transferred', 'system_error'):
+            require(end[field] == sent[field], f'flush lost I/O {field}')
+
+
 def verify_case(case, analysis, scenario, mode, linkage, connections, warmups):
     rows_by_role = {}
     for role in ('client', 'server'):
@@ -103,6 +118,8 @@ def verify_case(case, analysis, scenario, mode, linkage, connections, warmups):
         for conn, d in zip(h['connections'], decoded['connections'], strict=True):
             index = conn['index']
             local = [e for e in events if e['connection'] == index]
+            if scenario == 'finished-ping' and role == 'server':
+                verify_flush_calls(local)
             require(conn['scenario_completed'] and d['decryption_complete'], 'incomplete scenario/decode')
             require(conn['application_verified'] == (scenario != 'handshake'), 'application applicability')
             require(conn['negotiated']['version'] == 'TLS1.3' and

@@ -956,6 +956,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 comparison_reasons.push_back("peer_perf_condition_unknown");
             if (cpu_profiled)
                 comparison_reasons.push_back("cpu_profile_diagnostic_only");
+            if (header.at("mode") != "timing")
+                comparison_reasons.push_back("measurement_mode_diagnostic_only");
             if (!peer.verified || !peer.header.value("valid", false))
                 comparison_reasons.push_back("missing_peer");
             if (!metrics_admitted && network.integrity.contains("reasons") &&
@@ -1020,6 +1022,12 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             group.automatic_comparison_eligible =
                 group.automatic_comparison_eligible && primary_available &&
                 !native_stream_unobserved(header) && channel_observer_enabled(header);
+            if (!primary_available)
+                group.comparison_exclusion_reasons.insert("primary_window_unavailable");
+            if (native_stream_unobserved(header))
+                group.comparison_exclusion_reasons.insert("native_socket_io_not_observed");
+            if (!channel_observer_enabled(header))
+                group.comparison_exclusion_reasons.insert("channel_observer_disabled");
             if (!metrics_admitted)
                 continue;
             for (const auto* metric :
@@ -1070,11 +1078,25 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
     std::size_t group_index = 0;
     for (const auto& [key, group] : collected) {
         (void)key;
+        // Export the same single-group gate used below to form comparisons.
+        // Pairwise condition equality and batch IDs are checked separately.
+        const auto& dimensions = group.dimensions;
+        const bool eligible =
+            detail::comparison_condition(dimensions, group.automatic_comparison_eligible);
+        auto reasons = group.comparison_exclusion_reasons;
+        if (dimensions.at("mode") != "timing")
+            reasons.insert("measurement_mode_diagnostic_only");
+        if (!dimensions.at("peer_verified").get<bool>())
+            reasons.insert("missing_peer");
+        else if (!dimensions.at("peer_valid").get<bool>())
+            reasons.insert("peer_invalid");
+        if (!eligible && reasons.empty())
+            reasons.insert("comparison_condition_incomplete");
         Json item = {{"dimensions", group.dimensions},
                      {"metrics", Json::object()},
                      {"batches", Json::array()},
-                     {"comparison_exclusion_reasons", group.comparison_exclusion_reasons},
-                     {"automatic_comparison_eligible", group.automatic_comparison_eligible}};
+                     {"comparison_exclusion_reasons", reasons},
+                     {"automatic_comparison_eligible", eligible}};
         for (const auto& [name, values] : group.metrics)
             item["metrics"][name] = distribution(values);
         if (group.metrics.contains(std::string(alternate_elapsed))) {

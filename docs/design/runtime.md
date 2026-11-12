@@ -174,7 +174,7 @@ TLS 인증과 32바이트 핑퐁이 성공한 기능 유효성과 특정 지표�
 
 제품 빌드와 `tests/`의 시험 빌드는 별도 CMake 프로젝트입니다. 아래 부품 시험과 실제 TLS 통합 시험으로 실행·관측 계약을 확인합니다.
 
-- `control_ready_barrier`과 전송 부품 시험은 부분 제어 프레임·대기·실제 TCP 입출력 경계를 확인합니다.
+- `control_frames_and_deadlines`와 전송 부품 시험은 부분 제어 프레임·대기·실제 TCP 입출력 경계를 확인합니다.
 - `independent_endpoint_actual_tls`는 세 라이브러리의 네 시나리오를 별도 작업·출력 폴더에서 실행합니다. 자기 CPU만 지정하고 서로 다른 시계 영역을 기록하며, 양쪽 해독과 명시한 파일 쌍의 분석을 확인합니다.
 - `prototype_scenarios_actual_tls`와 `pipeline_*`은 라이브러리 간 연결, 두 송신 정책·인증 조건, 부분 응용 입출력과 상세 사건을 확인합니다.
 - `pure_tls_netem_actual`, `network_rate_cwnd_actual_tls`, `io_path_external_metadata`는 로컬 실행기의 독립 프로그램 배치, 실제 네트워크 조건·제어/데이터 구분·자원 정리를 확인합니다.

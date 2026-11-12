@@ -389,8 +389,9 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
                                       model::Location::Framework);
                         channel.holding = false;
                         while (channel.queued) {
-                            const auto result =
-                                capture.invoke(model::Call::Flush, [&] { return channel.flush(); });
+                            const auto result = capture.invoke(
+                                model::Call::Flush, [&] { return channel.flush(); },
+                                channel.queued - channel.submitted);
                             if (result.status == IoStatus::WantWrite) {
                                 capture.event(model::EventKind::WaitBegin);
                                 wait_set.wait_data(true, deadline);

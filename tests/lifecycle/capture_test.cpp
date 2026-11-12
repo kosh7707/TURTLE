@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cassert>
+#include <cerrno>
 #include <cstdint>
 
 namespace {
@@ -138,4 +139,28 @@ int main() {
     assert(stream.size() == 3 && stream[0] == 7 && stream[1] == 8 && stream[2] == 9);
     assert(partial_buffer.events()[4].transferred == 0);
     assert(partial_buffer.events()[4].stream_begin == 2 && partial_buffer.events()[4].stream_end == 2);
+
+    // A buffered flush returns IoResult rather than AppResult. Preserve its
+    // partial submission and ordinary nonblocking retry in the call boundary.
+    turtle::record::Buffer flush_buffer({6, 0, 0, 1});
+    SequenceMeter flush_meter;
+    turtle::lifecycle::detail::Capture<SequenceMeter> flush{flush_meter, flush_buffer};
+    const std::array<turtle::IoResult, 3> outcomes{{
+        {IoStatus::Ok, 2, 0}, {IoStatus::WantWrite, 0, EAGAIN}, {IoStatus::Ok, 1, 0}}};
+    std::size_t remaining = 3;
+    for (std::size_t i = 0; i < outcomes.size(); ++i) {
+        const auto expected = outcomes[i];
+        const auto actual = flush.invoke(turtle::model::Call::Flush,
+                                         [expected] { return expected; }, remaining);
+        const auto begin = flush_buffer.events()[2 * i];
+        const auto end = flush_buffer.events()[2 * i + 1];
+        assert(actual.status == expected.status && actual.bytes == expected.bytes);
+        assert(begin.requested == remaining && end.requested == remaining);
+        assert(end.call == turtle::model::Call::Flush && end.kind == EventKind::CallEnd);
+        assert(end.result == static_cast<int>(expected.status));
+        assert(end.transferred == expected.bytes && end.system_error == expected.system_error);
+        assert(end.call_id == begin.call_id && end.snapshot.monotonic_ns > begin.snapshot.monotonic_ns);
+        remaining -= actual.bytes;
+    }
+    assert(remaining == 0);
 }

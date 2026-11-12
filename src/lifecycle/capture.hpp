@@ -31,13 +31,14 @@ template <class Meter> struct Capture {
 
     void event(model::EventKind kind, model::Location location = model::Location::Boundary,
                std::int64_t result = 0, std::size_t requested = 0,
-               std::size_t transferred = 0) noexcept {
+               std::size_t transferred = 0, int system_error = 0) noexcept {
         model::Event recorded;
         recorded.kind = kind;
         recorded.location = location;
         recorded.result = result;
         recorded.requested = requested;
         recorded.transferred = transferred;
+        recorded.system_error = system_error;
         recorded.connection = connection;
         recorded.sequence = ++sequence;
         recorded.call = call;
@@ -156,13 +157,19 @@ template <class Meter> struct Capture {
         auto result = function();
         std::int64_t code = 0;
         std::size_t transferred = 0;
+        int system_error = 0;
         if constexpr (std::is_same_v<decltype(result), AppResult>) {
             code = static_cast<int>(result.step);
             transferred = result.bytes;
+        } else if constexpr (std::is_same_v<decltype(result), IoResult>) {
+            code = static_cast<int>(result.status);
+            transferred = result.bytes;
+            system_error = result.system_error;
         } else if constexpr (std::is_enum_v<decltype(result)>) {
             code = static_cast<int>(result);
         }
-        event(model::EventKind::CallEnd, model::Location::Boundary, code, requested, transferred);
+        event(model::EventKind::CallEnd, model::Location::Boundary, code, requested, transferred,
+              system_error);
         return result;
     }
 };

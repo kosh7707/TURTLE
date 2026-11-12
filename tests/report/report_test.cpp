@@ -685,6 +685,35 @@ int main() {
         change(metadata);
         std::ofstream(path) << metadata.dump() << '\n' << rest;
     };
+    // The exported group eligibility must agree with the comparison gate.
+    // Diagnostic modes retain their distributions but cannot be candidates.
+    for (const auto* mode : {"memory", "trace"}) {
+        const auto diagnostic_dir = dir / (std::string("diagnostic-") + mode);
+        std::filesystem::create_directory(diagnostic_dir);
+        for (const auto* name : {"first", "second"}) {
+            write_candidate(diagnostic_dir, name, name, "fixed-peer", "same-profile", name);
+            rewrite_first_header(diagnostic_dir / name / "client.jsonl", [=](J& metadata) {
+                metadata["mode"] = mode;
+                metadata["config"]["mode"] = mode;
+            });
+        }
+        const auto diagnostic = client_report(diagnostic_dir, diagnostic_dir / "report", true);
+        assert(diagnostic["groups"].size() == 2 && diagnostic["comparisons"].empty());
+        for (const auto& group : diagnostic["groups"]) {
+            assert(group["automatic_comparison_eligible"] == false);
+            const auto& reasons = group["comparison_exclusion_reasons"];
+            assert(std::find(reasons.begin(), reasons.end(), "measurement_mode_diagnostic_only") !=
+                   reasons.end());
+            assert(group["metrics"]["elapsed_ns"]["count"] == 1);
+        }
+    }
+    for (const auto& group : candidates["groups"]) {
+        if (!group["dimensions"]["peer_verified"].get<bool>()) {
+            assert(group["automatic_comparison_eligible"] == false);
+            const auto& reasons = group["comparison_exclusion_reasons"];
+            assert(std::find(reasons.begin(), reasons.end(), "missing_peer") != reasons.end());
+        }
+    }
     for (int schema : {1, 2}) {
         const auto obsolete = dir / ("unsupported-schema-" + std::to_string(schema));
         std::filesystem::create_directory(obsolete);

@@ -78,6 +78,10 @@ TLS JSONL schema 3은 공개 어댑터 ABI 3·측정 계약 개정 4와 별도�
 
 각 줄에 표본·묶음·역할·프로필 해시·환경 해시와 연결 번호, 사건 순번, 종류, 관측 위치, 호출 종류·번호를 붙입니다. 시간은 나노초입니다. 사이클·명령어·성능 카운터 실행 시간·힙을 얻지 못하면 `null`입니다. 실제로 관측한 0과 다릅니다.
 
+`output_flush`의 `CALL_BEGIN`·`CALL_END`에서 `requested`는 그 호출 직전 출력 버퍼의 미제출 바이트입니다. 종료 사건의 `result`·`transferred`·`system_error`는 한 번의 소켓 제출이 반환한 `IoResult`이며, 같은 `call_id`의 `IO_SEND_RETURN`과 일치합니다. `IoStatus::Ok=0`은 TLS API의 `Step::Complete=2`와 다른 열거형입니다. 부분 제출 뒤 남은 바이트는 다음 호출에 요청하며 `WantWrite`의 0바이트 반환은 성공한 전체 제출을 뜻하지 않습니다.
+
+2026-11-12 의도 점검에서 이 호출 종료의 I/O 반환값이 0으로 기록되던 오류를 수정했습니다. 수정 전 자료의 `output_flush` 호출 필드만으로 실제 제출량·상태를 판단하지 말고 같은 호출의 I/O 사건을 확인해야 합니다. 기존 원자료를 소급 수정하지 않았고 ABI·schema·측정 계약은 바꾸지 않았습니다. [재현 근거](../project/intent-audit.md)를 참고하십시오.
+
 ### 조회·CA 서비스 사건
 
 서비스 기록은 `header`, `event`, `connection_summary`, `footer` 순서입니다. 사건은 시도·표본, 0부터 세는 연결 번호, 요청 ID 1, 순번, 참여자, 스트림 ID, 단조 시각과 스레드 CPU를 가집니다. 주요 사건은 `CACHE_LOOKUP`, `HIT`, `MISS`, `CACHE_INSERT`, `REQUEST_BEGIN`, `RESPONSE_COMPLETE`, `USABLE_OBJECT`, `SCENARIO_BEGIN/END`, `CA_PROCESS_BEGIN/END`, 입출력과 대기의 시작·끝입니다.
