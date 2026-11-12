@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+from raw_record import read_tls_records
 import struct
 
 
@@ -34,11 +35,12 @@ def kernel_observations(packets_path):
 
 def correlate(packets_path, raw_path):
     packet_rows = [json.loads(line) for line in packets_path.read_text().splitlines()]
-    records = [json.loads(line) for line in raw_path.read_text().splitlines()]
+    records = read_tls_records(raw_path)
     header, events = records[0], records[1:]
     capture = packets_path.with_suffix('.pcap')
     kernel = kernel_observations(packets_path)
     result = {'type': 'turtle-tcp-correlation', 'schema': 2, 'role': header['role'],
+              'run_id': header['run_id'], 'context_id': header['context_id'],
               'packet_source': str(packets_path), 'tls_source': str(raw_path),
               'observation_point': 'sender-facing-router-interface-ingress; reverse ACK egress',
               'packet_unit': 'observed-software-frame-not-physical-NIC-frame',
@@ -53,6 +55,9 @@ def correlate(packets_path, raw_path):
     decoded = json.loads(decoded_path.read_text()) if decoded_path.exists() else None
     if decoded is None:
         return {**result, 'status': 'missing', 'reason': 'decoded_tls_sidecar_absent'}
+    if (decoded.get('schema') != 1 or
+            any(decoded.get(field) != header[field] for field in ('run_id', 'context_id', 'sample', 'role'))):
+        return {**result, 'status': 'missing', 'reason': 'decoded_tls_identity_mismatch'}
     if any(not c.get('decryption_complete', False) for c in decoded['connections']):
         return {**result, 'status': 'missing', 'reason': 'tls_decryption_incomplete'}
     path = 'tls_c2s' if header['role'] == 'client' else 'tls_s2c'

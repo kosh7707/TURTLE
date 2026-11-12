@@ -24,12 +24,14 @@ Json read_json(const std::filesystem::path& path) {
 }
 
 bool volatile_identity_key(std::string_view key) {
-    static constexpr std::string_view exact[] = {
-        "pid",          "pids",       "fd",          "fds",       "path",
-        "port",         "ports",      "handle",      "timestamp", "monotonic_ns",
-        "namespace_pid", "namespace_inode", "time",  "started_at", "ended_at",
-        "drops",        "drop",       "actual_drop", "retrans",   "retransmits",
-        "total_retrans", "outcome",   "status",      "reason"};
+    static constexpr std::string_view exact[] = {"pid",          "pids",          "fd",
+                                                 "fds",          "path",          "port",
+                                                 "ports",        "handle",        "timestamp",
+                                                 "monotonic_ns", "namespace_pid", "namespace_inode",
+                                                 "time",         "started_at",    "ended_at",
+                                                 "drops",        "drop",          "actual_drop",
+                                                 "retrans",      "retransmits",   "total_retrans",
+                                                 "outcome",      "status",        "reason"};
     return std::find(std::begin(exact), std::end(exact), key) != std::end(exact);
 }
 
@@ -51,8 +53,7 @@ Json stable_identity(const Json& value) {
 
 bool observed_true(const Json& object, std::string_view field) {
     return object.is_object() && object.contains(std::string(field)) &&
-           object.at(std::string(field)).is_boolean() &&
-           object.at(std::string(field)).get<bool>();
+           object.at(std::string(field)).is_boolean() && object.at(std::string(field)).get<bool>();
 }
 
 std::set<std::string> keys(const Json& object) {
@@ -75,31 +76,28 @@ ExpectedTopology expected(NetworkTopology topology) {
     if (topology != NetworkTopology::lookup_4ns) {
         return {"three-netns-receiver-facing-router-egress",
                 {{"client_tls", "10.203.1.2"}, {"server", "10.203.2.2"}},
-                {{"client_tls", "ctls"}, {"server", "stls"},
-                 {"router_client_tls", "rctls"}, {"router_server", "rstls"}},
+                {{"client_tls", "ctls"},
+                 {"server", "stls"},
+                 {"router_client_tls", "rctls"},
+                 {"router_server", "rstls"}},
                 {"tls_c2s", "tls_s2c"},
                 {"client", "server", "router"}};
     }
     return {"four-netns-receiver-facing-router-egress",
-            {{"client_tls", "10.203.1.2"}, {"server", "10.203.2.2"},
-             {"client_ca", "10.203.3.2"}, {"ca", "10.203.4.2"}},
-            {{"client_tls", "ctls"}, {"server", "stls"}, {"client_ca", "cca"},
-             {"ca", "ca0"}, {"router_client_tls", "rctls"},
-             {"router_server", "rstls"}, {"router_client_ca", "rcca"},
+            {{"client_tls", "10.203.1.2"},
+             {"server", "10.203.2.2"},
+             {"client_ca", "10.203.3.2"},
+             {"ca", "10.203.4.2"}},
+            {{"client_tls", "ctls"},
+             {"server", "stls"},
+             {"client_ca", "cca"},
+             {"ca", "ca0"},
+             {"router_client_tls", "rctls"},
+             {"router_server", "rstls"},
+             {"router_client_ca", "rcca"},
              {"router_ca", "rca0"}},
             {"tls_c2s", "tls_s2c", "ca_c2s", "ca_s2c"},
             {"client", "server", "ca", "router"}};
-}
-
-NetworkTopology resolved_topology(const Json& provenance, NetworkTopology requested) {
-    if (requested != NetworkTopology::tls_3ns_or_legacy_4ns)
-        return requested;
-    const auto kind = provenance.value("condition_identity", Json::object())
-                          .value("topology", Json::object())
-                          .value("kind", "");
-    return kind == "four-netns-receiver-facing-router-egress"
-               ? NetworkTopology::lookup_4ns
-               : NetworkTopology::tls_only_3ns;
 }
 
 void validate_topology(const Json& provenance, NetworkTopology topology, Json& reasons) {
@@ -116,11 +114,10 @@ void validate_topology(const Json& provenance, NetworkTopology topology, Json& r
         reasons.push_back("active_network_path_inventory_mismatch");
     if (keys(provenance.value("applied_qdisc_readback", Json(nullptr))) != contract.paths)
         reasons.push_back("qdisc_readback_inventory_mismatch");
-    const auto requested_paths = condition.value("requested", Json::object())
-                                     .value("paths", Json::object());
+    const auto requested_paths =
+        condition.value("requested", Json::object()).value("paths", Json::object());
     const auto actual_paths = actual.value("paths", Json::object());
-    const auto requested_qdisc =
-        condition.value("requested", Json::object()).value("qdisc", "");
+    const auto requested_qdisc = condition.value("requested", Json::object()).value("qdisc", "");
     const auto actual_qdisc = actual.value("qdisc", "");
     const auto readbacks = provenance.value("applied_qdisc_readback", Json::object());
     const auto expected_interface = [](std::string_view path) -> std::string_view {
@@ -153,10 +150,8 @@ void validate_topology(const Json& provenance, NetworkTopology topology, Json& r
                 value.value("kind", "") == "noqueue" && value.contains("limit_packets") &&
                 value.at("limit_packets").is_null();
             if (!value.contains("limit_packets") ||
-                (!value.at("limit_packets").is_number() &&
-                 !noqueue_limit_not_applicable))
-                reasons.push_back("actual_network_path_field_missing:" + path +
-                                  ":limit_packets");
+                (!value.at("limit_packets").is_number() && !noqueue_limit_not_applicable))
+                reasons.push_back("actual_network_path_field_missing:" + path + ":limit_packets");
         }
         if (!readbacks.contains(path) || !readbacks.at(path).is_object() ||
             readbacks.at(path).value("interface", "") != expected_interface(path))
@@ -164,15 +159,15 @@ void validate_topology(const Json& provenance, NetworkTopology topology, Json& r
     }
 
     const auto mtu = condition.value("mtu", Json::object());
-    const auto offload = condition.contains("offload") ? condition.at("offload")
-                                                       : condition.value("offloads", Json::object());
+    const auto offload = condition.contains("offload")
+                             ? condition.at("offload")
+                             : condition.value("offloads", Json::object());
     if (!mtu.is_object() || !mtu.contains("requested") || !mtu.contains("actual") ||
-        mtu.at("requested").is_null() || !mtu.at("actual").is_object() ||
-        mtu.at("actual").empty())
+        mtu.at("requested").is_null() || !mtu.at("actual").is_object() || mtu.at("actual").empty())
         reasons.push_back("mtu_requested_or_actual_identity_missing");
-    if (!offload.is_object() || !offload.contains("requested") ||
-        !offload.contains("actual") || offload.at("requested").is_null() ||
-        !offload.at("actual").is_object() || offload.at("actual").empty())
+    if (!offload.is_object() || !offload.contains("requested") || !offload.contains("actual") ||
+        offload.at("requested").is_null() || !offload.at("actual").is_object() ||
+        offload.at("actual").empty())
         reasons.push_back("offload_requested_or_actual_identity_missing");
     if (!condition.contains("requested") || condition.at("requested").is_null() ||
         !condition.contains("actual") || condition.at("actual").is_null())
@@ -188,12 +183,10 @@ Json read_observations(const std::filesystem::path& path) {
             continue;
         try {
             const auto row = Json::parse(line);
-            if (row.value("type", "") != "network-observation" ||
-                row.value("schema", 0) != 1 || !row.contains("observation_id") ||
-                !row.at("observation_id").is_string() || !row.contains("attempt") ||
-                !row.at("attempt").is_number_unsigned() ||
-                (row.value("phase", "") != "setup" &&
-                 row.value("phase", "") != "scenario" &&
+            if (row.value("type", "") != "network-observation" || row.value("schema", 0) != 1 ||
+                !row.contains("observation_id") || !row.at("observation_id").is_string() ||
+                !row.contains("attempt") || !row.at("attempt").is_number_unsigned() ||
+                (row.value("phase", "") != "setup" && row.value("phase", "") != "scenario" &&
                  row.value("phase", "") != "cleanup") ||
                 (row.value("edge", "") != "begin" && row.value("edge", "") != "end"))
                 continue;
@@ -201,8 +194,8 @@ Json read_observations(const std::filesystem::path& path) {
                                    row.at("phase").get<std::string>() + ":" +
                                    row.at("edge").get<std::string>();
             const auto id = row.at("observation_id").get<std::string>();
-            const bool partial = row.value("record_kind", "") == "partial-window" &&
-                                 id.starts_with(canonical + ":");
+            const bool partial =
+                row.value("record_kind", "") == "partial-window" && id.starts_with(canonical + ":");
             if ((id != canonical && !partial) || observations.contains(id))
                 continue;
             observations[id] = row;
@@ -240,8 +233,8 @@ AuthoritativeLedger read_authoritative_ledger(const std::filesystem::path& path)
                 later_nonempty = later_nonempty || !remainder.empty();
             bool outstanding_attempt = false;
             for (const auto& [id, attempt] : ledger.attempts)
-                outstanding_attempt = outstanding_attempt ||
-                                      (attempt.started && !finalized.contains(id));
+                outstanding_attempt =
+                    outstanding_attempt || (attempt.started && !finalized.contains(id));
             if (!header_seen || later_nonempty || !ledger.run_summary.is_null() ||
                 !outstanding_attempt)
                 throw std::runtime_error("authoritative attempt ledger contains malformed JSON: " +
@@ -254,9 +247,8 @@ AuthoritativeLedger read_authoritative_ledger(const std::filesystem::path& path)
             row.at("type") != "turtle-attempt-ledger" || !row.contains("schema") ||
             !row.at("schema").is_number_integer() || row.at("schema") != 1 ||
             !row.contains("record_kind") || !row.at("record_kind").is_string())
-            throw std::runtime_error(
-                std::string("authoritative attempt ledger has invalid ") +
-                (header_seen ? "row: " : "run_config: ") + path.string());
+            throw std::runtime_error(std::string("authoritative attempt ledger has invalid ") +
+                                     (header_seen ? "row: " : "run_config: ") + path.string());
 
         const auto kind = row.at("record_kind").get<std::string>();
         if (!header_seen) {
@@ -280,18 +272,17 @@ AuthoritativeLedger read_authoritative_ledger(const std::filesystem::path& path)
             for (const char* field : {"requested", "started", "success", "timeout", "error",
                                       "incomplete", "not_attempted", "missing_artifacts"})
                 if (!row.contains(field) || !row.at(field).is_number_unsigned())
-                    throw std::runtime_error("authoritative attempt ledger has invalid run_summary: " +
-                                             path.string());
+                    throw std::runtime_error(
+                        "authoritative attempt ledger has invalid run_summary: " + path.string());
             if (!row.contains("missing_artifact_rows") ||
                 !row.at("missing_artifact_rows").is_array())
                 throw std::runtime_error("authoritative attempt ledger has invalid run_summary: " +
                                          path.string());
             const auto requested = row.at("requested").get<std::size_t>();
             const auto started = row.at("started").get<std::size_t>();
-            const auto terminal = row.at("success").get<std::size_t>() +
-                                  row.at("timeout").get<std::size_t>() +
-                                  row.at("error").get<std::size_t>() +
-                                  row.at("incomplete").get<std::size_t>();
+            const auto terminal =
+                row.at("success").get<std::size_t>() + row.at("timeout").get<std::size_t>() +
+                row.at("error").get<std::size_t>() + row.at("incomplete").get<std::size_t>();
             if (requested != ledger.requested ||
                 started + row.at("not_attempted").get<std::size_t>() != requested ||
                 terminal != started)
@@ -313,8 +304,8 @@ AuthoritativeLedger read_authoritative_ledger(const std::filesystem::path& path)
                                      path.string());
         const auto id = row.at("attempt_id").get<std::uint64_t>();
         if (id == 0 || id > ledger.requested)
-            throw std::runtime_error(
-                "authoritative attempt ledger attempt id is out of range: " + path.string());
+            throw std::runtime_error("authoritative attempt ledger attempt id is out of range: " +
+                                     path.string());
         auto& attempt = ledger.attempts[id];
         attempt.id = id;
         if (kind == "attempt_started") {
@@ -322,17 +313,17 @@ AuthoritativeLedger read_authoritative_ledger(const std::filesystem::path& path)
             attempt.status = "incomplete";
         } else {
             if (!finalized.insert(id).second)
-                throw std::runtime_error(
-                    "authoritative attempt ledger has duplicate final row: " + path.string());
+                throw std::runtime_error("authoritative attempt ledger has duplicate final row: " +
+                                         path.string());
             attempt.started = true;
             if (!row.contains("final_status") || !row.at("final_status").is_string())
-                throw std::runtime_error(
-                    "authoritative attempt ledger final status is invalid: " + path.string());
+                throw std::runtime_error("authoritative attempt ledger final status is invalid: " +
+                                         path.string());
             attempt.status = row.at("final_status").get<std::string>();
             if (attempt.status != "success" && attempt.status != "timeout" &&
                 attempt.status != "error" && attempt.status != "incomplete")
-                throw std::runtime_error(
-                    "authoritative attempt ledger final status is invalid: " + path.string());
+                throw std::runtime_error("authoritative attempt ledger final status is invalid: " +
+                                         path.string());
             attempt.observation_ids = row.value("network_observation_ids", Json::array());
             if (!attempt.observation_ids.is_array())
                 throw std::runtime_error(
@@ -347,8 +338,7 @@ AuthoritativeLedger read_authoritative_ledger(const std::filesystem::path& path)
                                  path.string());
     for (std::uint64_t id = 1; id <= ledger.requested; ++id)
         if (!ledger.attempts.contains(id))
-            ledger.attempts.emplace(
-                id, NetworkAttempt{id, false, "not_attempted", Json::array()});
+            ledger.attempts.emplace(id, NetworkAttempt{id, false, "not_attempted", Json::array()});
 
     if (ledger.run_summary.is_null() && !ledger.partial)
         throw std::runtime_error("authoritative attempt ledger is missing run_summary: " +
@@ -387,18 +377,17 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
     Json reasons = Json::array();
     if (!evidence.present) {
         evidence.integrity = {
-            {"status", "not_observed"}, {"eligible", false},
+            {"status", "not_observed"},
+            {"eligible", false},
             {"reasons", Json::array({"network_provenance_missing_or_unreadable"})}};
         return evidence;
     }
     if (provenance.value("type", "") != "turtle-network-provenance" ||
-        provenance.value("schema", 0) != 1)
+        provenance.value("schema", 0) != 2)
         reasons.push_back("network_provenance_schema_invalid");
-    expected_topology = resolved_topology(provenance, expected_topology);
-    evidence.condition_identity =
-        provenance.contains("condition_identity")
-            ? stable_identity(provenance.at("condition_identity"))
-            : Json(nullptr);
+    evidence.condition_identity = provenance.contains("condition_identity")
+                                      ? stable_identity(provenance.at("condition_identity"))
+                                      : Json(nullptr);
     validate_topology(provenance, expected_topology, reasons);
     const bool kernel_requested = provenance.value("condition_identity", Json::object())
                                       .value("requested", Json::object())
@@ -406,11 +395,13 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
     if (kernel_requested) {
         const auto kernel = read_json(root / "kernel-events.json");
         bool complete = kernel.is_object() && kernel.value("type", "") == "turtle-kernel-events" &&
-                        kernel.value("schema", 0) == 1 && kernel.value("status", "") == "complete" &&
+                        kernel.value("schema", 0) == 1 &&
+                        kernel.value("status", "") == "complete" &&
                         kernel.value("buffer_lost", -1) == 0 &&
                         kernel.value("cleanup_errors", Json(nullptr)) == Json::array() &&
                         kernel.value("targeted_loss_complete", false);
-        const auto failures = kernel.is_object() ? kernel.value("failures", Json(nullptr)) : Json(nullptr);
+        const auto failures =
+            kernel.is_object() ? kernel.value("failures", Json(nullptr)) : Json(nullptr);
         complete = complete && failures.is_object() && !failures.empty();
         if (failures.is_object())
             for (const auto& value : failures)
@@ -420,11 +411,10 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
     }
 
     const auto status = provenance.value("status", "");
-    const auto returncode = provenance.value("director", Json::object()).value("returncode", -999);
-    const auto trace = provenance.value("condition_identity", Json::object())
-                           .value("trace", Json::object());
-    const bool trace_known = trace.contains("requested") &&
-                             trace.at("requested").is_boolean();
+    const auto returncode = provenance.value("runner", Json::object()).value("returncode", -999);
+    const auto trace =
+        provenance.value("condition_identity", Json::object()).value("trace", Json::object());
+    const bool trace_known = trace.contains("requested") && trace.at("requested").is_boolean();
     const bool trace_requested = trace_known && trace.at("requested").get<bool>();
     bool expected_failure = false;
     bool complete_denominator = !attempts.empty();
@@ -460,21 +450,21 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
                                          observation.at("qdiscs").is_object() &&
                                          !observation.at("qdiscs").empty();
             const bool trace_complete =
-                !trace_requested || (observation.contains("packet_trace") &&
-                                     !observation.at("packet_trace").is_null());
+                !trace_requested ||
+                (observation.contains("packet_trace") && !observation.at("packet_trace").is_null());
             if (!qdiscs_complete || !trace_complete)
                 reasons.push_back("referenced_network_observation_payload_incomplete:" + id);
         }
     }
     if (status == "complete" && returncode == 0) {
         if (!complete_denominator || !all_success)
-            reasons.push_back("successful_director_lacks_complete_success_denominator");
-    } else if (status == "director-failed" && returncode == 1) {
+            reasons.push_back("successful_runner_lacks_complete_success_denominator");
+    } else if (status == "runner-failed" && returncode == 1) {
         expected_failure = complete_denominator && success_or_timeout && saw_timeout;
         if (!expected_failure)
-            reasons.push_back("director_failure_lacks_expected_timeout_ledger_evidence");
+            reasons.push_back("runner_failure_lacks_expected_timeout_ledger_evidence");
     } else {
-        reasons.push_back("network_runner_status_or_director_outcome_invalid");
+        reasons.push_back("network_runner_status_or_runner_outcome_invalid");
     }
 
     const auto host = provenance.value("host_network_identity", Json::object());
@@ -503,11 +493,10 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
             (item.at("result") == "reaped" || item.at("result") == "killed"))
             helpers.insert(item.at("helper").get<std::string>());
         if (item.contains("observer") &&
-            (item.at("observer") == "reaped" ||
-             item.at("observer") == "killed-after-500ms"))
+            (item.at("observer") == "reaped" || item.at("observer") == "killed-after-500ms"))
             observer_done = true;
-        if (item.value("kernel_observer", "") == "reaped" &&
-            item.value("returncode", -1) == 0 && item.value("collection_complete", false))
+        if (item.value("kernel_observer", "") == "reaped" && item.value("returncode", -1) == 0 &&
+            item.value("collection_complete", false))
             kernel_observer_done = true;
         for (auto it = item.begin(); it != item.end(); ++it)
             fatal_not_reaped = fatal_not_reaped || it.value() == "fatal-not-reaped";
@@ -523,13 +512,12 @@ NetworkEvidence read_network_evidence(const std::filesystem::path& root,
         provenance.at("finished_monotonic_ns").is_null())
         reasons.push_back("owned_helper_observer_cleanup_inventory_incomplete");
 
-    evidence.integrity = {
-        {"status", reasons.empty() ? "complete" : "failed"},
-        {"eligible", reasons.empty()},
-        {"expected_director_failure", expected_failure},
-        {"trace_requested", trace_known ? Json(trace_requested) : Json(nullptr)},
-        {"kernel_events_requested", kernel_requested},
-        {"reasons", reasons}};
+    evidence.integrity = {{"status", reasons.empty() ? "complete" : "failed"},
+                          {"eligible", reasons.empty()},
+                          {"expected_runner_failure", expected_failure},
+                          {"trace_requested", trace_known ? Json(trace_requested) : Json(nullptr)},
+                          {"kernel_events_requested", kernel_requested},
+                          {"reasons", reasons}};
     return evidence;
 }
 

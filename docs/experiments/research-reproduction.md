@@ -32,6 +32,7 @@ BiTHaC 커밋은 `68ad825a37ef72cc1db4a67eb6d13275cc61f8aa`입니다. 공개 코
 ```sh
 JOBS=4 scripts/build-bithac.sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DTURTLE_ADAPTER_LINKAGE=module -DTURTLE_BUILD_MODULES=ON -DTURTLE_WITH_OPENSSL=ON \
   -DTURTLE_WITH_WOLFSSL=ON -DTURTLE_WITH_MBEDTLS=ON -DTURTLE_WITH_BITHAC=ON
 cmake --build build --parallel 4
 python3 scripts/bithac-study.py run --build build --pki pki/default \

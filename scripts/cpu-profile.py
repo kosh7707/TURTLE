@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from raw_record import read_tls_records, lifetime_span
 import re
 import shutil
 import subprocess
@@ -173,7 +174,7 @@ def analyze(root, perf):
     for raw in sorted((root / 'run').glob('sample-*/*.jsonl')):
         if raw.stem not in ('client', 'server'):
             continue
-        records = [json.loads(line) for line in raw.read_text().splitlines()]
+        records = read_tls_records(raw)
         header, events = records[0], records[1:]
         if not header['valid']:
             failures.append({'source': str(raw.relative_to(root)), 'reason': header['invalid_reason']})
@@ -184,9 +185,8 @@ def analyze(root, perf):
         pid = header['pid']
         local = [s for s in samples if s['pid'] == pid and s['tid'] == pid]
         by_sequence = {e['sequence']: e for e in events}
-        begin = next(e for e in events if e['kind'] == 'MODULE_BEGIN')
-        end = next(e for e in events if e['kind'] == 'CALL_END' and e['call'] == 'teardown')
-        spans = [('module-to-teardown', None, begin, end)]
+        name, begin, end = lifetime_span(header, events)
+        spans = [(name, None, begin, end)]
         for connection in header['connections']:
             if connection['start_sequence'] is not None:
                 spans.append(('primary', connection['index'], by_sequence[connection['start_sequence']],
@@ -211,7 +211,7 @@ def analyze(root, perf):
                'record_returncode': manifest.get('returncode'), 'script_returncode': code,
                'sampling_event': manifest['event'], 'frequency_hz': manifest['frequency_hz'],
                'clock': 'CLOCK_MONOTONIC via perf record --clockid mono',
-               'process_scope': 'fresh endpoint PIDs, main TID only; director samples excluded from windows',
+               'process_scope': 'fresh endpoint PIDs, main TID only; local runner samples excluded from windows',
                'cpu_scope': 'task follows scheduler; no per-core attribution',
                'event_attributes_file': 'perf.events.txt', 'unparsed_or_lost_records': other,
                'binary_provenance': binaries,
@@ -243,8 +243,10 @@ def main():
     parser.add_argument('--perf', type=Path)
     parser.add_argument('--build', type=Path, default=Path('build'))
     parser.add_argument('--pki', type=Path, default=Path('pki/default'))
-    parser.add_argument('--client', default='openssl')
-    parser.add_argument('--server', default='openssl')
+    parser.add_argument('--client')
+    parser.add_argument('--client-bin', type=Path)
+    parser.add_argument('--server')
+    parser.add_argument('--server-bin', type=Path)
     parser.add_argument('--group', default='secp256r1')
     parser.add_argument('--samples', type=int, default=3)
     parser.add_argument('--event', choices=('cycles:u', 'cpu-clock:u', 'cycles', 'cpu-clock'), default='cycles:u')
@@ -264,11 +266,15 @@ def main():
             parser.error('samples >= 1, frequency 1..100000이 필요합니다')
         root.mkdir(parents=True, exist_ok=False)
         argv = [perf, 'record', '-e', args.event, '-F', args.frequency, '--clockid', 'mono',
-                '--no-buildid-cache', '-o', root / 'perf.data', '--', build / 'turtle', 'run',
-                '--client', args.client, '--server', args.server, '--group', args.group, '--pki', pki,
+                '--no-buildid-cache', '-o', root / 'perf.data', '--', build / 'turtle-local',
+                '--group', args.group, '--pki', pki,
                 '--adapter-dir', build / 'adapters', '--mutual-auth', '--scenario', 'client-request',
                 '--samples', args.samples, '--connections', 1, '--warmups', 0,
                 '--mode', 'timing', '--cpu-profile', '--no-perf', '--output', root / 'run']
+        for option in ('client', 'server', 'client_bin', 'server_bin'):
+            value = getattr(args, option)
+            if value is not None:
+                argv += ['--' + option.replace('_', '-'), value]
         if args.no_affinity:
             argv += ['--no-affinity']
         manifest = {'schema': 1, 'event': args.event, 'frequency_hz': args.frequency,

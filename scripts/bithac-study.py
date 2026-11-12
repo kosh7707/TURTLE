@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
+from raw_record import read_tls_records, lifetime_span
 import random
 import subprocess
 
@@ -22,7 +23,7 @@ def analyze(root, build):
         for raw in sorted(directory.glob('sample-*/*.jsonl')):
             if raw.stem not in ('client', 'server'):
                 continue
-            records = [json.loads(line) for line in raw.read_text().splitlines()]
+            records = read_tls_records(raw)
             header, events = records[0], records[1:]
             if not header['valid']:
                 failures.append({'file': str(raw.relative_to(root)), 'reason': header['invalid_reason']})
@@ -33,17 +34,16 @@ def analyze(root, build):
         summary = json.loads((directory / 'report/summary.json').read_text())
         for sample in summary['samples']:
             raw = directory / 'sample-000001' / (sample['role'] + '.jsonl')
-            records = [json.loads(line) for line in raw.read_text().splitlines()]
+            records = read_tls_records(raw)
             header, events = records[0], records[1:]
             if not header['valid']:
                 continue
             decoded = json.loads(raw.with_suffix('.decoded.json').read_text())['connections']
             base = {'mode': header['mode'], 'sample': directory.parent.name,
                     'variant': directory.name, 'role': header['role']}
-            begin = next(e for e in events if e['kind'] == 'MODULE_BEGIN')
-            end = next(e for e in events if e['kind'] == 'CALL_END' and e['call'] == 'teardown')
-            contexts.append({**base, 'module_to_teardown_elapsed_ns': end['monotonic_ns'] - begin['monotonic_ns'],
-                             'module_to_teardown_thread_cpu_ns': end['thread_cpu_ns'] - begin['thread_cpu_ns'],
+            window, begin, end = lifetime_span(header, events)
+            contexts.append({**base, 'window': window, 'elapsed_ns': end['monotonic_ns'] - begin['monotonic_ns'],
+                             'thread_cpu_ns': end['thread_cpu_ns'] - begin['thread_cpu_ns'],
                              'includes_ready_and_release_waits': True,
                              'excludes_process_start_module_unload_and_record_output': True})
             for connection in sample['connections']:
@@ -110,7 +110,7 @@ def main():
                 for variant in variants:
                     destination = root / mode / f'sample-{sample:04d}' / variant
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    argv = [build / 'turtle', 'run', '--client', variant, '--server', variant,
+                    argv = [build / 'turtle-local', '--client', variant, '--server', variant,
                             '--adapter-dir', build / 'adapters', '--pki', pki, '--mutual-auth',
                             '--scenario', 'client-request', '--send-policy', 'native',
                             '--samples', 1, '--connections', args.connections, '--warmups', 0,

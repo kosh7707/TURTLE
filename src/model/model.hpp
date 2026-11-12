@@ -12,11 +12,12 @@
 
 namespace turtle::model {
 
-inline constexpr unsigned record_schema = 2;
+inline constexpr unsigned record_schema = 3;
 // Identifies the measurement boundary semantics independently of the additive
 // raw record schema. Revision 3 creates TCP per trial after readiness and
 // distinguishes application scenarios, directional sizes and submission batches.
-inline constexpr unsigned measurement_contract_revision = 3;
+// Revision 4 ends each scenario at its last successful TLS API return.
+inline constexpr unsigned measurement_contract_revision = 4;
 inline constexpr const char* framework_version = "0.1.0";
 
 enum class Mode { Timing, Memory, Trace };
@@ -230,6 +231,8 @@ struct TcpInfoSnapshot {
 };
 
 struct ConnectionInfo {
+    std::string local_address, peer_address;
+    std::uint16_t local_port = 0, peer_port = 0;
     std::size_t index = 0;
     bool warmup = false;
     Verification verification = Verification::Failed;

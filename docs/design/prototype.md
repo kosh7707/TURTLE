@@ -1,6 +1,6 @@
 # 공통 실행·계측 계약
 
-공개 ABI 3, TLS 원자료 schema 2, 측정 계약 개정 3의 설명입니다. 의존성 스크립트는 각 `instrumentation.patch`를 적용하고 `.deps/manifests/`에 원본 판·빌드 설정·패치 해시를 남깁니다. 원자료 `declaration`도 출처와 해시를 보존합니다. 설치 기록과 패치 해시가 다르면 의존성을 다시 빌드해야 합니다.
+공개 ABI 3, TLS 원자료 schema 3, 측정 계약 개정 4의 설명입니다. 의존성 스크립트는 각 `instrumentation.patch`를 적용하고 `.deps/manifests/`에 원본 판·빌드 설정·패치 해시를 남깁니다. 원자료 `declaration`도 출처와 해시를 보존합니다. 설치 기록과 패치 해시가 다르면 의존성을 다시 빌드해야 합니다.
 
 ## 시행과 시나리오
 
@@ -15,7 +15,7 @@
 
 기본 시나리오는 `client-request`입니다. `--client-bytes`, `--server-bytes` 또는 TLS 프로필의 `client_application_bytes`, `server_application_bytes`로 방향별 크기를 정합니다. 생략하면 `application_bytes`이며 기본 32바이트입니다. 양쪽은 고정 패턴을 검증합니다. HTTP나 사용자 콜백은 없습니다. 순수 핸드셰이크는 `scenario_completed=true`, `application_verified=false`입니다.
 
-`ApplicationWriteReady=4`는 서버의 응용 쓰기 준비와 전체 완료를 구별합니다. `Complete=2`, `Failed=3`의 기존 숫자를 유지하고 `Done`은 `Complete`의 소스 별칭입니다. 상호 인증의 조기 Ping은 클라이언트 인증 완료 전에 보내는 시험 페이로드입니다. 이후 ClientFinished와 인증을 끝까지 검증하며 실패 시 무효입니다. 클라이언트 0-RTT나 세션 재개는 켜지 않습니다.
+`ApplicationWriteReady=4`는 서버의 응용 쓰기 준비와 전체 완료를 구별합니다. `Complete=2`, `Failed=3`의 ABI 숫자는 유지합니다. 상호 인증의 조기 Ping은 클라이언트 인증 완료 전에 보내는 시험 페이로드입니다. 이후 ClientFinished와 인증을 끝까지 검증하며 실패 시 무효입니다. 클라이언트 0-RTT나 세션 재개는 켜지 않습니다.
 
 출력 버퍼는 측정 전에 확보합니다. `OUTPUT_ACCEPTED`는 프레임워크 버퍼 수용이고, 성공한 `IO_SEND_RETURN` 바이트만 실제 스트림에 누적합니다. 부분 쓰기·EAGAIN 뒤에도 `batch_id`를 유지합니다. 출력 배치, TLS 레코드와 TCP 세그먼트는 다른 단위입니다.
 
@@ -50,15 +50,16 @@ wolfSSL의 추가 생성 구간은 스택 객체가 소유하고 모든 정상 �
 
 각 구간은 `available`, `unsupported`, `not_applicable`, `missing`과 값이 없는 `null`을 구별합니다. `internal_spans_complete`는 선언한 사건의 짝이 맞았다는 뜻이며 라이브러리 전체를 관측했다는 뜻이 아닙니다. 추적을 끈 빈 목록에는 완전성을 주장하지 않습니다.
 
-개정 3의 `primary_window`는 클라이언트 첫 핸드셰이크 호출 또는 서버 첫 TLS 수신부터 시나리오 완료까지입니다. `end_sequence`가 종료점을 지정합니다. API 완료·내부 Finished·소켓 제출은 다른 지표입니다. 순수 핸드셰이크와 응용 실행에서 추출한 구간은 시나리오 조건으로 분리합니다. schema 1의 기존 종료점 뜻은 유지합니다.
+개정 4의 `primary_window`는 클라이언트 첫 핸드셰이크 호출 또는 서버 첫 TLS 수신부터 시나리오의 마지막 TLS API 성공 반환까지입니다. 순수 핸드셰이크는 `handshake_step`이 `Complete`를 반환한 `CALL_END`, 응용 시나리오는 역할의 마지막 전체 송신·수신을 마친 `CALL_END`에서 끝납니다. 수신에는 TLS 무결성 검증·복호화·응용 버퍼 전달이 포함됩니다. 최종 시험 패턴 대조와 소켓 정리는 종료점 밖입니다. 상세 역할 표는 [실행 문서](runtime.md#시나리오의-종료-개정-4)를 따릅니다. `end_sequence`가 종료점을 지정합니다. API 완료·내부 Finished·소켓 제출은 다른 지표입니다. 순수 핸드셰이크와 응용 실행에서 추출한 구간은 시나리오 조건으로 분리합니다. 종료 사건이 없으면 다른 사건으로 추정하지 않습니다.
 
 ```sh
 JOBS=4 scripts/build-deps.sh all
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DTURTLE_ADAPTER_LINKAGE=module -DTURTLE_BUILD_MODULES=ON -DTURTLE_WITH_OPENSSL=ON \
   -DTURTLE_WITH_WOLFSSL=ON -DTURTLE_WITH_MBEDTLS=ON
 cmake --build build --parallel 4
 scripts/make-pki.sh pki/default
-build/turtle run --client openssl --server mbedtls --pki pki/default \
+build/turtle-local --client openssl --server mbedtls --pki pki/default \
   --scenario finished-ping --send-policy server-hello-first \
   --client-bytes 32 --server-bytes 32 --samples 1 --connections 1 --warmups 0 \
   --mode trace --no-affinity --no-perf --output results/prototype

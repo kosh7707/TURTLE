@@ -116,7 +116,7 @@ Step result(Session& s, int rc) {
         return Step::Failed;
     }
     if (rc > 0)
-        return Step::Done;
+        return Step::Complete;
     const int error = SSL_get_error(s.ssl, rc);
     if (error == SSL_ERROR_WANT_READ)
         return Step::WantRead;
@@ -251,6 +251,9 @@ Declaration declaration(const Context* context) {
     d.callback_io = s.config.framework_io;
     d.key_log = true;
     d.plaintext_hook = true;
+#ifdef TURTLE_LIBRARY_LINKAGE
+    d.build_options += ";tls_linkage=" TURTLE_LIBRARY_LINKAGE;
+#endif
     d.context_description = "No resumption state retained; save returns empty bytes";
     d.read_ahead = false;
     d.read_ahead_note =

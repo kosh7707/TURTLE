@@ -6,6 +6,7 @@ requires the CA sidecar, the client lookup, the TLS endpoints, the interpreter,
 and the reporter to agree on the same two-attempt/three-connection run.
 """
 
+from profiles import experiment_profile, flatten_experiment
 import json
 from pathlib import Path
 import shutil
@@ -122,7 +123,7 @@ def write_profile(path, pki, cache_mode, snapshot):
             "note": "reference certificate is pre-held; stock TLS Certificate remains",
         },
     }
-    path.write_text(json.dumps(document, sort_keys=True, indent=2) + "\n")
+    path.write_text(json.dumps(experiment_profile(**document), sort_keys=True, indent=2) + "\n")
 
 
 def connection_rows(rows, source):
@@ -176,10 +177,10 @@ def validate_heap(rows, mode, domain, source):
 def validate_tls(raw, mode, interpret, certificate):
     rows = json_lines(raw)
     header, events = rows[0], rows[1:]
-    check(header["type"] == "sample" and header["schema"] == 2, f"{raw}: TLS schema changed")
+    check(header["type"] == "sample" and header["schema"] == 3, f"{raw}: TLS schema changed")
     check(header["valid"], f"{raw}: {header['invalid_reason']}")
     check(not header["declaration"]["is_mock"], f"{raw}: mock is not TLS evidence")
-    check(header["config"]["samples"] == SAMPLES, f"{raw}: sample count changed")
+    check("samples" not in header["config"], f"{raw}: endpoint owns external repetition")
     check(header["config"]["warmups"] == WARMUPS, f"{raw}: warmup count changed")
     check(header["config"]["connections"] == CONNECTIONS, f"{raw}: connection count changed")
     lookup_config = header["config"].get("lookup")
@@ -189,8 +190,11 @@ def validate_tls(raw, mode, interpret, certificate):
           f"{raw}: TLS artifact hides the synthetic lookup scenario")
     profile = json.loads(header["config"]["profile_document"])
     server_input = profile["certificate_inputs"]["server"]
-    check(server_input == {"bytes": len(certificate), "fingerprint": fingerprint(certificate)},
-          f"{raw}: TLS input does not retain the reference certificate provenance")
+    if header["role"] == "server":
+        check(server_input == {"bytes": len(certificate), "fingerprint": fingerprint(certificate)},
+              f"{raw}: server certificate provenance missing")
+    else:
+        check(server_input is None, f"{raw}: client must not own a server certificate path")
     check(len(header["connections"]) == TOTAL_CONNECTIONS, f"{raw}: TLS connections missing")
     for index, connection in enumerate(header["connections"]):
         check(connection["index"] == index and connection["warmup"] == (index < WARMUPS),
@@ -363,7 +367,7 @@ def main():
             for mode in ("timing", "memory"):
                 output = root / f"raw-{cache_mode}-{mode}"
                 report_output = root / f"report-{cache_mode}-{mode}"
-                run(turtle, "run", "--profile", profile,
+                run(turtle, "--profile", profile,
                     "--client", implementation, "--server", implementation,
                     "--adapter-dir", adapters, "--samples", str(SAMPLES),
                     "--warmups", str(WARMUPS), "--connections", str(CONNECTIONS),

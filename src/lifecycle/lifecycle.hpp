@@ -1,13 +1,6 @@
 #pragma once
-
-// Compose adapter, transport, measurement, and recording lifetimes. Other
-// modules must not depend on this module or choose lifecycle policy themselves.
-namespace turtle::model {
-struct RunConfig;
-}
-
+#include "model/run_config.hpp"
 namespace turtle::lifecycle {
-
-int run(const model::RunConfig& config);
-
+// Owns local resources only. A null entry selects an explicit shared module.
+int run_endpoint(model::RunConfig config, AdapterEntry builtin = nullptr);
 } // namespace turtle::lifecycle

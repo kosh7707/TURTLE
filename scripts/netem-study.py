@@ -8,6 +8,7 @@ means that an experiment ran but did not prove its requested validation gate.
 
 from __future__ import annotations
 
+from profile_config import experiment_profile, flatten_experiment
 import argparse
 import copy
 import ctypes
@@ -82,7 +83,7 @@ def enable_subreaper() -> None:
 
 
 def terminate_group(process: subprocess.Popen[str], grace: float, evidence: list[dict[str, Any]]) -> bool:
-    """Bounded termination of a process group created solely for the director."""
+    """Bounded termination of a process group created solely for the runner."""
     deadline = time.monotonic() + grace
     try: os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError: pass
@@ -115,7 +116,7 @@ def terminate_group(process: subprocess.Popen[str], grace: float, evidence: list
         try: process.wait(.02)
         except subprocess.TimeoutExpired: pass
     result = "reaped" if not alive() and process.poll() is not None else "fatal-not-reaped"
-    evidence.append({"director_group": process.pid, "result": result})
+    evidence.append({"runner_group": process.pid, "result": result})
     return result == "reaped"
 
 
@@ -160,14 +161,11 @@ def profile_lookup_enabled(value: Any) -> bool:
 def validate_net_profile(value: Any, lookup_enabled: bool = False) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("net profile has unknown or missing top-level fields")
-    fields = {"type", "schema", "qdisc", "mtu", "offload", "trace", "loss_seed", "paths"}
-    if value.get("schema") in (2, 3):
-        fields.add("initial_cwnd")
-    if value.get("schema") == 3:
-        fields.update(("kernel_events", "targeted_drop"))
+    fields = {"type", "schema", "qdisc", "mtu", "offload", "trace", "loss_seed", "paths",
+              "initial_cwnd", "kernel_events", "targeted_drop"}
     if set(value) != fields:
         raise ValueError("net profile has unknown or missing top-level fields")
-    if value["type"] != "turtle-netem-profile" or value["schema"] not in (1, 2, 3):
+    if value["type"] != "turtle-netem-profile" or value["schema"] != 3:
         raise ValueError("unsupported net profile type or schema")
     if value["qdisc"] not in ("none", "netem"):
         raise ValueError("qdisc must be none or netem")
@@ -185,24 +183,18 @@ def validate_net_profile(value: Any, lookup_enabled: bool = False) -> dict[str, 
         raise ValueError("offload settings must be boolean")
     allowed_paths = set(LOOKUP_PATHS if lookup_enabled else TLS_PATHS)
     supplied_paths = set(value["paths"]) if isinstance(value["paths"], dict) else set()
-    valid_path_sets = {frozenset(allowed_paths)}
-    if not lookup_enabled:
-        valid_path_sets.add(frozenset(LOOKUP_PATHS))
-    if frozenset(supplied_paths) not in valid_path_sets:
-        requirement = "all four directional paths" if lookup_enabled else "exactly two TLS paths or all four legacy paths"
+    if supplied_paths != allowed_paths:
+        requirement = "all four directional paths" if lookup_enabled else "exactly two TLS paths"
         raise ValueError(f"{requirement} are required")
     normalized = copy.deepcopy(value)
-    if value["schema"] >= 2:
-        cwnd = value["initial_cwnd"]
-        if not isinstance(cwnd, dict) or set(cwnd) != {"client", "server"}:
-            raise ValueError("initial_cwnd must contain client and server")
-        if any(item is not None and (type(item) is not int or not 1 <= item <= 1000)
-               for item in cwnd.values()):
-            raise ValueError("initial_cwnd values must be null (kernel default) or 1..1000 segments")
+    cwnd = value["initial_cwnd"]
+    if not isinstance(cwnd, dict) or set(cwnd) != {"client", "server"}:
+        raise ValueError("initial_cwnd must contain client and server")
+    if any(item is not None and (type(item) is not int or not 1 <= item <= 1000)
+           for item in cwnd.values()):
+        raise ValueError("initial_cwnd values must be null (kernel default) or 1..1000 segments")
     for name, policy in normalized["paths"].items():
-        path_fields = {"delay_ms", "loss_percent", "limit_packets"}
-        if value["schema"] >= 2:
-            path_fields.add("rate_bps")
+        path_fields = {"delay_ms", "loss_percent", "limit_packets", "rate_bps"}
         if not isinstance(policy, dict) or set(policy) != path_fields:
             raise ValueError(f"{name} must contain delay_ms, loss_percent, limit_packets")
         rate = policy.get("rate_bps")
@@ -218,32 +210,23 @@ def validate_net_profile(value: Any, lookup_enabled: bool = False) -> dict[str, 
         policy["loss_percent"] = float(loss)
         if normalized["qdisc"] == "none" and (delay != 0 or loss != 0 or rate is not None):
             raise ValueError("qdisc none requires zero delay/loss and no rate on every path")
-    if value["schema"] == 3:
-        if type(value["kernel_events"]) is not bool:
-            raise ValueError("kernel_events must be boolean")
-        drops = value["targeted_drop"]
-        if not isinstance(drops, dict) or set(drops) != set(TLS_PATHS):
-            raise ValueError("targeted_drop must contain exactly two TLS directions")
-        if any(offset is not None and (type(offset) is not int or not 0 <= offset < 2**31)
-               for offset in drops.values()):
-            raise ValueError("targeted_drop offsets must be null or 0..2^31-1 TLS stream bytes")
-        if any(offset is not None for offset in drops.values()) and not value["kernel_events"]:
-            raise ValueError("targeted_drop requires kernel_events")
-        if value["kernel_events"] and (not value["trace"] or any(value["offload"].values())):
-            raise ValueError("kernel_events requires packet trace and disabled TSO/GSO/GRO")
+    if type(value["kernel_events"]) is not bool:
+        raise ValueError("kernel_events must be boolean")
+    drops = value["targeted_drop"]
+    if not isinstance(drops, dict) or set(drops) != set(TLS_PATHS):
+        raise ValueError("targeted_drop must contain exactly two TLS directions")
+    if any(offset is not None and (type(offset) is not int or not 0 <= offset < 2**31)
+           for offset in drops.values()):
+        raise ValueError("targeted_drop offsets must be null or 0..2^31-1 TLS stream bytes")
+    if any(offset is not None for offset in drops.values()) and not value["kernel_events"]:
+        raise ValueError("targeted_drop requires kernel_events")
+    if value["kernel_events"] and (not value["trace"] or any(value["offload"].values())):
+        raise ValueError("kernel_events requires packet trace and disabled TSO/GSO/GRO")
     return normalized
 
 
-def active_net_profile(profile: dict[str, Any], lookup_enabled: bool) -> dict[str, Any]:
-    """Normalize a profile to settings that are actually applied by the fixed topology."""
-    active = copy.deepcopy(profile)
-    names = LOOKUP_PATHS if lookup_enabled else TLS_PATHS
-    active["paths"] = {name: active["paths"][name] for name in names}
-    return active
-
-
 def resolve_samples(profile: dict[str, Any], override: int | None) -> int:
-    samples = override if override is not None else profile.get("measurement", {}).get("samples", 1000)
+    samples = override if override is not None else profile.get("measurement", {}).get("samples", 1)
     if type(samples) is not int or samples < 1:
         raise ValueError("samples must be positive")
     return samples
@@ -276,7 +259,7 @@ class Commands:
 class OwnedTopology:
     def __init__(self, profile: dict[str, Any], output: Path, lookup_enabled: bool = True):
         self.lookup_enabled, self.output = lookup_enabled, output
-        self.profile = active_net_profile(profile, lookup_enabled)
+        self.profile = copy.deepcopy(profile)
         self.namespace_names = ("client", "server", "ca", "router") if lookup_enabled else ("client", "server", "router")
         self.links = LINKS if lookup_enabled else TLS_LINKS
         self.path_interfaces = {name: PATH_INTERFACES[name] for name in
@@ -291,7 +274,7 @@ class OwnedTopology:
         self.kernel_observer: subprocess.Popen | None = None
         self.kernel_control: socket.socket | None = None
         self.provenance: dict[str, Any] = {
-            "type": "turtle-network-provenance", "schema": 1,
+            "type": "turtle-network-provenance", "schema": 2,
             "status": "initializing", "reason": None,
             "created_monotonic_ns": time.monotonic_ns(),
             "tools": {}, "commands": [], "lifecycle": {"helpers": {}, "namespace_fds_closed": False},
@@ -513,7 +496,7 @@ class OwnedTopology:
         router = self.helpers["router"].pid
         for path, interface in self.path_interfaces.items():
             raw = json.loads(self.commands.ns(router, ["tc", "-j", "-s", "qdisc", "show", "dev", interface]).stdout)
-            roots = [entry for entry in raw if entry.get("root")]
+            roots = [entry for entry in raw if entry.get("kind") == "netem"] or [entry for entry in raw if entry.get("root")]
             result[path] = {"interface": interface, "requested": self.profile["paths"][path],
                             "raw": raw, "root_kind": roots[0].get("kind") if roots else None}
         return result
@@ -523,7 +506,7 @@ class OwnedTopology:
         """Keep condition fields; counters, handles and kernel refcounts are outcomes/provenance."""
         stable = {}
         for path, value in readback.items():
-            roots = [entry for entry in value["raw"] if entry.get("root")]
+            roots = [entry for entry in value["raw"] if entry.get("kind") == "netem"] or [entry for entry in value["raw"] if entry.get("root")]
             root = roots[0] if roots else {}
             options = root.get("options", {})
             delay = options.get("delay")
@@ -546,7 +529,15 @@ class OwnedTopology:
             self.commands.ns(router, ["tc", "qdisc", "del", "dev", interface, "root"], check=False)
             if self.profile["qdisc"] == "netem":
                 policy = self.profile["paths"][path]
-                self.commands.ns(router, ["tc", "qdisc", "add", "dev", interface, "root", "netem",
+                # Put only the data flow into netem. Control TCP remains in band 1.
+                self.commands.ns(router, ["tc", "qdisc", "add", "dev", interface, "root", "handle", "1:",
+                                          "prio", "bands", "3", "priomap"] + ["0"] * 16)
+                match_port = "44330" if path.startswith("tls_") else "44332"
+                port_field = "dport" if path.endswith("c2s") else "sport"
+                self.commands.ns(router, ["tc", "filter", "add", "dev", interface, "protocol", "ip",
+                                          "parent", "1:", "prio", "1", "u32", "match", "ip", "protocol", "6", "0xff",
+                                          "match", "ip", port_field, match_port, "0xffff", "flowid", "1:2"])
+                self.commands.ns(router, ["tc", "qdisc", "add", "dev", interface, "parent", "1:2", "handle", "10:", "netem",
                                           "limit", str(policy["limit_packets"]), "delay", f'{policy["delay_ms"]}ms',
                                           "loss", f'{policy["loss_percent"]:.12g}%'] +
                                  (["rate", f'{policy["rate_bps"]}bit'] if policy.get("rate_bps") is not None else []))
@@ -726,7 +717,7 @@ def run_coordinator(args: argparse.Namespace) -> int:
     output.mkdir(parents=True)
     observations = output / "network-observations.jsonl"
     topology: OwnedTopology | None = None
-    director: subprocess.Popen[str] | None = None
+    runner: subprocess.Popen[str] | None = None
     phase_parent: socket.socket | None = None
     phase_child: socket.socket | None = None
     buffer = bytearray()
@@ -756,50 +747,51 @@ def run_coordinator(args: argparse.Namespace) -> int:
     old_int, old_term = signal.signal(signal.SIGINT, interrupted), signal.signal(signal.SIGTERM, interrupted)
     try:
         enable_subreaper()
-        run_profile = json.loads(Path(args.profile).read_text())
+        run_profile = flatten_experiment(json.loads(Path(args.profile).read_text()))
         lookup_enabled = profile_lookup_enabled(run_profile)
         profile = validate_net_profile(json.loads(Path(args.net_profile).read_text()), lookup_enabled)
         topology = OwnedTopology(profile, output, lookup_enabled)
         topology.setup()
         topology.start_kernel_observer(Path(args.build))
         phase_parent, phase_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-        director_names = ("client", "server", "ca") if lookup_enabled else ("client", "server")
+        runner_names = ("client", "server", "ca") if lookup_enabled else ("client", "server")
         manifest = {
             "type": "turtle-network-manifest", "schema": 1,
-            "namespace_fds": {name: topology.ns_fds[name] for name in director_names},
+            "namespace_fds": {name: topology.ns_fds[name] for name in runner_names},
             "addresses": topology.addresses, "interfaces": topology.interfaces,
+            "data_ports": {"tls": 44330, "lookup": 44332}, "control_ports": {"tls": 44331, "lookup": 44333},
             "net_profile": topology.profile,
             "provenance_file": str(topology.provenance_path),
             "observations_file": str(observations), "phase_control_fd": phase_child.fileno(),
         }
         manifest_path = output / "network-manifest.json"
         dump_json(manifest_path, manifest)
-        command = [str((Path(args.build).resolve() / "turtle")), "run", "--profile", str(Path(args.profile).resolve()),
+        command = [str((Path(args.build).resolve() / "turtle-local")), "--profile", str(Path(args.profile).resolve()),
                    "--client", getattr(args, "client", "openssl"), "--server", getattr(args, "server", "openssl"),
                    "--samples", str(args.samples), "--output", str(output),
                    "--network-manifest", str(manifest_path)]
-        pass_fds = tuple(topology.ns_fds[name] for name in director_names) + (phase_child.fileno(),)
-        topology.provenance["director"] = {"argv": command, "pass_fds": list(pass_fds),
+        pass_fds = tuple(topology.ns_fds[name] for name in runner_names) + (phase_child.fileno(),)
+        topology.provenance["runner"] = {"argv": command, "pass_fds": list(pass_fds),
                                            "router_fd_passed": False}
         topology.save()
-        director = subprocess.Popen(command, pass_fds=pass_fds, text=True, start_new_session=True)
+        runner = subprocess.Popen(command, pass_fds=pass_fds, text=True, start_new_session=True)
         phase_child.close()
-        while director.poll() is None and not stop:
+        while runner.poll() is None and not stop:
             ready, _, _ = select.select([phase_parent], [], [], .1)
             if not ready:
                 continue
             line = recv_line(phase_parent, buffer)
             if line is None:
                 # Closing the inherited phase fd and process exit are distinct
-                # kernel observations.  Give an already-finalizing director the
+                # kernel observations.  Give an already-finalizing runner the
                 # bounded runner cleanup interval before deciding it is stuck.
                 try:
-                    director.wait(.5)
+                    runner.wait(.5)
                 except subprocess.TimeoutExpired:
-                    protocol_failure = "director remained alive after phase-control EOF"
+                    protocol_failure = "runner remained alive after phase-control EOF"
                     # The EOF wait consumed the runner's 500 ms grace.  Do not
                     # restart it; escalate the owned group immediately.
-                    terminate_group(director, 0, topology.provenance["cleanup"])
+                    terminate_group(runner, 0, topology.provenance["cleanup"])
                 break
             request = validate_phase(json.loads(line))
             attempt = request["attempt"]
@@ -814,19 +806,19 @@ def run_coordinator(args: argparse.Namespace) -> int:
             observation_id = topology.observe(request, observations)
             reply = {**request, "type": "ack", "observation_id": observation_id}
             phase_parent.sendall(json.dumps(reply, separators=(",", ":")).encode() + b"\n")
-        if director.poll() is None:
-            if not terminate_group(director, .5, topology.provenance["cleanup"]):
-                raise RuntimeError("director process group could not be reaped")
+        if runner.poll() is None:
+            if not terminate_group(runner, .5, topology.provenance["cleanup"]):
+                raise RuntimeError("runner process group could not be reaped")
         incomplete = [attempt for attempt, index in expected_edges.items() if index != len(sequence)]
         for attempt in incomplete:
             index = expected_edges[attempt]
-            record_missing(attempt, index, len(sequence), "director exited before phase window completed")
+            record_missing(attempt, index, len(sequence), "runner exited before phase window completed")
             expected_edges[attempt] = len(sequence)
-        if protocol_failure or (incomplete and director.returncode == 0):
-            raise RuntimeError(protocol_failure or f"successful director omitted phase windows: {incomplete}")
-        topology.provenance["director"]["returncode"] = director.returncode
-        topology.provenance["status"] = "complete" if director.returncode == 0 else "director-failed"
-        terminal_code = 130 if stop else director.returncode
+        if protocol_failure or (incomplete and runner.returncode == 0):
+            raise RuntimeError(protocol_failure or f"successful runner omitted phase windows: {incomplete}")
+        topology.provenance["runner"]["returncode"] = runner.returncode
+        topology.provenance["status"] = "complete" if runner.returncode == 0 else "runner-failed"
+        terminal_code = 130 if stop else runner.returncode
     except SetupUnsupported as error:
         if topology:
             if buffer:
@@ -835,7 +827,7 @@ def run_coordinator(args: argparse.Namespace) -> int:
             topology.provenance.update(status="unsupported", reason=str(error))
             topology.save()
         else:
-            dump_json(output / "network-provenance.json", {"type": "turtle-network-provenance", "schema": 1,
+            dump_json(output / "network-provenance.json", {"type": "turtle-network-provenance", "schema": 2,
                       "status": "unsupported", "reason": str(error)})
         print(error, file=sys.stderr)
         terminal_code = 2
@@ -858,10 +850,10 @@ def run_coordinator(args: argparse.Namespace) -> int:
                 phase_child.close()
             except OSError:
                 pass
-        if director and director.poll() is None:
+        if runner and runner.poll() is None:
             evidence = topology.provenance["cleanup"] if topology else []
-            terminate_group(director, .5, evidence)
-        # Reap any owned descendants orphaned after a director failure.  As a
+            terminate_group(runner, .5, evidence)
+        # Reap any owned descendants orphaned after a runner failure.  As a
         # subreaper this coordinator only receives its own descendant tree.
         while True:
             try:
@@ -889,7 +881,7 @@ def outer_isolated(command: str, args: argparse.Namespace) -> int:
     if not before["supported"]:
         output.mkdir(parents=True)
         dump_json(output / "network-provenance.json", {
-            "type": "turtle-network-provenance", "schema": 1,
+            "type": "turtle-network-provenance", "schema": 2,
             "status": "unsupported", "reason": "host network identity could not be observed",
             "host_network_identity": {"before": before, "after": None, "unchanged": None}})
         return 2
@@ -900,7 +892,7 @@ def outer_isolated(command: str, args: argparse.Namespace) -> int:
     if privileged and (os.geteuid() != 0 or os.stat("/proc/self/ns/user").st_ino != os.stat("/proc/1/ns/user").st_ino):
         output.mkdir(parents=True)
         dump_json(output / "network-provenance.json", {
-            "type": "turtle-network-provenance", "schema": 1, "status": "unsupported",
+            "type": "turtle-network-provenance", "schema": 2, "status": "unsupported",
             "reason": "kernel_events requires sudo in the initial user namespace",
             "host_network_identity": {"before": before, "after": before, "unchanged": True}})
         return 2
@@ -991,7 +983,7 @@ def probe(args: argparse.Namespace) -> int:
     before = host_network_identity()
     if not before["supported"]:
         dump_json(output / "network-provenance.json", {
-            "type": "turtle-network-provenance", "schema": 1,
+            "type": "turtle-network-provenance", "schema": 2,
             "status": "unsupported", "reason": "host network identity could not be observed",
             "host_network_identity": {"before": before, "after": None, "unchanged": None}})
         return 2
@@ -1100,10 +1092,11 @@ def probe_tcp_info(topology: OwnedTopology) -> dict[str, Any]:
 
 
 def default_net_profile(qdisc: str = "netem") -> dict[str, Any]:
-    return {"type": "turtle-netem-profile", "schema": 1, "qdisc": qdisc, "mtu": 1500,
+    return {"type": "turtle-netem-profile", "schema": 3, "qdisc": qdisc, "mtu": 1500,
             "offload": {"tso": False, "gso": False, "gro": False}, "trace": True,
-            "loss_seed": None,
-            "paths": {name: {"delay_ms": 0, "loss_percent": 0.0, "limit_packets": 10000}
+            "loss_seed": None, "initial_cwnd": {"client": None, "server": None},
+            "kernel_events": False, "targeted_drop": {name: None for name in TLS_PATHS},
+            "paths": {name: {"delay_ms": 0, "loss_percent": 0.0, "limit_packets": 10000, "rate_bps": None}
                       for name in PATH_INTERFACES}}
 
 
@@ -1179,12 +1172,12 @@ def verify(args: argparse.Namespace) -> int:
                 "fixed_before_execution": True, "runs": []}
     unsupported_checked = False
     seeded = default_net_profile(); seeded["loss_seed"] = 1
-    try: validate_net_profile(seeded)
+    try: validate_net_profile(seeded, True)
     except SetupUnsupported: unsupported_checked = True
     manifest["unsupported_checks"] = {"explicit_loss_seed_rejected": unsupported_checked}
     for name, samples, timeout_ms, net, gate, snapshot in specs:
         profile_file, net_file = root / f"{name}.profile.json", root / f"{name}.net.json"
-        dump_json(profile_file, verification_profile(pki, samples, timeout_ms, snapshot)); dump_json(net_file, net)
+        dump_json(profile_file, experiment_profile(**verification_profile(pki, samples, timeout_ms, snapshot))); dump_json(net_file, net)
         manifest["runs"].append({"name": name, "samples": samples, "connections": 1, "warmups": 0,
                                  "timeout_ms": timeout_ms, "net_profile": net,
                                  "gate": gate, "output": str(root / name), "status": "not-started"})
@@ -1261,21 +1254,21 @@ def evaluate_run_integrity(row: dict[str, Any]) -> tuple[bool, list[str]]:
     if expected_helpers is None or helpers != expected_helpers or observer_done is not trace_requested or \
             provenance.get("finished_monotonic_ns") is None:
         reasons.append("complete owned helper/observer cleanup inventory is missing")
-    allowed_failed_director = gate in ("loss", "timeout") and returncode == 1
+    allowed_failed_runner = gate in ("loss", "timeout") and returncode == 1
     if returncode == 0:
-        if provenance.get("status") != "complete" or provenance.get("director", {}).get("returncode") != 0:
-            reasons.append("successful runner lacks complete director provenance")
-    elif allowed_failed_director:
-        if (provenance.get("status") != "director-failed" or
-                provenance.get("director", {}).get("returncode") != 1):
-            reasons.append("nonzero result was not a preserved director outcome")
+        if provenance.get("status") != "complete" or provenance.get("runner", {}).get("returncode") != 0:
+            reasons.append("successful runner lacks complete runner provenance")
+    elif allowed_failed_runner:
+        if (provenance.get("status") != "runner-failed" or
+                provenance.get("runner", {}).get("returncode") != 1):
+            reasons.append("nonzero result was not a preserved runner outcome")
         ledger = output / "attempts.jsonl"
         try:
             finals = [item for item in map(json.loads, ledger.read_text().splitlines())
                       if item.get("record_kind") == "attempt_final"]
         except (OSError, json.JSONDecodeError): finals = []
         if not finals or any(item.get("final_status") not in ("success", "timeout") for item in finals):
-            reasons.append("nonzero director result contains arbitrary error/incomplete outcomes")
+            reasons.append("nonzero runner result contains arbitrary error/incomplete outcomes")
     else:
         reasons.append(f"unexpected runner return code {returncode}")
     return not reasons, reasons
@@ -1333,7 +1326,7 @@ def evaluate_loss_gate_with_details(output: Path, attempts: int) -> tuple[bool, 
             for edge in ("begin", "end"):
                 qdiscs = pair[edge].get("qdiscs")
                 raw = qdiscs.get("ca_s2c", {}).get("raw", []) if isinstance(qdiscs, dict) else []
-                root = next((item for item in raw if item.get("root")), None)
+                root = next((item for item in raw if item.get("kind") == "netem"), next((item for item in raw if item.get("root")), None))
                 values.append(root.get("drops") if root else None)
             if any(value is None for value in values):
                 window_details.append({"attempt": attempt, "status": "counter-missing",
@@ -1515,9 +1508,20 @@ def decode_packet(frame: bytes, interface: str, outgoing: bool) -> dict[str, Any
                ("rstls", "ingress"): "tls_s2c", ("rstls", "egress"): "tls_c2s",
                ("rcca", "ingress"): "ca_c2s", ("rcca", "egress"): "ca_s2c",
                ("rca0", "ingress"): "ca_s2c", ("rca0", "egress"): "ca_c2s"}
+    logical_path = mapping[(interface, direction)]
+    data_port = 44330 if logical_path.startswith("tls_") else 44332
+    # The client's ephemeral port may equal either listening port. Only the
+    # server-side port identifies the service, in both packet directions.
+    service_port = destination_port if logical_path.endswith("c2s") else source_port
+    if service_port not in (data_port, data_port + 1):
+        return None
+    flow_class = "control" if service_port == data_port + 1 else "data"
+    if flow_class == "control":
+        logical_path = logical_path.replace("tls_", "control_tls_").replace("ca_", "control_ca_")
     return {"type": "turtle-packet-trace", "schema": 1, "record_kind": "packet",
+            "flow_class": flow_class,
             "monotonic_ns": time.monotonic_ns(), "interface": interface, "direction": direction,
-            "logical_path": mapping[(interface, direction)],
+            "logical_path": logical_path,
             "flow": {"source": source, "source_port": source_port,
                      "destination": destination, "destination_port": destination_port, "protocol": "tcp"},
             "tcp": {"sequence": sequence, "acknowledgement": acknowledgement,
@@ -1549,7 +1553,6 @@ def main() -> int:
     verify_parser.add_argument("--build", type=Path, required=True)
     verify_parser.add_argument("--pki", type=Path, required=True)
     verify_parser.add_argument("--output", type=Path, required=True)
-    verify_parser.add_argument("--require-supported", action="store_true")
     coordinator = sub.add_parser("_coordinator")
     coordinator.add_argument("mode", choices=("run",))
     coordinator.add_argument("--build", required=True)
@@ -1577,9 +1580,9 @@ def main() -> int:
         if args.command == "probe":
             return probe(args)
         if args.command == "run":
-            document = json.loads(args.profile.read_text())
+            document = flatten_experiment(json.loads(args.profile.read_text()))
             args.samples = resolve_samples(document, args.samples)
-            executable = args.build / "turtle"
+            executable = args.build / "turtle-local"
             if not executable.is_file() or not os.access(executable, os.X_OK):
                 raise SetupUnsupported("built turtle executable is missing or not executable")
             return outer_isolated("run", args)

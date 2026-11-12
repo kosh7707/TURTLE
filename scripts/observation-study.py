@@ -108,7 +108,7 @@ def main():
                         '--perf', args.perf.resolve(), '--build', build, '--pki', pki,
                         '--samples', args.samples, '--no-affinity', '--output', root / directory]
                 else:
-                    command = [build / 'turtle', 'run', '--client', 'openssl', '--server', 'openssl',
+                    command = [build / 'turtle-local', '--client', 'openssl', '--server', 'openssl',
                         '--adapter-dir', build / 'adapters', '--pki', pki, '--mutual-auth',
                         '--scenario', 'client-request', '--samples', args.samples, '--connections', 1,
                         '--warmups', 0, '--mode', 'timing' if condition == 'timing' else 'trace',

@@ -64,8 +64,10 @@ static __always_inline void emit(struct event *value)
 }
 static __always_inline int tls_flow(struct flow *flow)
 {
-    return (flow->saddr == bpf_htonl(0x0acb0102) && flow->daddr == bpf_htonl(0x0acb0202)) ||
-           (flow->saddr == bpf_htonl(0x0acb0202) && flow->daddr == bpf_htonl(0x0acb0102));
+    return (flow->saddr == bpf_htonl(0x0acb0102) && flow->daddr == bpf_htonl(0x0acb0202) &&
+            flow->dport == 44330) ||
+           (flow->saddr == bpf_htonl(0x0acb0202) && flow->daddr == bpf_htonl(0x0acb0102) &&
+            flow->sport == 44330);
 }
 
 SEC("tc")

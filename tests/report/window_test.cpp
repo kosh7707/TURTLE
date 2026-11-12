@@ -7,9 +7,9 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unistd.h>
 #include <utility>
 #include <vector>
-#include <unistd.h>
 
 namespace {
 using Json = nlohmann::json;
@@ -37,8 +37,12 @@ int main() {
     using namespace turtle::report;
     const Json header = {
         {"type", "sample"},
-        {"schema", 1},
-        {"measurement_contract_revision", 1},
+        {"schema", 3},
+        {"run_id", "window-fixture"},
+        {"context_id", "context"},
+        {"scenario", Json::object()},
+        {"adapter_connection", {{"mode", "module"}, {"tls_linkage", "fixture"}}},
+        {"measurement_contract_revision", 3},
         {"sample", 1},
         {"batch", 1},
         {"role", "server"},
@@ -50,18 +54,25 @@ int main() {
         {"perf_complete", true},
         {"loaded_context_size", 0},
         {"loaded_context_hash", ""},
-        {"declaration", {{"library", "fixture"}, {"version", "1"},
-                           {"build_options", "default"}, {"is_mock", true}}},
+        {"declaration",
+         {{"library", "fixture"},
+          {"version", "1"},
+          {"build_options", "default"},
+          {"is_mock", true}}},
         {"capabilities", Json::object()},
-        {"config", {{"tls", {{"framework_io", true}, {"application_bytes", 4}}},
-                    {"channel_observer", true}, {"client_adapter", "fixture-client"},
-                    {"server_adapter", "fixture-server"}, {"warmups", 0}}},
+        {"config",
+         {{"tls", {{"framework_io", true}, {"application_bytes", 4}}},
+          {"channel_observer", true},
+          {"implementation", "fixture-server"},
+          {"warmups", 0}}},
         {"availability", {{"io_events", {{"available", true}, {"reason", nullptr}}}}},
-        {"connections", Json::array({{{"index", 0},
-                                         {"warmup", false},
-                                         {"application_verified", true},
-                                         {"primary_window", {{"available", true},
-                                                             {"reason", nullptr}}}}})}};
+        {"connections",
+         Json::array({{{"index", 0},
+                       {"warmup", false},
+                       {"application_verified", true},
+                       {"scenario_completed", true},
+                       {"end_sequence", 12},
+                       {"primary_window", {{"available", true}, {"reason", nullptr}}}}})}};
     std::vector<Json> events = {
         event(1, 100, 10, "CALL_BEGIN", "handshake", 1),
         event(2, 110, 15, "IO_RECV_ENTER", "handshake", 1),
@@ -83,44 +94,43 @@ int main() {
         {"decryption_complete", true},
         {"client_sent",
          {{"decryption_complete", true},
-          {"records", Json::array({{{"index", 0}, {"stream_begin", 0},
-                                      {"stream_end", 100}}})},
-          {"messages", Json::array({{{"name", "ClientHello"}, {"records", {0}},
-                                       {"record_stream_ranges",
-                                        Json::array({{{"begin", 0}, {"end", 100}}})},
-                                       {"bundled", false}}})}}},
+          {"records", Json::array({{{"index", 0}, {"stream_begin", 0}, {"stream_end", 100}}})},
+          {"messages",
+           Json::array({{{"name", "ClientHello"},
+                         {"records", {0}},
+                         {"record_stream_ranges", Json::array({{{"begin", 0}, {"end", 100}}})},
+                         {"bundled", false}}})}}},
         {"server_sent",
          {{"decryption_complete", true},
           {"records", Json::array({{{"index", 0}, {"stream_begin", 0}, {"stream_end", 40}},
-                                     {{"index", 1}, {"stream_begin", 40}, {"stream_end", 46}},
-                                     {{"index", 2}, {"stream_begin", 46}, {"stream_end", 100}},
-                                     {{"index", 3}, {"stream_begin", 100}, {"stream_end", 120}},
-                                     {{"index", 4}, {"stream_begin", 120},
-                                      {"stream_end", 160}}})},
-          {"messages", Json::array({{{"name", "ServerHello"}, {"records", {0}},
-                                       {"record_stream_ranges",
-                                        Json::array({{{"begin", 0}, {"end", 40}}})},
-                                       {"bundled", false}},
-                                      {{"name", "ChangeCipherSpec"}, {"records", {1}},
-                                       {"record_stream_ranges",
-                                        Json::array({{{"begin", 40}, {"end", 46}}})},
-                                       {"bundled", false}},
-                                      {{"name", "EncryptedExtensions"}, {"records", {2}},
-                                       {"record_stream_ranges",
-                                        Json::array({{{"begin", 46}, {"end", 100}}})},
-                                       {"bundled", false}},
-                                      {{"name", "Certificate"}, {"records", {2, 3}},
-                                       {"record_stream_ranges",
-                                        Json::array({{{"begin", 46}, {"end", 120}}})},
-                                       {"bundled", true}},
-                                      {{"name", "Finished"}, {"records", {4}},
-                                       {"record_stream_ranges",
-                                        Json::array({{{"begin", 120}, {"end", 160}}})},
-                                       {"bundled", false}}})}}}};
+                                   {{"index", 1}, {"stream_begin", 40}, {"stream_end", 46}},
+                                   {{"index", 2}, {"stream_begin", 46}, {"stream_end", 100}},
+                                   {{"index", 3}, {"stream_begin", 100}, {"stream_end", 120}},
+                                   {{"index", 4}, {"stream_begin", 120}, {"stream_end", 160}}})},
+          {"messages",
+           Json::array({{{"name", "ServerHello"},
+                         {"records", {0}},
+                         {"record_stream_ranges", Json::array({{{"begin", 0}, {"end", 40}}})},
+                         {"bundled", false}},
+                        {{"name", "ChangeCipherSpec"},
+                         {"records", {1}},
+                         {"record_stream_ranges", Json::array({{{"begin", 40}, {"end", 46}}})},
+                         {"bundled", false}},
+                        {{"name", "EncryptedExtensions"},
+                         {"records", {2}},
+                         {"record_stream_ranges", Json::array({{{"begin", 46}, {"end", 100}}})},
+                         {"bundled", false}},
+                        {{"name", "Certificate"},
+                         {"records", {2, 3}},
+                         {"record_stream_ranges", Json::array({{{"begin", 46}, {"end", 120}}})},
+                         {"bundled", true}},
+                        {{"name", "Finished"},
+                         {"records", {4}},
+                         {"record_stream_ranges", Json::array({{{"begin", 120}, {"end", 160}}})},
+                         {"bundled", false}}})}}}};
 
     const auto connection = partition(header, events).at(0);
-    const auto attribution =
-        record_computation_attribution(header, events, decoded, connection);
+    const auto attribution = record_computation_attribution(header, events, decoded, connection);
     assert(attribution["available"] == true && attribution["reason"].is_null());
     assert(attribution["scope"] == "primary_window_computation_segments");
     assert(attribution["segments"].size() == 5);
@@ -141,8 +151,7 @@ int main() {
     assert(completed_receive["end"]["io_return_event_sequence"] == 7);
     assert(completed_receive["end"]["record_indices"] == Json::array({0, 1, 2}));
     assert(completed_receive["end"]["names"] ==
-           Json::array({"ServerHello", "ChangeCipherSpec", "EncryptedExtensions",
-                        "Certificate"}));
+           Json::array({"ServerHello", "ChangeCipherSpec", "EncryptedExtensions", "Certificate"}));
     assert(completed_receive["end"]["bundled"] == true);
     const auto& partial_followup = attribution["segments"][2];
     assert(partial_followup["start"].is_null());
@@ -159,10 +168,10 @@ int main() {
         {{"index", 6}, {"stream_begin", 180}, {"stream_end", 200}});
     for (const auto index : {5, 6})
         duplicate_name_decoded["server_sent"]["messages"].push_back(
-            {{"name", "NewSessionTicket"}, {"records", {index}},
+            {{"name", "NewSessionTicket"},
+             {"records", {index}},
              {"record_stream_ranges",
-              Json::array({{{"begin", index == 5 ? 160 : 180},
-                            {"end", index == 5 ? 180 : 200}}})},
+              Json::array({{{"begin", index == 5 ? 160 : 180}, {"end", index == 5 ? 180 : 200}}})},
              {"bundled", false}});
     auto duplicate_name_events = events;
     duplicate_name_events[6]["stream_end"] = 200;
@@ -179,27 +188,29 @@ int main() {
     spanning_message_decoded["server_sent"]["records"] =
         Json::array({{{"index", 0}, {"stream_begin", 0}, {"stream_end", 40}},
                      {{"index", 1}, {"stream_begin", 40}, {"stream_end", 100}}});
-    spanning_message_decoded["server_sent"]["messages"] = Json::array(
-        {{{"name", "Certificate"}, {"records", {0, 1}},
-          {"record_stream_ranges", Json::array({{{"begin", 0}, {"end", 100}}})},
-          {"bundled", false}}});
-    const auto spanning_message = record_computation_attribution(
-        header, events, spanning_message_decoded, connection);
-    assert(spanning_message["segments"][1]["end"]["names"] ==
-           Json::array({"Certificate"}));
+    spanning_message_decoded["server_sent"]["messages"] =
+        Json::array({{{"name", "Certificate"},
+                      {"records", {0, 1}},
+                      {"record_stream_ranges", Json::array({{{"begin", 0}, {"end", 100}}})},
+                      {"bundled", false}}});
+    const auto spanning_message =
+        record_computation_attribution(header, events, spanning_message_decoded, connection);
+    assert(spanning_message["segments"][1]["end"]["names"] == Json::array({"Certificate"}));
     assert(spanning_message["segments"][1]["end"]["bundled"] == false);
 
     auto earlier_shared_record = decoded;
     earlier_shared_record["server_sent"]["records"] =
         Json::array({{{"index", 0}, {"stream_begin", 0}, {"stream_end", 40}},
                      {{"index", 1}, {"stream_begin", 40}, {"stream_end", 100}}});
-    earlier_shared_record["server_sent"]["messages"] = Json::array(
-        {{{"name", "SpanningA"}, {"records", {0, 1}},
-          {"record_stream_ranges", Json::array({{{"begin", 0}, {"end", 100}}})},
-          {"bundled", true}},
-         {{"name", "EarlierOnlyB"}, {"records", {0}},
-          {"record_stream_ranges", Json::array({{{"begin", 0}, {"end", 40}}})},
-          {"bundled", true}}});
+    earlier_shared_record["server_sent"]["messages"] =
+        Json::array({{{"name", "SpanningA"},
+                      {"records", {0, 1}},
+                      {"record_stream_ranges", Json::array({{{"begin", 0}, {"end", 100}}})},
+                      {"bundled", true}},
+                     {{"name", "EarlierOnlyB"},
+                      {"records", {0}},
+                      {"record_stream_ranges", Json::array({{{"begin", 0}, {"end", 40}}})},
+                      {"bundled", true}}});
     auto later_record_only = events;
     later_record_only[6]["stream_begin"] = 40;
     later_record_only[6]["stream_end"] = 100;
@@ -207,8 +218,7 @@ int main() {
     const auto later_record_partition = partition(header, later_record_only).at(0);
     const auto boundary_local_bundling = record_computation_attribution(
         header, later_record_only, earlier_shared_record, later_record_partition);
-    assert(boundary_local_bundling["segments"][1]["end"]["names"] ==
-           Json::array({"SpanningA"}));
+    assert(boundary_local_bundling["segments"][1]["end"]["names"] == Json::array({"SpanningA"}));
     assert(boundary_local_bundling["segments"][1]["end"]["bundled"] == false);
 
     const auto& call_end = attribution["segments"][3];
@@ -229,41 +239,39 @@ int main() {
     auto missing_cpu_events = events;
     missing_cpu_events[5]["thread_cpu_ns"] = nullptr;
     const auto missing_cpu_partition = partition(header, missing_cpu_events).at(0);
-    const auto missing_cpu = record_computation_attribution(
-        header, missing_cpu_events, decoded, missing_cpu_partition);
+    const auto missing_cpu =
+        record_computation_attribution(header, missing_cpu_events, decoded, missing_cpu_partition);
     assert(missing_cpu["segments"][1]["elapsed_ns"] == 70);
     assert(missing_cpu["segments"][1]["thread_cpu_ns"].is_null());
-    assert(missing_cpu["segments"][1]["thread_cpu_reason"] ==
-           "thread_cpu_snapshot_missing");
+    assert(missing_cpu["segments"][1]["thread_cpu_reason"] == "thread_cpu_snapshot_missing");
     auto regressed_cpu_events = events;
     regressed_cpu_events[5]["thread_cpu_ns"] = 20;
     const auto regressed_cpu_partition = partition(header, regressed_cpu_events).at(0);
-    const auto regressed_cpu = record_computation_attribution(
-        header, regressed_cpu_events, decoded, regressed_cpu_partition);
+    const auto regressed_cpu = record_computation_attribution(header, regressed_cpu_events, decoded,
+                                                              regressed_cpu_partition);
     assert(regressed_cpu["segments"][1]["elapsed_ns"] == 70);
     assert(regressed_cpu["segments"][1]["thread_cpu_ns"].is_null());
-    assert(regressed_cpu["segments"][1]["thread_cpu_reason"] ==
-           "thread_cpu_regression");
+    assert(regressed_cpu["segments"][1]["thread_cpu_reason"] == "thread_cpu_regression");
     auto unsuccessful_send = events;
     unsuccessful_send[6]["result"] = 1;
     const auto unsuccessful_partition = partition(header, unsuccessful_send).at(0);
-    const auto unsuccessful_attribution = record_computation_attribution(
-        header, unsuccessful_send, decoded, unsuccessful_partition);
+    const auto unsuccessful_attribution =
+        record_computation_attribution(header, unsuccessful_send, decoded, unsuccessful_partition);
     assert(unsuccessful_attribution["segments"][1]["end"].is_null());
     auto zero_byte_success = events;
     zero_byte_success[6]["stream_end"] = 0;
     zero_byte_success[6]["transferred"] = 0;
     const auto zero_byte_partition = partition(header, zero_byte_success).at(0);
-    const auto zero_byte_attribution = record_computation_attribution(
-        header, zero_byte_success, decoded, zero_byte_partition);
+    const auto zero_byte_attribution =
+        record_computation_attribution(header, zero_byte_success, decoded, zero_byte_partition);
     assert(zero_byte_attribution["segments"][1]["end"].is_null());
     auto want_then_success = events;
     want_then_success[6]["result"] = 1;
     want_then_success[6]["stream_end"] = 0;
     want_then_success[6]["transferred"] = 0;
     const auto retry_partition = partition(header, want_then_success).at(0);
-    const auto retry_attribution = record_computation_attribution(
-        header, want_then_success, decoded, retry_partition);
+    const auto retry_attribution =
+        record_computation_attribution(header, want_then_success, decoded, retry_partition);
     assert(retry_attribution["segments"][1]["end"].is_null());
     assert(retry_attribution["segments"][2]["end"]["kind"] == "before_send");
     assert(retry_attribution["segments"][2]["end"]["io_return_event_sequence"] == 9);
@@ -274,8 +282,7 @@ int main() {
         header, foreign_call_return, decoded, foreign_call_partition);
     assert(foreign_call_attribution["segments"][1]["end"].is_null());
 
-    const auto server_window =
-        server_client_hello_to_finished_send_window(header, events, decoded);
+    const auto server_window = server_client_hello_to_finished_send_window(header, events, decoded);
     assert(server_window["definition"] ==
            "server_client_hello_receive_return_to_server_finished_send_return");
     assert(server_window["available"] == true && server_window["reason"].is_null());
@@ -287,12 +294,12 @@ int main() {
 
     auto failed_receive = events;
     failed_receive[2]["result"] = 1;
-    assert(server_client_hello_to_finished_send_window(header, failed_receive, decoded)
-               ["reason"] == "server_window_io_boundary_unavailable");
+    assert(server_client_hello_to_finished_send_window(header, failed_receive, decoded)["reason"] ==
+           "server_window_io_boundary_unavailable");
     auto failed_send = events;
     failed_send[8]["result"] = 1;
-    assert(server_client_hello_to_finished_send_window(header, failed_send, decoded)
-               ["reason"] == "server_window_io_boundary_unavailable");
+    assert(server_client_hello_to_finished_send_window(header, failed_send, decoded)["reason"] ==
+           "server_window_io_boundary_unavailable");
     auto server_cpu_missing = events;
     server_cpu_missing[8]["thread_cpu_ns"] = nullptr;
     const auto elapsed_without_server_cpu =
@@ -300,12 +307,11 @@ int main() {
     assert(elapsed_without_server_cpu["available"] == true &&
            elapsed_without_server_cpu["elapsed_ns"] == 140);
     assert(elapsed_without_server_cpu["thread_cpu_ns"].is_null() &&
-           elapsed_without_server_cpu["thread_cpu_reason"] ==
-               "thread_cpu_snapshot_missing");
+           elapsed_without_server_cpu["thread_cpu_reason"] == "thread_cpu_snapshot_missing");
 
     auto observer_off = header;
-    observer_off["availability"]["io_events"] = {
-        {"available", false}, {"reason", "channel_observer_disabled"}};
+    observer_off["availability"]["io_events"] = {{"available", false},
+                                                 {"reason", "channel_observer_disabled"}};
     const auto off_attribution =
         record_computation_attribution(observer_off, events, decoded, connection);
     assert(off_attribution["available"] == false &&
@@ -331,8 +337,7 @@ int main() {
     const auto sequence_missing_attribution = record_computation_attribution(
         header, sequence_missing, decoded, sequence_missing_partition);
     assert(sequence_missing_attribution["available"] == false &&
-           sequence_missing_attribution["reason"] ==
-               "primary_segment_event_mapping_unavailable");
+           sequence_missing_attribution["reason"] == "primary_partition_unavailable");
 
     auto mixed_connections = events;
     auto foreign_receive = event(90, 1, 1, "IO_RECV_RETURN", "handshake", 1, 0, 100, 100);
@@ -356,7 +361,11 @@ int main() {
         for (const auto& row : events)
             raw << row.dump() << '\n';
         std::ofstream decoded_out(directory / "server.decoded.json");
-        decoded_out << Json({{"schema", 1}, {"sample", 1}, {"role", "server"},
+        decoded_out << Json({{"schema", 1},
+                             {"sample", 1},
+                             {"role", "server"},
+                             {"run_id", "window-fixture"},
+                             {"context_id", "context"},
                              {"connections", Json::array({decoded})}})
                            .dump(2)
                     << '\n';
@@ -365,8 +374,8 @@ int main() {
     const auto& reported_connection = summary["samples"][0]["connections"][0];
     assert(reported_connection["record_computation_attribution"]["available"] == true);
     assert(reported_connection["server_client_hello_to_finished_send"]["elapsed_ns"] == 140);
-    assert(summary["groups"][0]["metrics"]
-                  ["server_client_hello_to_finished_send_elapsed_ns"]["count"] == 1);
+    assert(summary["groups"][0]["metrics"]["server_client_hello_to_finished_send_elapsed_ns"]
+                  ["count"] == 1);
     assert(summary["groups"][0]["server_client_hello_to_finished_send"]["definition"] ==
            "server_client_hello_receive_return_to_server_finished_send_return");
     assert(!summary["groups"][0]["metrics"].contains("record_computation_attribution"));

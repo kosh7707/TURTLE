@@ -4,6 +4,6 @@ target_compile_options(turtle_lookup_test PRIVATE -UNDEBUG)
 add_test(NAME lookup_contract COMMAND turtle_lookup_test)
 
 add_executable(turtle_lookup_tcp_test lookup_tcp_test.cpp)
-target_link_libraries(turtle_lookup_tcp_test PRIVATE turtle_lookup turtle_measure turtle_transport)
+target_link_libraries(turtle_lookup_tcp_test PRIVATE turtle_lookup turtle_measure turtle_transport turtle_control)
 target_compile_options(turtle_lookup_tcp_test PRIVATE -UNDEBUG)
 add_test(NAME lookup_real_tcp COMMAND turtle_lookup_tcp_test)

@@ -1,0 +1,24 @@
+{
+  "type": "turtle-endpoint-profile",
+  "schema": 1,
+  "name": "independent-mutual-auth",
+  "scenario": {
+    "tls": {
+      "scenario": "client-request",
+      "mutual_auth": true
+    },
+    "measurement": {
+      "warmups": 0,
+      "connections": 1,
+      "timeout_ms": 60000
+    }
+  },
+  "endpoint": {
+    "tls": {
+      "ca_file": "../../pki/default/ca.pem",
+      "client_certificate": "../../pki/default/client-chain.pem",
+      "client_key": "../../pki/default/client.key"
+    },
+    "measurement": {}
+  }
+}

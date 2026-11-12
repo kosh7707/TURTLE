@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Environment-safe integration checks for the netem coordinator."""
 
+from profiles import experiment_profile, flatten_experiment
 import importlib.util
 import json
 import os
 from pathlib import Path
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -79,6 +82,34 @@ sock.close(); raise SystemExit(1)
 def main():
     script = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).parents[2] / "scripts/netem-study.py"
     runner = load_runner(script)
+    # Ordinary TCP may allocate a client port equal to a data/control listener.
+    # Exercise both router interfaces in each direction, including lookup.
+    for prefix, client_ip, server_ip, client_if, server_if, data_port in (
+            ("tls", "10.203.1.2", "10.203.2.2", "rctls", "rstls", 44330),
+            ("ca", "10.204.1.2", "10.204.2.2", "rcca", "rca0", 44332)):
+        for service_port in (data_port, data_port + 1, 9999):
+            for client_port in (data_port, data_port + 1, 55000):
+                for c2s in (True, False):
+                    src, dst = (client_ip, server_ip) if c2s else (server_ip, client_ip)
+                    sport, dport = (client_port, service_port) if c2s else (service_port, client_port)
+                    frame = bytearray(57)
+                    struct.pack_into("!H", frame, 12, 0x0800)
+                    frame[14], frame[23] = 0x45, 6
+                    struct.pack_into("!H", frame, 16, 43)
+                    frame[26:30], frame[30:34] = socket.inet_aton(src), socket.inet_aton(dst)
+                    struct.pack_into("!HHII", frame, 34, sport, dport, 1234, 5678)
+                    frame[46], frame[47], frame[54:] = 0x50, 0x18, b"abc"
+                    for interface, outgoing in ((client_if, not c2s), (server_if, c2s)):
+                        row = runner.decode_packet(frame, interface, outgoing)
+                        if service_port == 9999:
+                            check(row is None, "unrelated TCP was counted as test traffic")
+                            continue
+                        control = service_port == data_port + 1
+                        path = ("control_" if control else "") + prefix + ("_c2s" if c2s else "_s2c")
+                        check(row["logical_path"] == path and
+                              row["flow_class"] == ("control" if control else "data") and
+                              row["tcp"]["payload_length"] == 3,
+                              f"client port {client_port} confused service {service_port}: {row}")
     with tempfile.TemporaryDirectory(prefix="turtle-netem-test-") as temporary:
         root = Path(temporary)
         object_file = root / "object.pem"; object_file.write_bytes(b"line one\nline two\n")
@@ -96,9 +127,9 @@ def main():
         check(duplicate.returncode != 0, "snapshot overwrote an existing artifact")
 
         profile = runner.default_net_profile()
-        check(runner.validate_net_profile(profile) == profile, "valid fixed profile changed")
+        check(runner.validate_net_profile(profile, True) == profile, "valid fixed profile changed")
         bad = json.loads(json.dumps(profile)); bad["paths"].pop("tls_s2c")
-        try: runner.validate_net_profile(bad)
+        try: runner.validate_net_profile(bad, True)
         except ValueError: pass
         else: raise RuntimeError("missing directional path was accepted")
         tls_profile = json.loads(json.dumps(profile))
@@ -107,7 +138,7 @@ def main():
         check(runner.validate_net_profile(tls_profile) == tls_profile,
               "valid TLS-only profile was rejected")
         shaped = json.loads(json.dumps(tls_profile))
-        shaped.update(schema=2, initial_cwnd={"client": 4, "server": None})
+        shaped.update(schema=3, initial_cwnd={"client": 4, "server": None})
         for policy in shaped["paths"].values():
             policy["rate_bps"] = 1000000
         check(runner.validate_net_profile(shaped) == shaped, "rate and cwnd profile changed")
@@ -125,11 +156,14 @@ def main():
                     "raw": [{"root": True, "options": {"rate": {"rate": 125000}}}]}}
         check(runner.OwnedTopology._stable_qdisc(readback)["tls_s2c"]["rate_bps"] == 1000000,
               "kernel byte rate was not converted to bits per second")
-        legacy_profile = json.loads(json.dumps(profile))
-        legacy_profile["paths"]["ca_c2s"]["delay_ms"] = 777
-        legacy_profile["paths"]["ca_s2c"]["loss_percent"] = 99.0
-        check(runner.active_net_profile(runner.validate_net_profile(legacy_profile), False) == tls_profile,
-              "inactive legacy CA settings entered the pure TLS condition identity")
+        try: runner.validate_net_profile(profile, False)
+        except ValueError: pass
+        else: raise RuntimeError("pure TLS accepted inactive lookup paths")
+        for obsolete in (1, 2):
+            old = dict(tls_profile, schema=obsolete)
+            try: runner.validate_net_profile(old)
+            except ValueError: pass
+            else: raise RuntimeError("old network profile was accepted")
         try: runner.validate_net_profile(tls_profile, True)
         except ValueError: pass
         else: raise RuntimeError("lookup topology accepted a TLS-only network profile")
@@ -143,10 +177,10 @@ def main():
               runner.profile_lookup_enabled({"lookup": {"enabled": True}}),
               "lookup.enabled default or boolean parsing changed")
         seeded = json.loads(json.dumps(profile)); seeded["loss_seed"] = 7
-        try: runner.validate_net_profile(seeded)
+        try: runner.validate_net_profile(seeded, True)
         except runner.SetupUnsupported: pass
         else: raise RuntimeError("unsupported loss seed was silently accepted")
-        check(runner.resolve_samples({}, None) == 1000, "runner no longer matches the core sample default")
+        check(runner.resolve_samples({}, None) == 1, "runner no longer matches the core sample default")
         check(runner.resolve_samples({"measurement": {"samples": 17}}, None) == 17,
               "profile sample count was not used")
         check(runner.resolve_samples({"measurement": {"samples": 17}}, 3) == 3,
@@ -199,7 +233,7 @@ def main():
         topology.output = cleanup_dir; topology.marker = None; topology.observer = None
         topology.helpers = {}; first_fd, first_write = os.pipe(); second_fd, second_write = os.pipe()
         topology.ns_fds = {"first": first_fd, "second": second_fd}
-        topology.provenance = {"type": "turtle-network-provenance", "schema": 1,
+        topology.provenance = {"type": "turtle-network-provenance", "schema": 2,
                                "status": "complete", "reason": None,
                                "cleanup": [], "lifecycle": {}}
         real_close = os.close; closed = []
@@ -217,7 +251,7 @@ def main():
         save_topology = runner.OwnedTopology.__new__(runner.OwnedTopology)
         save_topology.output = cleanup_dir; save_topology.marker = None; save_topology.observer = None
         save_topology.helpers = {}; save_topology.ns_fds = {}
-        save_topology.provenance = {"type": "turtle-network-provenance", "schema": 1,
+        save_topology.provenance = {"type": "turtle-network-provenance", "schema": 2,
                                     "status": "complete", "reason": None,
                                     "cleanup": [], "lifecycle": {}}
         save_topology.save = lambda: (_ for _ in ()).throw(OSError("injected save failure"))
@@ -232,10 +266,10 @@ def main():
 
         def write_integrity_provenance(directory, *, unchanged=True, cleanup_failed=False):
             directory.mkdir()
-            value = {"type": "turtle-network-provenance", "schema": 1,
+            value = {"type": "turtle-network-provenance", "schema": 2,
                      "status": "cleanup-failed" if cleanup_failed else "complete",
                      "reason": "cleanup failed" if cleanup_failed else None,
-                     "director": {"returncode": 0},
+                     "runner": {"returncode": 0},
                      "host_network_identity": {
                          "before": {"supported": True}, "after": {"supported": True},
                          "unchanged": unchanged},
@@ -291,9 +325,9 @@ def main():
                                   "failure_phase": "listener"}],
               "pre-scenario setup timeout was treated as a zero or missing scenario measurement")
 
-        build = root / "build"; build.mkdir(); fake_turtle(build / "turtle")
-        profile_file = root / "profile.json"; profile_file.write_text(json.dumps({
-            "measurement": {"samples": 1}, "lookup": {"enabled": True}}))
+        build = root / "build"; build.mkdir(); fake_turtle(build / "turtle-local")
+        profile_file = root / "profile.json"; profile_file.write_text(json.dumps(experiment_profile(**{
+            "measurement": {"samples": 1}, "lookup": {"enabled": True}})))
         net_file = root / "net.json"; net_file.write_text(json.dumps(profile))
         output = root / "run"
         result = subprocess.run([sys.executable, script, "run", "--build", build,
@@ -306,11 +340,11 @@ def main():
         integrity_ok, integrity_reasons = runner.evaluate_run_integrity(
             {"output": str(output), "returncode": 0, "gate": "diagnostic"})
         check(integrity_ok, f"complete owned run failed integrity: {integrity_reasons}")
-        check(provenance["director"]["pass_fds"] == [
+        check(provenance["runner"]["pass_fds"] == [
             provenance["lifecycle"]["helpers"][x]["fd"] for x in ("client", "server", "ca")
         ] + [json.loads((output / "network-manifest.json").read_text())["phase_control_fd"]],
               "pass_fds and manifest integer identities differ")
-        check(not provenance["director"]["router_fd_passed"], "router namespace fd leaked to director")
+        check(not provenance["runner"]["router_fd_passed"], "router namespace fd leaked to runner")
         check(provenance["lifecycle"]["namespace_fds_closed"], "namespace fds were not closed")
         text = json.dumps(provenance["condition_identity"])
         check(all(field not in text for field in ('"handle"', '"drops"', '"packets"', '"pid"', '"fd"')),
@@ -334,8 +368,8 @@ def main():
               "rejected duplicate run modified prior output artifacts")
 
         pure_profile_file = root / "pure-profile.json"
-        pure_profile_file.write_text(json.dumps({"measurement": {"samples": 1},
-                                                 "lookup": {"enabled": False}}))
+        pure_profile_file.write_text(json.dumps(experiment_profile(**{"measurement": {"samples": 1},
+                                                 "lookup": {"enabled": False}})))
         pure_net_file = root / "pure-net.json"; pure_net_file.write_text(json.dumps(tls_profile))
         pure_output = root / "pure-run"
         pure_result = subprocess.run([sys.executable, script, "run", "--build", build,
@@ -362,7 +396,7 @@ def main():
         command_text = json.dumps(pure_commands)
         check(all(name not in command_text for name in ("cca", "rcca", "ca0", "rca0", "10.203.3", "10.203.4")),
               "pure TLS issued a CA link, route, offload, MTU, or qdisc command")
-        check(pure_provenance["director"]["pass_fds"] == [
+        check(pure_provenance["runner"]["pass_fds"] == [
                   pure_provenance["lifecycle"]["helpers"][x]["fd"] for x in ("client", "server")
               ] + [pure_manifest["phase_control_fd"]],
               "pure TLS passed an unexpected namespace fd")
@@ -382,26 +416,26 @@ def main():
         unsupported_provenance = json.loads((unsupported_output / "network-provenance.json").read_text())
         check(unsupported_provenance["status"] == "unsupported", "unsupported setup provenance missing")
 
-        # A failed director may close the phase fd immediately before exit.
+        # A failed runner may close the phase fd immediately before exit.
         # Preserve skipped/trailing windows, but do not misclassify prompt exit
         # as an observer protocol failure.
         partial_build = root / "partial-build"; partial_build.mkdir()
-        fake_partial_timeout_turtle(partial_build / "turtle")
+        fake_partial_timeout_turtle(partial_build / "turtle-local")
         partial_output = root / "partial-run"
         partial_result = subprocess.run([sys.executable, script, "run", "--build", partial_build,
                                          "--profile", profile_file, "--net-profile", net_file,
                                          "--samples", "1", "--output", partial_output])
-        check(partial_result.returncode == 1, "failed director return code was not retained")
+        check(partial_result.returncode == 1, "failed runner return code was not retained")
         partial_provenance = json.loads((partial_output / "network-provenance.json").read_text())
-        check(partial_provenance["status"] == "director-failed" and partial_provenance["reason"] is None,
+        check(partial_provenance["status"] == "runner-failed" and partial_provenance["reason"] is None,
               "prompt EOF/exit race was misclassified as runner error")
         check(partial_provenance["partial_phase_windows"] == [
             "1:setup:end:missing", "1:scenario:begin:missing", "1:scenario:end:missing",
             "1:cleanup:end:missing"], "partial phase windows were not preserved")
         check(partial_provenance["lifecycle"]["namespace_fds_closed"], "partial exit leaked namespace FDs")
 
-        # EOF while an owned descendant is alive must kill the director group.
-        eof_build = root / "eof-build"; eof_build.mkdir(); fake_hanging_turtle(eof_build / "turtle", True)
+        # EOF while an owned descendant is alive must kill the runner group.
+        eof_build = root / "eof-build"; eof_build.mkdir(); fake_hanging_turtle(eof_build / "turtle-local", True)
         eof_output = root / "eof-run"
         started = __import__('time').monotonic()
         eof_result = subprocess.run([sys.executable, script, "run", "--build", eof_build,
@@ -413,7 +447,7 @@ def main():
         check(not Path(f"/proc/{descendant}").exists(), "owned descendant survived phase EOF")
 
         # Direct SIGINT to the coordinator exercises the same bounded cleanup.
-        sig_build = root / "sig-build"; sig_build.mkdir(); fake_hanging_turtle(sig_build / "turtle", False)
+        sig_build = root / "sig-build"; sig_build.mkdir(); fake_hanging_turtle(sig_build / "turtle-local", False)
         sig_output = root / "sig-run"
         command = ["unshare", "--user", "--map-root-user", "--net", "--", sys.executable,
                    str(script), "_coordinator", "run", "--build", str(sig_build),

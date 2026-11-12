@@ -30,6 +30,16 @@ struct FakeMeter {
     }
 };
 
+struct SequenceMeter {
+    std::uint64_t tick = 0;
+    turtle::model::Snapshot read() noexcept {
+        turtle::model::Snapshot result;
+        result.monotonic_ns = ++tick;
+        result.thread_cpu_ns = tick;
+        return result;
+    }
+};
+
 } // namespace
 
 int main() {
@@ -101,4 +111,31 @@ int main() {
     assert(short_buffer.events().size() == 1);
     assert(short_buffer.events()[0].snapshot.monotonic_ns == 101);
     assert(short_buffer.overflowed() && short_buffer.dropped() == 2);
+
+    // Two partial successful submissions around a retry contribute 2+0+1
+    // bytes. Buffer acceptance itself is not a socket submission.
+    turtle::record::Buffer partial_buffer({16, 3, 0, 1});
+    SequenceMeter partial_meter;
+    turtle::lifecycle::detail::Capture<SequenceMeter> partial{partial_meter, partial_buffer};
+    auto observation = returned;
+    observation.sending = true;
+    observation.kernel_realtime_ns = 0;
+    observation.buffered = true;
+    decltype(partial)::observe(&partial, observation);
+    assert(partial.sent == 0 && partial_buffer.bytes(0, Direction::Sent).empty());
+    observation.buffered = false;
+    for (const auto count : {2U, 0U, 1U}) {
+        observation.data = bytes.data() + partial.sent;
+        observation.requested = bytes.size() - partial.sent;
+        observation.entering = true;
+        decltype(partial)::observe(&partial, observation);
+        observation.entering = false;
+        observation.result = {count ? IoStatus::Ok : IoStatus::WantWrite, count, 0};
+        decltype(partial)::observe(&partial, observation);
+    }
+    assert(partial.sent == 3 && partial.received == 0 && partial.first_receive == 0);
+    const auto stream = partial_buffer.bytes(0, Direction::Sent);
+    assert(stream.size() == 3 && stream[0] == 7 && stream[1] == 8 && stream[2] == 9);
+    assert(partial_buffer.events()[4].transferred == 0);
+    assert(partial_buffer.events()[4].stream_begin == 2 && partial_buffer.events()[4].stream_end == 2);
 }

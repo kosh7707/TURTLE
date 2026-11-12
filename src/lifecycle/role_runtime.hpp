@@ -15,12 +15,14 @@ class Snapshot;
 
 namespace turtle::lifecycle::detail {
 
+class PeerSession;
+
 std::vector<std::uint8_t> load_serialized_context(const model::RunConfig& config, Role role);
 
 int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample,
-                 const std::string& directory, int listener, const tcp::DialAddress& address,
-                 int control_fd, control::Deadline deadline, std::span<const std::uint8_t> saved,
-                 const lookup::Snapshot* reference, const lookup::Snapshot* initial,
-                 std::vector<int> lookup_sockets = {});
+                 const std::string& directory, PeerSession& session, const tcp::DialAddress& address,
+                 control::Deadline deadline, AdapterEntry builtin,
+                 std::span<const std::uint8_t> saved, const lookup::Snapshot* reference,
+                 const lookup::Snapshot* initial);
 
 } // namespace turtle::lifecycle::detail

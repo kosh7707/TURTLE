@@ -7,8 +7,8 @@
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <string>
-#include <vector>
 #include <unistd.h>
+#include <vector>
 namespace {
 struct Capture {
     std::string keys;
@@ -148,31 +148,35 @@ int main() {
         assert(connection["client_sent"]["decryption_complete"] == false);
     };
     nlohmann::json native = {
-        {"schema", 1}, {"type", "sample"}, {"sample", 1}, {"role", "client"},
+        {"schema", 3},
+        {"measurement_contract_revision", 3},
+        {"run_id", "decode-fixture"},
+        {"context_id", "context"},
+        {"type", "sample"},
+        {"sample", 1},
+        {"role", "client"},
         {"connections", nlohmann::json::array({{{"index", 0}}})},
-        {"availability", {{"tls_stream", {{"available", false},
-                                             {"reason", "native_socket_io_not_observed"}}}}}};
+        {"availability",
+         {{"tls_stream", {{"available", false}, {"reason", "native_socket_io_not_observed"}}}}}};
     check_unavailable("client", native, "native_socket_io_not_observed");
     auto observer_off = native;
-    observer_off["availability"]["tls_stream"]["reason"] =
-        "channel_observer_disabled";
+    observer_off["availability"]["tls_stream"]["reason"] = "channel_observer_disabled";
     observer_off["observation_level"] = "observer-disabled";
-    observer_off["config"] = { {"channel_observer", false},
-                                {"tls", {{"framework_io", true}}} };
+    observer_off["config"] = {{"channel_observer", false}, {"tls", {{"framework_io", true}}}};
     check_unavailable("observer-off", observer_off, "channel_observer_disabled");
-    observer_off.erase("availability");
-    check_unavailable("observer-off-without-availability", observer_off,
-                      "channel_observer_disabled");
-    observer_off.erase("config");
-    check_unavailable("observer-off-marker-only", observer_off,
-                      "channel_observer_disabled");
-    native.erase("availability");
-    native["observation_level"] = "library-only";
-    native["config"] = {{"tls", {{"framework_io", false}}}};
-    check_unavailable("legacy", native, "legacy_native_socket_io_not_observed");
-    native["config"]["channel_observer"] = false;
-    check_unavailable("legacy-native-observer-off", native,
-                      "legacy_native_socket_io_not_observed");
+    for (int schema : {1, 2}) {
+        auto old = native;
+        old["schema"] = schema;
+        const auto raw = dir / "unsupported.jsonl";
+        std::ofstream(raw) << old.dump() << '\n';
+        bool rejected = false;
+        try {
+            turtle::interpret::analyze(raw, dir / "unsupported.decoded.json");
+        } catch (const std::runtime_error& error) {
+            rejected = std::string(error.what()).find("requires schema 3") != std::string::npos;
+        }
+        assert(rejected);
+    }
     std::filesystem::remove_all(dir);
     std::cout << "real TLS 1.3 decryption and callback comparison passed\n";
 }

@@ -169,10 +169,10 @@ int main(int argc, char** argv) {
             poll(fds, 2, 1);
         };
         Step cs = Step::WantRead, ss = Step::WantRead;
-        while (cs != Step::Done || ss != Step::Done) {
-            if (cs != Step::Done)
+        while (cs != Step::Complete || ss != Step::Complete) {
+            if (cs != Step::Complete)
                 cs = client.api.handshake_step(client.connection);
-            if (ss != Step::Done)
+            if (ss != Step::Complete)
                 ss = server.api.handshake_step(server.connection);
             check(cs != Step::Failed,
                   std::string("client handshake: ") + client.api.error(client.connection));

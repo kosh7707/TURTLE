@@ -67,8 +67,7 @@ int main() {
         info.declaration.read_ahead = false;
         info.declaration.read_ahead_note = "exact-needed receive policy";
         info.config.flush_grace_ms = 700;
-        info.config.failure_policy = model::FailurePolicy::FixedAttempts;
-        info.config.ca_cpu = 11;
+        info.config.cpu = 11;
         info.config.channel_observer = false;
         info.config.perf_scope = model::PerfScope::UserKernel;
         info.capabilities.perf = true;
@@ -86,10 +85,7 @@ int main() {
         info.config.lookup.cache_mode = model::CacheMode::FixedSnapshot;
         info.config.lookup.object_file = "/input/server-chain.pem";
         info.config.lookup.snapshot_file = "/input/cache.json";
-        info.config.network_manifest = "/run/network-manifest.json";
         model::NetworkHandoff handoff;
-        handoff.client_namespace_fd = 91;
-        handoff.phase_control_fd = 92;
         handoff.provenance_file = "/run/network-provenance.json";
         handoff.observations_file = "/run/network-observations.jsonl";
         handoff.net_profile_document =
@@ -131,7 +127,7 @@ int main() {
     assert(sample["sample"] == 7 && sample["valid"] == false);
     assert(sample["schema"] == model::record_schema);
     assert(sample["measurement_contract_revision"] == model::measurement_contract_revision);
-    assert(sample["measurement_contract_revision"] == 3);
+    assert(sample["measurement_contract_revision"] == 4);
     assert(sample["declaration"]["read_ahead"] == false);
     assert(sample["declaration"]["read_ahead_note"] == "exact-needed receive policy");
     assert(sample["capture_dropped"] == 4);
@@ -150,8 +146,9 @@ int main() {
     }
     const auto& config = sample["config"];
     assert(config["scenario_name"] == model::lookup_scenario_name);
-    assert(config["failure_policy"] == "fixed-attempts" && config["flush_grace_ms"] == 700);
-    assert(config["ca_cpu"] == 11);
+    assert(!config.contains("failure_policy") && !config.contains("samples"));
+    assert(config["flush_grace_ms"] == 700);
+    assert(config["cpu"] == 11);
     assert(config["channel_observer"] == false);
     assert(config["perf_scope"] == "user+kernel");
     assert(sample["capabilities"]["perf_requested_scope"] == "user+kernel");
@@ -165,7 +162,7 @@ int main() {
     assert(config["lookup"]["cache_mode"] == "fixed-snapshot");
     assert(config["lookup"]["object_file"] == "/input/server-chain.pem");
     assert(config["lookup"]["snapshot_file"] == "/input/cache.json");
-    assert(config["network_manifest"] == "/run/network-manifest.json");
+    assert(!config.contains("network_manifest"));
     assert(config["network_handoff"]["provenance_file"] == "/run/network-provenance.json");
     assert(config["network_handoff"]["observations_file"] == "/run/network-observations.jsonl");
     assert(config["network_handoff"]["net_profile"]["qdisc"] == "none");

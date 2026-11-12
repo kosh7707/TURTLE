@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from profiles import experiment_profile, flatten_experiment
 import argparse
 import copy
 import json
@@ -448,7 +449,7 @@ def main() -> int:
     profiles: list[dict[str, object]] = []
     run_argvs: list[list[str]] = []
     try:
-        manifest["commands"].append(run([args.turtle, "capabilities"], timeout=10))
+        manifest["commands"].append(run([args.turtle.parent / "turtle-client", "capabilities"], timeout=10))
         ordinal = 0
         for batch, pair in enumerate(BATCH_ORDER, start=1):
             batch_entry = {"batch": batch, "order": ["on" if item else "off" for item in pair]}
@@ -460,10 +461,10 @@ def main() -> int:
                 profile = profile_document(args.pki, observer)
                 profiles.append(profile)
                 profile_path = inputs / f"{name}.json"
-                profile_path.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n")
+                profile_path.write_text(json.dumps(experiment_profile(**profile), indent=2, sort_keys=True) + "\n")
                 output = runs / f"batch-{batch:02d}" / mode_name
                 command = [
-                    args.turtle, "run", "--profile", profile_path,
+                    args.turtle, "--profile", profile_path,
                     "--client", "openssl", "--server", "openssl",
                     "--adapter-dir", args.adapters, "--batch", str(batch),
                     "--output", output,
@@ -484,7 +485,7 @@ def main() -> int:
                 samples = sorted(output.glob("sample-*"))
                 check(len(samples) == SAMPLES, f"{output}: expected two retained samples")
                 for sample in samples:
-                    check((sample / "director.txt").read_text().strip() == "valid",
+                    check(json.loads((sample / "execution.json").read_text())["final_status"] == "success",
                           f"{sample}: child-pair outcome is invalid")
                     for role in ("client", "server"):
                         raw_values[(role, observer)].append(validate_role(

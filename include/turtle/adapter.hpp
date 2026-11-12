@@ -12,7 +12,7 @@ namespace turtle {
 
 enum class Role { Client, Server };
 // Keep completion/failure numeric values stable in historical raw events.
-enum class Step { WantRead, WantWrite, Complete, Done = Complete, Failed, ApplicationWriteReady };
+enum class Step { WantRead, WantWrite, Complete, Failed, ApplicationWriteReady };
 enum class Scenario { Handshake, ServerPing, FinishedPing, ClientRequest };
 enum class SendPolicy { Native, ServerHelloFirst };
 enum class TraceOperation {
@@ -159,7 +159,7 @@ struct Connection {
 
 // The role runtime owns contexts and connections through these lifecycle calls.
 // Config and HostServices outlive Context; Io outlives Connection. A retry uses
-// the same operation and buffer until that operation reports progress or Done.
+// the same operation and buffer until that operation reports progress or Complete.
 struct ImplementationApi {
     std::uint32_t version = 3;
     const char* (*name)() noexcept = nullptr;

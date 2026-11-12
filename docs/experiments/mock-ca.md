@@ -4,8 +4,8 @@
 
 `synthetic-lookup-plus-standard-tls`는 **합성 인증서 객체 조회 뒤 표준 인증서 기반 TLS를 실행하는 시나리오**입니다. 표준 TLS 1.3 핸드셰이크 자체에 실시간 CA 통신을 추가한 프로토콜이 아닙니다.
 
-1. 지휘 프로세스가 `lookup.object_file`의 공개 PEM 바이트를 실행 시작 때 한 번 읽고, 크기와 FNV-1a 객체 ID를 계산합니다.
-2. 이 불변 기준 객체는 전체 실행 동안 미리 보유합니다. 모의 CA도 같은 원본을 자기 응답 저장공간에 미리 복사합니다.
+1. 클라이언트가 자기 `lookup.object_file`의 공개 PEM 바이트를 준비 단계에서 한 번 읽고, 크기와 FNV-1a 객체 ID를 계산합니다.
+2. 이 불변 기준 객체는 전체 실행 동안 미리 보유합니다. 독립 `turtle-lookup` 서비스도 자기 객체 파일을 읽어 응답 저장공간에 미리 복사합니다. 파일시스템 공유는 필요 없습니다.
 3. 각 연결 시작 때 클라이언트 조회 캐시를 `empty` 또는 같은 고정 저장본으로 직접 복원합니다. 앞 연결의 캐시 변경을 다음 연결에 누적하지 않습니다.
 4. miss이면 준비된 별도 TCP 연결로 44바이트 요청을 보내고 원본 PEM 응답을 받습니다. hit이면 응용 조회 요청은 0건이며, 준비 TCP 연결이 존재한다는 사실과 혼동하지 않습니다.
 5. 클라이언트는 응답의 ID·길이·원본 바이트를 기준 객체와 대조하고 캐시에 삽입합니다. `RESPONSE_COMPLETE`는 수신 완료일 뿐이며, 비교와 삽입을 마친 `USABLE_OBJECT` 뒤에만 TLS를 시작합니다.
@@ -15,7 +15,7 @@
 
 ## 객체·전송 형식·캐시 계약
 
-- 객체는 줄바꿈을 포함한 원본 PEM 1~65,536바이트입니다. 기본 `object_file`은 최종 `tls.server_certificate`입니다.
+- 객체는 줄바꿈을 포함한 원본 PEM 1~65,536바이트입니다. 로컬 `--pki` 편의 입력에서는 자기 PKI 폴더의 서버 인증서가 기본 객체입니다. 독립 클라이언트 프로필에는 자기 객체 파일을 명시합니다.
 - 객체 ID는 `fnv1a64:`와 소문자 16진수 16자리입니다. 이는 식별값이지 보안 해시가 아닙니다. 동일성은 크기와 원본 바이트로 확인합니다.
 - 전송 머리는 정확히 44바이트입니다. `TCA1`, version, 요청·응답 종류, 시도, 연결, 요청 ID, 객체 ID, 페이로드 길이와 상태를 네트워크 바이트 순서로 저장합니다. 연결별 요청 ID는 1입니다.
 - 요청은 페이로드가 없습니다. 성공 응답은 원본 PEM을 그대로 담고, 정의된 오류 응답만 페이로드 없이 status 1을 씁니다.
@@ -44,42 +44,54 @@ python3 scripts/netem-study.py snapshot \
 
 ## 프로필 설정
 
-조회 설정은 별도 명령행 옵션이 아니라 실행 프로필에 둡니다. `samples`는 항상 요청한 시도 수입니다. 한 시도 안의 `connections`는 별도 시도가 아니며, `warmups`는 성공 시간 분포에서 제외합니다.
+조회 설정은 `endpoint.lookup`에, 외부 시도 수와 실패 정책은 `experiment`에 둡니다. `TURTLE_BUILD_LOOKUP=ON`으로 서비스도 빌드해야 합니다. `samples`는 항상 요청한 시도 수입니다. 한 시도 안의 `connections`는 별도 시도가 아니며, `warmups`는 성공 시간 분포에서 제외합니다.
 
 ```json
 {
+  "type": "turtle-experiment-profile",
+  "schema": 1,
   "name": "lookup-example",
-  "pki": "../pki/netem",
-  "tls": {
-    "version": "TLS1.3",
-    "cipher": "TLS_AES_128_GCM_SHA256",
-    "group": "secp256r1",
-    "signature": "ecdsa_secp256r1_sha256",
-    "server_name": "localhost",
-    "mutual_auth": false,
-    "compatibility_ccs": true,
-    "framework_io": true,
-    "tickets": 0,
-    "application_bytes": 32,
-    "record_size_limit": 0,
-    "certificate_compression": false
+  "scenario": {
+    "tls": {
+      "version": "TLS1.3",
+      "cipher": "TLS_AES_128_GCM_SHA256",
+      "group": "secp256r1",
+      "signature": "ecdsa_secp256r1_sha256",
+      "server_name": "localhost",
+      "mutual_auth": false,
+      "compatibility_ccs": true,
+      "tickets": 0,
+      "application_bytes": 32,
+      "record_size_limit": 0,
+      "certificate_compression": false
+    },
+    "measurement": {
+      "connections": 1,
+      "warmups": 0,
+      "timeout_ms": 10000,
+      "flush_grace_ms": 500
+    }
   },
-  "measurement": {
+  "endpoint": {
+    "tls": {
+      "framework_io": true
+    },
+    "measurement": {
+      "pin_cores": false,
+      "perf": false
+    },
+    "pki": "../pki/netem",
+    "lookup": {
+      "enabled": true,
+      "object_file": "../pki/netem/server-chain.pem",
+      "cache_mode": "empty",
+      "snapshot_file": null
+    }
+  },
+  "experiment": {
     "samples": 8,
-    "connections": 1,
-    "warmups": 0,
-    "timeout_ms": 10000,
     "failure_policy": "fixed-attempts",
-    "flush_grace_ms": 500,
-    "ca_cpu": -1,
-    "pin_cores": false,
-    "perf": false
-  },
-  "lookup": {
-    "enabled": true,
-    "object_file": "../pki/netem/server-chain.pem",
-    "cache_mode": "empty",
-    "snapshot_file": null
+    "ca_cpu": -1
   }
 }
 ```
@@ -92,40 +104,56 @@ python3 scripts/netem-study.py snapshot \
 
 ```json
 {
+  "type": "turtle-experiment-profile",
+  "schema": 1,
   "name": "standard-tls-netem",
-  "pki": "../pki/netem",
-  "tls": {
-    "version": "TLS1.3",
-    "cipher": "TLS_AES_128_GCM_SHA256",
-    "group": "secp256r1",
-    "signature": "ecdsa_secp256r1_sha256",
-    "server_name": "localhost",
-    "mutual_auth": false,
-    "compatibility_ccs": true,
-    "framework_io": true,
-    "tickets": 0,
-    "application_bytes": 32,
-    "record_size_limit": 0,
-    "certificate_compression": false
+  "scenario": {
+    "tls": {
+      "version": "TLS1.3",
+      "cipher": "TLS_AES_128_GCM_SHA256",
+      "group": "secp256r1",
+      "signature": "ecdsa_secp256r1_sha256",
+      "server_name": "localhost",
+      "mutual_auth": false,
+      "compatibility_ccs": true,
+      "tickets": 0,
+      "application_bytes": 32,
+      "record_size_limit": 0,
+      "certificate_compression": false
+    },
+    "measurement": {
+      "connections": 1,
+      "warmups": 0,
+      "timeout_ms": 10000,
+      "flush_grace_ms": 500
+    }
   },
-  "socket": {
-    "tcp_nodelay": true,
-    "send_buffer": 65536,
-    "receive_buffer": 65536
+  "endpoint": {
+    "tls": {
+      "framework_io": true
+    },
+    "measurement": {
+      "mode": "timing",
+      "pin_cores": false,
+      "perf": false
+    },
+    "pki": "../pki/netem",
+    "socket": {
+      "tcp_nodelay": true,
+      "send_buffer": 65536,
+      "receive_buffer": 65536
+    },
+    "lookup": {
+      "enabled": false
+    },
+    "technique": {
+      "name": "standard-tls"
+    }
   },
-  "lookup": {"enabled": false},
-  "measurement": {
+  "experiment": {
     "samples": 2,
-    "connections": 1,
-    "warmups": 0,
-    "mode": "timing",
-    "timeout_ms": 10000,
-    "failure_policy": "fixed-attempts",
-    "flush_grace_ms": 500,
-    "pin_cores": false,
-    "perf": false
-  },
-  "technique": {"name": "standard-tls"}
+    "failure_policy": "fixed-attempts"
+  }
 }
 ```
 
@@ -140,17 +168,50 @@ python3 scripts/netem-study.py snapshot \
 ```json
 {
   "type": "turtle-netem-profile",
-  "schema": 1,
+  "schema": 3,
   "qdisc": "netem",
   "mtu": 1500,
-  "offload": {"tso": false, "gso": false, "gro": false},
+  "offload": {
+    "tso": false,
+    "gso": false,
+    "gro": false
+  },
   "trace": true,
   "loss_seed": null,
   "paths": {
-    "tls_c2s": {"delay_ms": 0, "loss_percent": 0, "limit_packets": 10000},
-    "tls_s2c": {"delay_ms": 0, "loss_percent": 0, "limit_packets": 10000},
-    "ca_c2s": {"delay_ms": 0, "loss_percent": 0, "limit_packets": 10000},
-    "ca_s2c": {"delay_ms": 5, "loss_percent": 20, "limit_packets": 10000}
+    "tls_c2s": {
+      "delay_ms": 0,
+      "loss_percent": 0,
+      "limit_packets": 10000,
+      "rate_bps": null
+    },
+    "tls_s2c": {
+      "delay_ms": 0,
+      "loss_percent": 0,
+      "limit_packets": 10000,
+      "rate_bps": null
+    },
+    "ca_c2s": {
+      "delay_ms": 0,
+      "loss_percent": 0,
+      "limit_packets": 10000,
+      "rate_bps": null
+    },
+    "ca_s2c": {
+      "delay_ms": 5,
+      "loss_percent": 20,
+      "limit_packets": 10000,
+      "rate_bps": null
+    }
+  },
+  "initial_cwnd": {
+    "client": null,
+    "server": null
+  },
+  "kernel_events": false,
+  "targeted_drop": {
+    "tls_c2s": null,
+    "tls_s2c": null
   }
 }
 ```
@@ -160,22 +221,45 @@ python3 scripts/netem-study.py snapshot \
 ```json
 {
   "type": "turtle-netem-profile",
-  "schema": 1,
+  "schema": 3,
   "qdisc": "netem",
   "mtu": 1500,
-  "offload": {"tso": false, "gso": false, "gro": false},
+  "offload": {
+    "tso": false,
+    "gso": false,
+    "gro": false
+  },
   "trace": true,
   "loss_seed": null,
   "paths": {
-    "tls_c2s": {"delay_ms": 20, "loss_percent": 0, "limit_packets": 10000},
-    "tls_s2c": {"delay_ms": 20, "loss_percent": 0, "limit_packets": 10000}
+    "tls_c2s": {
+      "delay_ms": 20,
+      "loss_percent": 0,
+      "limit_packets": 10000,
+      "rate_bps": null
+    },
+    "tls_s2c": {
+      "delay_ms": 20,
+      "loss_percent": 0,
+      "limit_packets": 10000,
+      "rate_bps": null
+    }
+  },
+  "initial_cwnd": {
+    "client": null,
+    "server": null
+  },
+  "kernel_events": false,
+  "targeted_drop": {
+    "tls_c2s": null,
+    "tls_s2c": null
   }
 }
 ```
 
-호환을 위해 조회가 꺼진 실행에 기존 네 방향 net-profile을 입력할 수도 있지만, 실행기는 CA 두 방향을 활성 조건에서 제거하고 실제로는 두 TLS 방향만 만듭니다. 새 순수 TLS 설정에는 두 방향 형식을 사용합니다.
+조회가 꺼진 실행에는 두 TLS 방향만, 조회가 켜진 실행에는 TLS와 CA의 네 방향을 정확히 지정합니다. 쓰이지 않는 방향을 조용히 버리지 않습니다.
 
-Python 조정기는 `unshare --user --map-root-user --net` 안에 토폴로지를 소유합니다. 조회가 켜지면 클라이언트·서버·CA·router 데이터 네트워크 이름공간 네 개와 veth 링크 네 개를 만들고 C++에 클라이언트·서버·CA 이름공간 FD를 전달합니다. 조회가 꺼지면 클라이언트·서버·router 네트워크 이름공간 세 개와 veth 링크 두 개만 만들고 C++에는 클라이언트·서버 이름공간 FD만 전달합니다. 두 경우 모두 자식은 이름공간에 들어간 **뒤** 수신 대기 소켓과 연결 소켓을 만들며 router FD는 받지 않습니다. `/run/netns` 이름, 호스트 route·qdisc·interface는 바꾸지 않습니다. 실험 종료 때 관측기, 보조 프로세스, 이름공간 FD를 소유 목록으로 정리합니다.
+Python 조정기는 `unshare --user --map-root-user --net` 안에 토폴로지를 소유합니다. 조회가 켜지면 클라이언트·서버·CA·라우터 네임스페이스 네 개와 veth 네 쌍을, 꺼지면 클라이언트·서버·라우터 네임스페이스 세 개와 veth 두 쌍을 만듭니다. 로컬 실행기가 해당 네임스페이스에서 독립 프로그램을 시작하며 C++ 엔드포인트는 네임스페이스 FD나 다른 프로세스의 상태를 받지 않습니다. 데이터 포트 44330·44332에만 netem을 적용하고 제어 포트 44331·44333은 제외합니다. 패킷은 제어/데이터를 구분해 기록합니다. 호스트의 route·qdisc·interface는 바꾸지 않고 실행 소유 자원을 정리합니다.
 
 router에서 수신자로 나가는 마지막 구간에 활성 방향별 qdisc를 둡니다. 조회 실행은 네 곳, 순수 TLS 실행은 `tls_c2s`·`tls_s2c` 두 곳입니다. 시도마다 이전 qdisc와 큐를 지우고 같은 요청 정책으로 다시 만들며, 셋업·시나리오·정리 단계의 적용값 재조회를 `observation_id`로 연결합니다. MTU와 TSO/GSO/GRO는 요청뿐 아니라 실제 적용값 재조회를 보존합니다. 요청과 실제값이 다르면 엄격 실행은 실패합니다. 현재 확인한 tc 6.1 환경에서는 `null`이 아닌 `loss_seed`를 지원한다고 주장하지 않으며 셋업 실패로 처리합니다.
 
@@ -207,11 +291,10 @@ scripts/make-pki.sh pki/netem ecdsa 3
 python3 scripts/netem-study.py verify \
   --build build \
   --pki pki/netem \
-  --output results/netem-verify \
-  --require-supported
+  --output results/netem-verify
 ```
 
-`--require-supported`는 지원되는 환경을 요구한다는 의도를 명시하고 기존 호출 표기를 보존합니다. 현재 `verify`는 이 옵션을 생략해도 지원 불가를 성공으로 바꾸지 않고 비0으로 끝냅니다. 옵션 유무가 검증 강도를 바꾸는 별도 모드는 아닙니다. `tests/integration/netem.py`의 위치 인자는 CTest용 보조 도구 계약이며, 위 사용자 명령과 구별합니다.
+`verify`는 지원 불가와 실행 실패를 비0 종료 상태로 보존합니다. `tests/integration/netem.py`의 위치 인자는 CTest용 보조 도구 계약이며 사용자 명령과 구별합니다.
 
 `verify`는 아래의 조회 묶음을 실행합니다. 순수 TLS는 `run`에 `lookup.enabled=false` 프로필과 두 방향 네트워크 프로필을 전달해 재현합니다. 통합 시험 `tests/integration/pure_tls_netem.py`는 OpenSSL로 양방향 0ms와 20ms, 손실 0, 조건별 2개 시도를 실행하고 해독·정리·보고 계약을 검사합니다. 현재 통과 범위와 근거는 [검증 문서](../project/validation.md)에 모읍니다.
 

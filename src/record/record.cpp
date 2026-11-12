@@ -1,4 +1,5 @@
 #include "record/record.hpp"
+#include "control/protocol.hpp"
 #include "model/sample.hpp"
 #include "record/json.hpp"
 
@@ -94,48 +95,48 @@ Json network_handoff_json(const std::optional<model::NetworkHandoff>& value) {
                                 : Json::parse(value->net_profile_document)}};
 }
 Json config_json(const model::RunConfig& v) {
-    return {
-        {"client_adapter", v.client_adapter},
-        {"server_adapter", v.server_adapter},
-        {"adapter_directory", v.adapter_directory},
-        {"output_directory", v.output_directory},
-        {"profile_name", v.profile_name},
-        {"profile_hash", v.profile_hash},
-        {"profile_document", v.profile_document},
-        {"context_directory", v.context_directory},
-        {"samples", v.samples},
-        {"warmups", v.warmups},
-        {"connections", v.connections},
-        {"batch", v.batch},
-        {"seed", v.seed},
-        {"timeout_ms", v.timeout_ms},
-        {"flush_grace_ms", v.flush_grace_ms},
-        {"failure_policy", model::name(v.failure_policy)},
-        {"scenario_name", v.lookup.enabled ? model::lookup_scenario_name : "standard-tls"},
-        {"lookup", lookup_json(v.lookup)},
-        {"network_manifest", v.network_manifest.empty() ? Json(nullptr) : Json(v.network_manifest)},
-        {"network_handoff", network_handoff_json(v.network_handoff)},
-        {"event_capacity", v.event_capacity},
-        {"stream_capacity", v.stream_capacity},
-        {"keylog_capacity", v.keylog_capacity},
-        {"calibration_samples", v.calibration_samples},
-        {"tcp_nodelay", v.tcp_nodelay},
-        {"socket_send_buffer", v.socket_send_buffer},
-        {"socket_receive_buffer", v.socket_receive_buffer},
-        {"kernel_timestamps", v.kernel_timestamps},
-        {"tx_timestamps", v.tx_timestamps},
-        {"cpu_profile", v.cpu_profile},
-        {"channel_observer", v.channel_observer},
-        {"perf", v.perf},
-        {"perf_scope", model::name(v.perf_scope)},
-        {"isolate", v.isolate},
-        {"pin_cores", v.pin_cores},
-        {"director_cpu", v.director_cpu},
-        {"client_cpu", v.client_cpu},
-        {"server_cpu", v.server_cpu},
-        {"ca_cpu", v.ca_cpu},
-        {"tls", tls_json(v.tls)},
-        {"mode", model::name(v.mode)}};
+    return {{"implementation", v.implementation},
+            {"adapter_path", v.adapter_path},
+            {"adapter_linkage", v.adapter_linkage},
+            {"tls_linkage", v.tls_linkage},
+            {"address", v.address},
+            {"port", v.port},
+            {"source_address", v.source_address},
+            {"control_address", v.control_address},
+            {"control_port", v.control_port},
+            {"output_directory", v.output_directory},
+            {"profile_name", v.profile_name},
+            {"profile_hash", v.profile_hash},
+            {"profile_document", v.profile_document},
+            {"context_directory", v.context_directory},
+            {"warmups", v.warmups},
+            {"connections", v.connections},
+            {"batch", v.batch},
+            {"seed", v.seed},
+            {"timeout_ms", v.timeout_ms},
+            {"flush_grace_ms", v.flush_grace_ms},
+            {"scenario_name", v.lookup.enabled ? model::lookup_scenario_name : "standard-tls"},
+            {"lookup", lookup_json(v.lookup)},
+            {"network_handoff", network_handoff_json(v.network_handoff)},
+            {"event_capacity", v.event_capacity},
+            {"stream_capacity", v.stream_capacity},
+            {"keylog_capacity", v.keylog_capacity},
+            {"calibration_samples", v.calibration_samples},
+            {"tcp_nodelay", v.tcp_nodelay},
+            {"socket_send_buffer", v.socket_send_buffer},
+            {"socket_receive_buffer", v.socket_receive_buffer},
+            {"kernel_timestamps", v.kernel_timestamps},
+            {"tx_timestamps", v.tx_timestamps},
+            {"cpu_profile", v.cpu_profile},
+            {"local_boundary_observer", v.phase_fd >= 0},
+            {"channel_observer", v.channel_observer},
+            {"perf", v.perf},
+            {"perf_scope", model::name(v.perf_scope)},
+            {"isolate", v.isolate},
+            {"pin_cores", v.pin_cores},
+            {"cpu", v.cpu},
+            {"tls", tls_json(v.tls)},
+            {"mode", model::name(v.mode)}};
 }
 Json declaration_json(const Declaration& v) {
     Json scenarios = Json::array(), policies = Json::array(), events = Json::array();
@@ -285,6 +286,11 @@ Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
              {"end_sequence", c.end_sequence},
              {"primary_window", availability(c.primary_window_available, c.primary_window_reason)},
              {"socket", socket_json(c.socket)},
+             {"flow",
+              {{"local_address", c.local_address},
+               {"local_port", c.local_port},
+               {"peer_address", c.peer_address},
+               {"peer_port", c.peer_port}}},
              {"tcp_start", detail::tcp_json(c.tcp_start)},
              {"tcp_end", detail::tcp_json(c.tcp_end)}});
     }
@@ -304,6 +310,41 @@ Json sample_json(const model::SampleInfo& v, const Buffer& buffer) {
             {"mode", model::name(v.config.mode)},
             {"valid", v.valid && !buffer.overflowed()},
             {"invalid_reason", reason},
+            {"failure_phase", v.failure_phase},
+            {"run_id", v.config.run_id},
+            {"context_id", v.config.context_id},
+            {"clock_domain", v.config.clock_domain},
+            {"control_protocol", control::protocol_version},
+            {"preparation",
+             {{"version", 1},
+              {"stage", v.preparation.stage},
+              {"control_connected", !v.preparation.control_document.empty()},
+              {"scenario_agreed", v.preparation.scenario_agreed},
+              {"local_prepared", !v.preparation.local_document.empty()},
+              {"peer_prepared", !v.preparation.peer_document.empty()},
+              {"control", v.preparation.control_document.empty()
+                              ? Json(nullptr)
+                              : Json::parse(v.preparation.control_document)},
+              {"local", v.preparation.local_document.empty()
+                            ? Json(nullptr)
+                            : Json::parse(v.preparation.local_document)},
+              {"peer", v.preparation.peer_document.empty()
+                           ? Json(nullptr)
+                           : Json::parse(v.preparation.peer_document)}}},
+            {"scenario",
+             Json::parse(v.config.scenario_document.empty() ? "{}" : v.config.scenario_document)},
+            {"adapter_connection",
+             {{"mode", v.config.adapter_linkage},
+              {"artifact", v.config.adapter_path},
+              {"tls_linkage", v.config.tls_linkage},
+              {"module_load", v.config.adapter_linkage == "builtin" ? "not_applicable"
+                              : std::any_of(buffer.events().begin(), buffer.events().end(),
+                                            [](const auto& event) {
+                                                return event.kind == model::EventKind::ModuleEnd;
+                                            })
+                                  ? "observed"
+                                  : "missing"},
+              {"pre_entry_loading", "unobserved"}}},
             {"profile_hash", v.config.profile_hash},
             {"environment_hash", v.environment.environment_hash},
             {"config", config},
@@ -334,6 +375,8 @@ Json event_json(const model::SampleInfo& info, const model::Event& v) {
     return {{"type", "event"},
             {"schema", model::record_schema},
             {"sample", info.sample},
+            {"run_id", info.config.run_id},
+            {"context_id", info.config.context_id},
             {"batch", info.batch},
             {"role", model::name(info.role)},
             {"profile_hash", info.config.profile_hash},

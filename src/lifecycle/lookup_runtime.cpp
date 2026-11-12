@@ -41,8 +41,8 @@ struct ServiceCapture {
     }
 
     void append(model::ServiceEventKind kind, std::uint64_t request_id = 0,
-                std::size_t requested = 0, std::size_t transferred = 0,
-                std::int64_t result = 0, int system_error = 0) noexcept {
+                std::size_t requested = 0, std::size_t transferred = 0, std::int64_t result = 0,
+                int system_error = 0) noexcept {
         record::ServiceEvent event;
         event.kind = kind;
         event.sample = sample;
@@ -63,15 +63,33 @@ struct ServiceCapture {
         auto& self = *static_cast<ServiceCapture*>(opaque);
         model::ServiceEventKind kind = model::ServiceEventKind::CacheLookup;
         switch (observation.kind) {
-        case lookup::SemanticEventKind::CacheLookup: kind = model::ServiceEventKind::CacheLookup; break;
-        case lookup::SemanticEventKind::CacheHit: kind = model::ServiceEventKind::CacheHit; break;
-        case lookup::SemanticEventKind::CacheMiss: kind = model::ServiceEventKind::CacheMiss; break;
-        case lookup::SemanticEventKind::CacheInsert: kind = model::ServiceEventKind::CacheInsert; break;
-        case lookup::SemanticEventKind::RequestBegin: kind = model::ServiceEventKind::RequestBegin; break;
-        case lookup::SemanticEventKind::ResponseComplete: kind = model::ServiceEventKind::ResponseComplete; break;
-        case lookup::SemanticEventKind::UsableObject: kind = model::ServiceEventKind::UsableObject; break;
-        case lookup::SemanticEventKind::CaProcessBegin: kind = model::ServiceEventKind::CaProcessBegin; break;
-        case lookup::SemanticEventKind::CaProcessEnd: kind = model::ServiceEventKind::CaProcessEnd; break;
+        case lookup::SemanticEventKind::CacheLookup:
+            kind = model::ServiceEventKind::CacheLookup;
+            break;
+        case lookup::SemanticEventKind::CacheHit:
+            kind = model::ServiceEventKind::CacheHit;
+            break;
+        case lookup::SemanticEventKind::CacheMiss:
+            kind = model::ServiceEventKind::CacheMiss;
+            break;
+        case lookup::SemanticEventKind::CacheInsert:
+            kind = model::ServiceEventKind::CacheInsert;
+            break;
+        case lookup::SemanticEventKind::RequestBegin:
+            kind = model::ServiceEventKind::RequestBegin;
+            break;
+        case lookup::SemanticEventKind::ResponseComplete:
+            kind = model::ServiceEventKind::ResponseComplete;
+            break;
+        case lookup::SemanticEventKind::UsableObject:
+            kind = model::ServiceEventKind::UsableObject;
+            break;
+        case lookup::SemanticEventKind::CaProcessBegin:
+            kind = model::ServiceEventKind::CaProcessBegin;
+            break;
+        case lookup::SemanticEventKind::CaProcessEnd:
+            kind = model::ServiceEventKind::CaProcessEnd;
+            break;
         }
         self.append(kind, observation.request_id, observation.requested, observation.transferred,
                     static_cast<std::int64_t>(observation.io_status), observation.system_error);
@@ -80,19 +98,19 @@ struct ServiceCapture {
     static void io(void* opaque, const transport::Observation& observation) noexcept {
         auto& self = *static_cast<ServiceCapture*>(opaque);
         const auto kind = observation.sending
-            ? (observation.entering ? model::ServiceEventKind::IoSendEnter
-                                    : model::ServiceEventKind::IoSendReturn)
-            : (observation.entering ? model::ServiceEventKind::IoRecvEnter
-                                    : model::ServiceEventKind::IoRecvReturn);
+                              ? (observation.entering ? model::ServiceEventKind::IoSendEnter
+                                                      : model::ServiceEventKind::IoSendReturn)
+                              : (observation.entering ? model::ServiceEventKind::IoRecvEnter
+                                                      : model::ServiceEventKind::IoRecvReturn);
         self.append(kind, lookup::single_request_id, observation.requested,
                     observation.entering ? 0 : observation.result.bytes,
                     observation.entering ? 0 : static_cast<std::int64_t>(observation.result.status),
                     observation.entering ? 0 : observation.result.system_error);
         if (!observation.entering && observation.result.bytes) {
-            self.buffer.append_bytes(
-                self.connection,
-                observation.sending ? model::Direction::Sent : model::Direction::Received,
-                {observation.data, observation.result.bytes});
+            self.buffer.append_bytes(self.connection,
+                                     observation.sending ? model::Direction::Sent
+                                                         : model::Direction::Received,
+                                     {observation.data, observation.result.bytes});
             (observation.sending ? self.sent : self.received) += observation.result.bytes;
         }
     }
@@ -116,8 +134,8 @@ std::vector<std::uint8_t> decode_snapshot(const std::string& path,
     } catch (const nlohmann::json::exception&) {
         throw std::runtime_error("lookup snapshot is not valid JSON");
     }
-    const std::array<const char*, 5> keys{
-        "type", "schema", "object_id", "object_size", "object_hex"};
+    const std::array<const char*, 5> keys{"type", "schema", "object_id", "object_size",
+                                          "object_hex"};
     if (!document.is_object() || document.size() != keys.size())
         throw std::runtime_error("lookup snapshot fields differ from schema 1");
     for (const char* key : keys)
@@ -136,8 +154,10 @@ std::vector<std::uint8_t> decode_snapshot(const std::string& path,
     std::vector<std::uint8_t> bytes;
     bytes.reserve(encoded.size() / 2);
     auto nibble = [](char value) -> int {
-        if (value >= '0' && value <= '9') return value - '0';
-        if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+        if (value >= '0' && value <= '9')
+            return value - '0';
+        if (value >= 'a' && value <= 'f')
+            return value - 'a' + 10;
         return -1;
     };
     for (std::size_t i = 0; i < encoded.size(); i += 2) {
@@ -148,7 +168,8 @@ std::vector<std::uint8_t> decode_snapshot(const std::string& path,
     }
     if (bytes.empty() || bytes.size() != document["object_size"].get<std::size_t>() ||
         document["object_id"].get<std::string>() != model::fingerprint(bytes) ||
-        bytes.size() != expected.size() || !std::equal(bytes.begin(), bytes.end(), expected.begin()))
+        bytes.size() != expected.size() ||
+        !std::equal(bytes.begin(), bytes.end(), expected.begin()))
         throw std::runtime_error("lookup snapshot does not match the reference object");
     return bytes;
 }
@@ -182,41 +203,69 @@ LookupInputs load_lookup_inputs(const model::RunConfig& config) {
     return result;
 }
 
-ClientLookupRuntime::ClientLookupRuntime(
-    const model::RunConfig& config, measure::Meter& meter, std::uint64_t sample,
-    const std::string& directory, int control_fd, const lookup::Snapshot* reference,
-    const lookup::Snapshot* initial, std::vector<int> sockets) noexcept
-    : config_(config), meter_(meter), sample_(sample), directory_(directory),
-      control_fd_(control_fd), reference_(reference), initial_(initial),
-      sockets_(std::move(sockets)) {}
+ClientLookupRuntime::ClientLookupRuntime(const model::RunConfig& config, measure::Meter& meter,
+                                         std::uint64_t sample, const std::string& directory,
+                                         const lookup::Snapshot* reference,
+                                         const lookup::Snapshot* initial) noexcept
+    : config_(config), meter_(meter), sample_(sample), directory_(directory), reference_(reference),
+      initial_(initial) {}
 
-ClientLookupRuntime::~ClientLookupRuntime() = default;
+ClientLookupRuntime::~ClientLookupRuntime() {
+    close_all(sockets_);
+    if (service_fd_ >= 0)
+        ::close(service_fd_);
+}
 
-bool ClientLookupRuntime::enabled() const noexcept { return reference_ != nullptr; }
+bool ClientLookupRuntime::enabled() const noexcept {
+    return reference_ != nullptr;
+}
 
-void ClientLookupRuntime::prepare(model::SampleInfo& info) {
+void ClientLookupRuntime::prepare(model::SampleInfo& info, control::Deadline deadline) {
     if (!enabled())
         return;
     const std::size_t count = config_.warmups + config_.connections;
+    service_fd_ = tcp::begin_connect(tcp::prepare_dial(
+        config_.lookup.source_address, {config_.lookup.address, config_.lookup.control_port}));
+    control::wait(service_fd_, true, deadline);
+    tcp::finish_connect(service_fd_);
+    service_ = std::make_unique<control::Waiter>(service_fd_);
+    auto identity = config_;
+    negotiate(*service_, identity, deadline);
+    protocol_ = std::make_unique<PeerProtocol>(*service_, sample_);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto fd = tcp::begin_connect(tcp::prepare_dial(
+            config_.lookup.source_address, {config_.lookup.address, config_.lookup.port}));
+        sockets_.push_back(fd);
+        control::wait(fd, true, deadline);
+        tcp::finish_connect(fd);
+    }
     impl_ = std::make_unique<Impl>();
     bool lookup_timestamps = true;
     impl_->wait_sets.reserve(count);
     for (int fd : sockets_) {
-        const auto settings = transport::configure(
-            fd, config_.tcp_nodelay, config_.socket_send_buffer,
-            config_.socket_receive_buffer, config_.kernel_timestamps);
+        const auto settings =
+            transport::configure(fd, config_.tcp_nodelay, config_.socket_send_buffer,
+                                 config_.socket_receive_buffer, config_.kernel_timestamps);
         lookup_timestamps = lookup_timestamps && settings.kernel_timestamps;
-        impl_->wait_sets.push_back(std::make_unique<control::WaitSet>(fd, control_fd_));
+        impl_->wait_sets.push_back(std::make_unique<control::WaitSet>(fd, service_fd_, false));
         if (auto reason = tcp::check_ready(fd); !reason.empty())
             throw std::runtime_error(reason);
     }
     impl_->heap = std::make_unique<measure::HeapTracker>(config_.mode == model::Mode::Memory);
     impl_->cache = std::make_unique<lookup::Cache>(impl_->heap->allocator());
-    impl_->buffer = std::make_unique<record::ServiceBuffer>(record::ServiceLimits{
-        config_.event_capacity, config_.stream_capacity, count});
-    impl_->capture = std::make_unique<ServiceCapture>(ServiceCapture{
-        meter_, *impl_->buffer, model::ParticipantKind::TlsClient, sample_, 0, 0, 0, 0, {},
-        impl_->heap.get()});
+    impl_->buffer = std::make_unique<record::ServiceBuffer>(
+        record::ServiceLimits{config_.event_capacity, config_.stream_capacity, count});
+    impl_->capture =
+        std::make_unique<ServiceCapture>(ServiceCapture{meter_,
+                                                        *impl_->buffer,
+                                                        model::ParticipantKind::TlsClient,
+                                                        sample_,
+                                                        0,
+                                                        0,
+                                                        0,
+                                                        0,
+                                                        {},
+                                                        impl_->heap.get()});
     impl_->connections.resize(count);
     impl_->clients.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
@@ -235,9 +284,12 @@ void ClientLookupRuntime::prepare(model::SampleInfo& info) {
     }
     record::ServiceMetadata metadata;
     metadata.sample = sample_;
+    metadata.run_id = config_.run_id;
+    metadata.context_id = config_.context_id;
+    metadata.clock_domain = config_.clock_domain;
     metadata.cache_mode = config_.lookup.cache_mode;
-    metadata.cache_state_id = initial_ && !initial_->empty()
-        ? model::fingerprint(initial_->object().bytes) : "empty";
+    metadata.cache_state_id =
+        initial_ && !initial_->empty() ? model::fingerprint(initial_->object().bytes) : "empty";
     metadata.object_id = reference_->object().id;
     metadata.object_size = reference_->object().bytes.size();
     metadata.cache_capacity = impl_->cache->capacity();
@@ -251,20 +303,20 @@ void ClientLookupRuntime::prepare(model::SampleInfo& info) {
     metadata.mode = config_.mode;
     metadata.pid = ::getpid();
     metadata.capabilities = info.capabilities;
-    metadata.capabilities.kernel_timestamp_configured =
-        !sockets_.empty() && lookup_timestamps;
+    metadata.capabilities.kernel_timestamp_configured = !sockets_.empty() && lookup_timestamps;
     metadata.calibration = info.calibration;
     if (info.pinned_cpu >= 0)
         metadata.pinned_cpu = info.pinned_cpu;
     impl_->writer = std::make_unique<record::ServiceWriter>(
         directory_, record::ServiceArtifact::CertificateLookup, count, std::move(metadata));
+    protocol_->synchronize(control::MessageKind::TcpReady, 0, deadline);
+    protocol_->synchronize(control::MessageKind::Start, 0, deadline);
 }
 
-void ClientLookupRuntime::run_connection(std::size_t index, ChildProtocol& protocol,
-                                         control::Waiter& parent,
-                                         control::Deadline deadline) {
+void ClientLookupRuntime::run_connection(std::size_t index, control::Deadline deadline) {
     if (!enabled())
         return;
+    protocol_->synchronize(control::MessageKind::Start, index, deadline);
     impl_->cache->restore(*initial_);
     auto& connection = impl_->connections[index];
     impl_->capture->connection = index;
@@ -283,12 +335,16 @@ void ClientLookupRuntime::run_connection(std::size_t index, ChildProtocol& proto
         if (progress == lookup::Progress::Failed)
             throw std::runtime_error("certificate lookup failed: " + std::string(client.error()));
         impl_->capture->append(model::ServiceEventKind::WaitBegin, lookup::single_request_id);
-        protocol.wait(*impl_->wait_sets[index], progress == lookup::Progress::WantWrite, deadline);
+        impl_->wait_sets[index]->wait_data(progress == lookup::Progress::WantWrite, deadline);
         impl_->capture->append(model::ServiceEventKind::WaitEnd, lookup::single_request_id);
     }
-    send(parent, client.cache_hit() ? control::MessageKind::LookupSkipped
-                                   : control::MessageKind::ResponseComplete,
-         deadline, sample_, index, client.cache_hit());
+    control::Message completion;
+    completion.kind = client.cache_hit() ? control::MessageKind::LookupSkipped
+                                         : control::MessageKind::ResponseComplete;
+    completion.sample = sample_;
+    completion.connection = index;
+    control::send_message(*service_, completion, deadline);
+    protocol_->synchronize(control::MessageKind::ConnectionComplete, index, deadline);
     if (client.object().bytes.size() != reference_->object().bytes.size() ||
         !std::equal(client.object().bytes.begin(), client.object().bytes.end(),
                     reference_->object().bytes.begin()))
@@ -331,31 +387,39 @@ void ClientLookupRuntime::close_connection(std::size_t index) noexcept {
     sockets_[index] = -1;
 }
 
-void ClientLookupRuntime::close_sockets() noexcept { close_all(sockets_); }
-
-void ClientLookupRuntime::write(bool valid, std::string_view failure) {
-    if (impl_ && impl_->writer)
-        impl_->writer->write(impl_->connections, *impl_->buffer,
-            valid ? model::ArtifactStatus::Complete : model::ArtifactStatus::Partial,
-            failure);
+void ClientLookupRuntime::close_sockets() noexcept {
+    close_all(sockets_);
 }
 
-int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
-                const std::string& directory, std::vector<int> sockets, int control_fd,
-                control::Deadline deadline, const lookup::Snapshot& reference) {
+void ClientLookupRuntime::write(bool valid, std::string_view failure, control::Deadline cleanup) {
+    if (protocol_) {
+        if (valid)
+            protocol_->synchronize(control::MessageKind::Flush, 0, cleanup);
+        else
+            protocol_->fail(std::string(failure), cleanup);
+    }
+    if (impl_ && impl_->writer)
+        impl_->writer->write(
+            impl_->connections, *impl_->buffer,
+            valid ? model::ArtifactStatus::Complete : model::ArtifactStatus::Partial, failure);
+}
+
+int ca_endpoint(const model::RunConfig& config, std::uint64_t sample, const std::string& directory,
+                std::vector<int> sockets, int control_fd, control::Deadline deadline,
+                const lookup::Snapshot& reference) {
     const std::size_t count = sockets.size();
     control::Waiter parent(control_fd);
-    ChildProtocol protocol(parent);
+    PeerProtocol protocol(parent, sample);
     measure::Meter meter(config.mode, config.perf, config.perf_scope);
     record::ServiceBuffer buffer({config.event_capacity, config.stream_capacity, count});
-    ServiceCapture capture{
-        meter, buffer, model::ParticipantKind::MockCa, sample, 0, 0, 0, 0, {}, nullptr};
+    ServiceCapture capture{meter, buffer, model::ParticipantKind::MockCa, sample, 0, 0, 0, 0,
+                           {},    nullptr};
     std::vector<record::ServiceConnectionInfo> connections(count);
     std::vector<std::unique_ptr<lookup::Responder>> responders;
     responders.reserve(count);
     if (config.pin_cores) {
         std::string reason;
-        if (!capability::pin_to_cpu(config.ca_cpu, reason))
+        if (!capability::pin_to_cpu(config.cpu, reason))
             throw std::runtime_error("CA CPU affinity failed: " + reason);
     }
     auto capabilities = meter.capabilities();
@@ -365,9 +429,9 @@ int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
     wait_sets.reserve(count);
     bool all_timestamps = true;
     for (int fd : sockets) {
-        const auto settings = transport::configure(fd, config.tcp_nodelay,
-            config.socket_send_buffer, config.socket_receive_buffer,
-            config.kernel_timestamps);
+        const auto settings =
+            transport::configure(fd, config.tcp_nodelay, config.socket_send_buffer,
+                                 config.socket_receive_buffer, config.kernel_timestamps);
         all_timestamps = all_timestamps && settings.kernel_timestamps;
         if (auto reason = tcp::check_ready(fd); !reason.empty())
             throw std::runtime_error(reason);
@@ -390,6 +454,9 @@ int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
     }
     record::ServiceMetadata metadata;
     metadata.sample = sample;
+    metadata.run_id = config.run_id;
+    metadata.context_id = config.context_id;
+    metadata.clock_domain = config.clock_domain;
     metadata.cache_mode = config.lookup.cache_mode;
     metadata.cache_state_id = "repository";
     metadata.object_id = reference.object().id;
@@ -405,9 +472,9 @@ int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
     for (const auto& responder : responders)
         metadata.framework_reserved_bytes += responder->fixed_reserved_bytes();
     if (config.pin_cores)
-        metadata.pinned_cpu = config.ca_cpu;
-    record::ServiceWriter writer(
-        directory, record::ServiceArtifact::MockCa, count, std::move(metadata));
+        metadata.pinned_cpu = config.cpu;
+    record::ServiceWriter writer(directory, record::ServiceArtifact::MockCa, count,
+                                 std::move(metadata));
     bool valid = true;
     std::string failure;
     std::optional<std::size_t> active_connection;
@@ -415,10 +482,10 @@ int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
         meter.require_requested_scope();
         if (config.isolate)
             control::isolate();
-        send(parent, control::MessageKind::TcpReady, deadline, sample);
-        if (protocol.receive(deadline).kind != control::MessageKind::Start)
-            throw std::runtime_error("CA expected START");
+        protocol.synchronize(control::MessageKind::TcpReady, 0, deadline);
+        protocol.synchronize(control::MessageKind::Start, 0, deadline);
         for (std::size_t i = 0; i < count; ++i) {
+            protocol.synchronize(control::MessageKind::Start, i, deadline);
             active_connection = i;
             capture.connection = i;
             capture.stream_id = connections[i].stream_id;
@@ -436,12 +503,13 @@ int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
                 if (progress == lookup::Progress::Complete)
                     break;
                 if (progress == lookup::Progress::Failed)
-                    throw std::runtime_error("CA response failed: " + std::string(responder.error()));
+                    throw std::runtime_error("CA response failed: " +
+                                             std::string(responder.error()));
                 capture.append(model::ServiceEventKind::WaitBegin, lookup::single_request_id);
                 const auto ready = waits.wait(progress == lookup::Progress::WantWrite, deadline);
                 capture.append(model::ServiceEventKind::WaitEnd, lookup::single_request_id);
                 if (ready == control::WaitSet::Ready::Control) {
-                    const auto message = protocol.receive(deadline);
+                    const auto message = control::receive_message(parent, deadline);
                     if (message.kind != control::MessageKind::LookupSkipped ||
                         message.connection != i)
                         throw std::runtime_error("CA received unexpected control message");
@@ -451,7 +519,7 @@ int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
                 }
             }
             if (!skipped) {
-                const auto message = protocol.receive(deadline);
+                const auto message = control::receive_message(parent, deadline);
                 if (message.kind != control::MessageKind::ResponseComplete ||
                     message.connection != i)
                     throw std::runtime_error("CA final snapshot preceded RESPONSE_COMPLETE");
@@ -466,29 +534,16 @@ int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
             capture.append(model::ServiceEventKind::ScenarioEnd, lookup::single_request_id);
             connections[i].artifact_status = model::ArtifactStatus::Complete;
             active_connection.reset();
-            send(parent, control::MessageKind::ConnectionComplete, deadline, sample, i);
-            const auto continue_message = protocol.receive(deadline);
-            if (continue_message.kind != control::MessageKind::Start ||
-                continue_message.connection != i)
-                throw std::runtime_error("CA connection release missing");
+            protocol.synchronize(control::MessageKind::ConnectionComplete, i, deadline);
             ::close(sockets[i]);
             sockets[i] = -1;
         }
         if (buffer.overflowed())
             throw std::runtime_error("CA capture buffer overflow");
-    } catch (const AbortRequested&) {
-        if (active_connection) {
-            connections[*active_connection].tcp_end = tcp::read_tcp_info(sockets[*active_connection]);
-            connections[*active_connection].artifact_status = model::ArtifactStatus::Partial;
-            connections[*active_connection].incomplete_reason = "parent requested abort";
-            capture.append(model::ServiceEventKind::ScenarioEnd, lookup::single_request_id);
-            active_connection.reset();
-        }
-        valid = false;
-        failure = "parent requested abort";
     } catch (const std::exception& error) {
         if (active_connection) {
-            connections[*active_connection].tcp_end = tcp::read_tcp_info(sockets[*active_connection]);
+            connections[*active_connection].tcp_end =
+                tcp::read_tcp_info(sockets[*active_connection]);
             connections[*active_connection].artifact_status = model::ArtifactStatus::Partial;
             connections[*active_connection].incomplete_reason = error.what();
             capture.append(model::ServiceEventKind::ScenarioEnd, lookup::single_request_id);
@@ -496,46 +551,72 @@ int ca_endpoint(const model::RunConfig& config, std::uint64_t sample,
         }
         valid = false;
         failure = error.what();
-        try {
-            send(parent, control::MessageKind::Failed, deadline, sample, 0, false, {}, 0, 0,
-                 failure);
-        } catch (...) {}
+        protocol.fail(failure, std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(config.flush_grace_ms));
     }
     close_all(sockets);
-    auto flush_deadline = deadline + std::chrono::milliseconds(config.flush_grace_ms);
     try {
-        const auto command = protocol.flush(flush_deadline);
-        flush_deadline = protocol.cleanup_deadline();
-        if (command.kind == control::MessageKind::AbortFlush && valid) {
-            valid = false;
-            failure = "parent aborted after participant completion";
-        } else if (command.kind == control::MessageKind::Flush && !valid) {
-            throw std::runtime_error("invalid CA received normal FLUSH");
-        }
+        if (valid)
+            protocol.synchronize(control::MessageKind::Flush, 0, deadline);
     } catch (const std::exception& error) {
         valid = false;
-        if (failure.empty())
-            failure = error.what();
+        failure = error.what();
     }
-    try {
-        writer.write(connections, buffer,
-                     valid ? model::ArtifactStatus::Complete : model::ArtifactStatus::Partial,
-                     failure);
-        send(parent, control::MessageKind::Flushed, flush_deadline, sample);
-    } catch (const std::exception& error) {
-        valid = false;
-        const std::string flush_failure = error.what();
-        if (failure.empty())
-            failure = flush_failure;
-        try {
-            send(parent, control::MessageKind::Failed, flush_deadline, sample, 0, false, {}, 0,
-                 0, flush_failure);
-        } catch (const std::exception& notify_error) {
-            std::cerr << "mock-ca flush failure: " << flush_failure
-                      << "; failure notification: " << notify_error.what() << '\n';
-        }
-    }
+    writer.write(connections, buffer,
+                 valid ? model::ArtifactStatus::Complete : model::ArtifactStatus::Partial, failure);
     return valid ? 0 : 1;
 }
 
+int run_lookup_service(model::RunConfig config) {
+    if (config.clock_domain.empty()) {
+        std::ifstream boot("/proc/sys/kernel/random/boot_id");
+        std::getline(boot, config.clock_domain);
+        config.clock_domain = "linux-boot:" + config.clock_domain;
+    }
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(config.timeout_ms);
+    const auto input = load_lookup_inputs(config);
+    if (!input.reference)
+        throw std::runtime_error("lookup service requires a local object");
+    capability::choose_cpus(config, capability::inspect_environment());
+    std::filesystem::create_directories(config.output_directory);
+    if (std::filesystem::exists(std::filesystem::path(config.output_directory) / "ca.jsonl"))
+        throw std::runtime_error("lookup output already exists");
+    std::vector<int> owned;
+    try {
+        const auto data = tcp::listen_ipv4(config.address, config.port);
+        owned.push_back(data.fd);
+        const auto control = tcp::listen_ipv4(config.control_address, config.control_port);
+        owned.push_back(control.fd);
+        tcp::nonblocking_listener(data.fd);
+        tcp::nonblocking_listener(control.fd);
+        if (!config.ready_file.empty()) {
+            std::ofstream ready(config.ready_file);
+            ready << nlohmann::json{{"port", data.port}, {"control_port", control.port}} << '\n';
+        }
+        int peer;
+        while ((peer = tcp::try_accept(control.fd)) < 0)
+            control::wait(control.fd, false, deadline);
+        owned.push_back(peer);
+        control::Waiter waiter(peer);
+        negotiate(waiter, config, deadline);
+        std::vector<int> sockets;
+        for (std::size_t i = 0; i < config.connections + config.warmups; ++i) {
+            int fd;
+            while ((fd = tcp::try_accept(data.fd)) < 0)
+                control::wait(data.fd, false, deadline);
+            sockets.push_back(fd);
+            owned.push_back(fd);
+        }
+        // ca_endpoint owns the connected data sockets from this point.
+        owned.resize(3);
+        const auto result = ca_endpoint(config, config.sample, config.output_directory,
+                                        std::move(sockets), peer, deadline, *input.reference);
+        close_all(owned);
+        return result;
+    } catch (...) {
+        close_all(owned);
+        throw;
+    }
+}
 } // namespace turtle::lifecycle::detail

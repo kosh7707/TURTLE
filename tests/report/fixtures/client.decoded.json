@@ -11,21 +11,38 @@
         "messages": [
           {
             "name": "ClientHello",
-            "record_stream_ranges": [{"begin": 0, "end": 100}],
+            "record_stream_ranges": [
+              {
+                "begin": 0,
+                "end": 100
+              }
+            ],
             "bundled": false
           },
           {
             "name": "Finished",
-            "record_stream_ranges": [{"begin": 200, "end": 260}],
+            "record_stream_ranges": [
+              {
+                "begin": 200,
+                "end": 260
+              }
+            ],
             "bundled": true
           },
           {
             "name": "ApplicationData",
-            "record_stream_ranges": [{"begin": 200, "end": 260}],
+            "record_stream_ranges": [
+              {
+                "begin": 200,
+                "end": 260
+              }
+            ],
             "bundled": true
           }
         ]
       }
     }
-  ]
+  ],
+  "run_id": "decode-fixture",
+  "context_id": "context"
 }

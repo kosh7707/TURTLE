@@ -1,4 +1,5 @@
 #include "interpret/interpret.hpp"
+#include "record/schema.hpp"
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -348,34 +349,11 @@ Json analyze(const std::filesystem::path& raw, const std::filesystem::path& outp
     if (!std::getline(file, line))
         throw std::runtime_error("missing sample header");
     const auto header = Json::parse(line);
-    if ((header.at("schema") != 1 && header.at("schema") != 2) || header.at("type") != "sample")
-        throw std::runtime_error("unsupported sample schema");
+    record::require_tls_sample(header);
     const auto role = header.at("role").get<std::string>();
-    bool stream_available = true;
-    std::string stream_reason;
-    if (header.contains("availability") && header.at("availability").is_object() &&
-        header.at("availability").contains("tls_stream")) {
-        const auto& availability = header.at("availability").at("tls_stream");
-        stream_available = availability.value("available", false);
-        if (!stream_available && availability.contains("reason") &&
-            availability.at("reason").is_string())
-            stream_reason = availability.at("reason").get<std::string>();
-    } else {
-        const bool observer_disabled =
-            (header.contains("config") && header.at("config").is_object() &&
-             header.at("config").value("channel_observer", true) == false) ||
-            header.value("observation_level", std::string()) == "observer-disabled";
-        const bool native = (header.contains("config") && header.at("config").contains("tls") &&
-                             !header.at("config").at("tls").value("framework_io", true)) ||
-                            header.value("observation_level", std::string()) == "library-only";
-        if (native) {
-            stream_available = false;
-            stream_reason = "legacy_native_socket_io_not_observed";
-        } else if (observer_disabled) {
-            stream_available = false;
-            stream_reason = "channel_observer_disabled";
-        }
-    }
+    const auto& availability = header.at("availability").at("tls_stream");
+    const bool stream_available = availability.at("available").get<bool>();
+    const auto stream_reason = stream_available ? std::string{} : availability.at("reason").get<std::string>();
     const auto prefix = raw.parent_path() / role;
     std::ifstream keys(prefix.string() + ".keys.log");
     const std::string keylog{std::istreambuf_iterator<char>(keys), {}};
@@ -446,6 +424,9 @@ Json analyze(const std::filesystem::path& raw, const std::filesystem::path& outp
                    {"sample", header.at("sample")},
                    {"role", role},
                    {"connections", connections}};
+    result["run_id"] = header.at("run_id");
+    result["context_id"] = header.at("context_id");
+
     std::ofstream out(output);
     out.exceptions(std::ios::badbit | std::ios::failbit);
     out << result.dump(2) << '\n';

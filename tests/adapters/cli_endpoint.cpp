@@ -265,7 +265,7 @@ void complete_handshake(const ImplementationApi& api, Connection* connection, in
                         Clock::time_point deadline) {
     for (;;) {
         const Step step = api.handshake_step(connection);
-        if (step == Step::Done)
+        if (step == Step::Complete)
             return;
         require(step != Step::Failed, "handshake failed: " + adapter_error(api, connection));
         wait_for_step(socket, step, deadline);
@@ -284,7 +284,7 @@ std::size_t send_application(const ImplementationApi& api, Connection* connectio
         require(result.bytes <= value.size() - offset, "adapter over-reported sent bytes");
         offset += result.bytes;
         if (offset < value.size()) {
-            require(result.bytes != 0 || result.step != Step::Done,
+            require(result.bytes != 0 || result.step != Step::Complete,
                     "application send completed without all bytes");
             if (result.bytes == 0)
                 wait_for_step(socket, result.step, deadline);
@@ -306,7 +306,7 @@ std::string receive_application(const ImplementationApi& api, Connection* connec
         require(result.bytes <= received.size() - offset, "adapter over-reported received bytes");
         offset += result.bytes;
         if (offset < expected.size()) {
-            require(result.bytes != 0 || result.step != Step::Done,
+            require(result.bytes != 0 || result.step != Step::Complete,
                     "application receive completed without all bytes");
             if (result.bytes == 0)
                 wait_for_step(socket, result.step, deadline);

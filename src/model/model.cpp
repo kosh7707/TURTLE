@@ -116,43 +116,6 @@ const char* name(ParticipantKind value) noexcept {
 const char* name(CacheMode value) noexcept {
     return value == CacheMode::Empty ? "empty" : "fixed-snapshot";
 }
-const char* name(FailurePolicy value) noexcept {
-    return value == FailurePolicy::FailFast ? "fail-fast" : "fixed-attempts";
-}
-const char* name(AttemptStatus value) noexcept {
-    switch (value) {
-    case AttemptStatus::NotAttempted:
-        return "not_attempted";
-    case AttemptStatus::Success:
-        return "success";
-    case AttemptStatus::Timeout:
-        return "timeout";
-    case AttemptStatus::Error:
-        return "error";
-    case AttemptStatus::Incomplete:
-        return "incomplete";
-    }
-    return "unknown";
-}
-const char* name(FailurePhase value) noexcept {
-    switch (value) {
-    case FailurePhase::None:
-        return "none";
-    case FailurePhase::Startup:
-        return "startup";
-    case FailurePhase::Listener:
-        return "listener";
-    case FailurePhase::TcpReady:
-        return "tcp_ready";
-    case FailurePhase::Scenario:
-        return "scenario";
-    case FailurePhase::Flush:
-        return "flush";
-    case FailurePhase::Exit:
-        return "exit";
-    }
-    return "unknown";
-}
 const char* name(ArtifactStatus value) noexcept {
     switch (value) {
     case ArtifactStatus::Complete:
@@ -362,7 +325,7 @@ const char* name(Step value) noexcept {
         return "want_write";
     case Step::ApplicationWriteReady:
         return "application_write_ready";
-    case Step::Done:
+    case Step::Complete:
         return "done";
     case Step::Failed:
         return "failed";

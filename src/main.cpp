@@ -6,7 +6,7 @@
 #include <iostream>
 int main(int argc, char** argv) {
     try {
-        auto command = turtle::config::parse(argc, argv);
+        auto command = turtle::config::parse(argc, argv, TURTLE_ENDPOINT_ROLE);
         if (command.action == turtle::config::Command::Action::Help) {
             std::cout << turtle::config::usage();
             return 0;
@@ -39,13 +39,25 @@ int main(int argc, char** argv) {
                       << "\nstack: " << caps.stack_tracking << " (" << caps.stack_note << ")"
                       << "\nreceive timestamps: probed on each measured TCP connection"
                       << "\nTX scheduler/software/ACK timestamps: opt-in trace, probed per socket"
-                      << "\npacket capture: owned netem runner; NIC timestamps/eBPF: unavailable\n";
+                      << "\npacket capture/kernel eBPF: external netem runner; NIC hardware "
+                         "timestamps: unavailable\n";
             for (const auto& warning : environment.warnings) {
                 std::cout << "warning: " << warning << '\n';
             }
             return 0;
         }
-        return turtle::lifecycle::run(command.run);
+        command.run.adapter_linkage = TURTLE_ADAPTER_LINKAGE;
+        command.run.implementation = TURTLE_IMPLEMENTATION;
+        command.run.tls_linkage = TURTLE_TLS_LINKAGE;
+#ifdef TURTLE_BUILTIN_ADAPTER
+        if (!command.run.adapter_path.empty())
+            throw std::invalid_argument("builtin executable does not accept --module");
+        return turtle::lifecycle::run_endpoint(std::move(command.run), turtle_adapter_v3);
+#else
+        if (command.run.adapter_path.empty())
+            throw std::invalid_argument("module executable requires --module FILE");
+        return turtle::lifecycle::run_endpoint(std::move(command.run));
+#endif
     } catch (const std::exception& error) {
         std::cerr << "turtle: " << error.what() << '\n';
         return 1;

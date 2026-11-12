@@ -24,6 +24,7 @@ if(NOT _wolfssl_version MATCHES "\"5\\.8\\.2\"")
 endif()
 find_package(wolfssl CONFIG REQUIRED
              PATHS "${_wolfssl_prefix}/lib/cmake/wolfssl" NO_DEFAULT_PATH)
+set_property(TARGET wolfssl::wolfssl PROPERTY IMPORTED_GLOBAL TRUE)
 
 add_library(turtle_adapter_wolfssl MODULE wolfssl_adapter.cpp)
 target_compile_features(turtle_adapter_wolfssl PRIVATE cxx_std_20)
@@ -46,3 +47,12 @@ turtle_check_patch_manifest(wolfssl "${_turtle_patch_hash}")
 target_compile_definitions(turtle_adapter_wolfssl PRIVATE TURTLE_PATCH_SHA256="${_turtle_patch_hash}")
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/instrumentation.patch")
+
+get_target_property(_tls_type wolfssl::wolfssl TYPE)
+if(_tls_type STREQUAL "STATIC_LIBRARY")
+  set(_tls_linkage "static")
+else()
+  set(_tls_linkage "dynamic")
+endif()
+target_compile_definitions(turtle_adapter_wolfssl PRIVATE TURTLE_LIBRARY_LINKAGE="${_tls_linkage}")
+set_property(TARGET turtle_adapter_wolfssl PROPERTY TURTLE_LIBRARY_LINKAGE "${_tls_linkage}")

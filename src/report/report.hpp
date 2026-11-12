@@ -23,5 +23,6 @@ nlohmann::json partition(const nlohmann::json& header, const std::vector<nlohman
 nlohmann::json summarize_lookup(const std::filesystem::path& input,
                                 const std::filesystem::path& output);
 nlohmann::json summarize(const std::filesystem::path& input, const std::filesystem::path& output,
-                         bool repeated_context = false);
+                         bool repeated_context = false,
+                         std::vector<std::filesystem::path> selected = {});
 } // namespace turtle::report

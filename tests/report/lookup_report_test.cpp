@@ -17,68 +17,118 @@ void line(std::ofstream& out, const Json& value) {
 
 Json ledger_row(std::uint64_t attempt, std::string status, Json connections,
                 Json observations = Json::array()) {
-    return {{"type", "turtle-attempt-ledger"}, {"schema", 1},
-            {"record_kind", "attempt_final"}, {"attempt_id", attempt},
-            {"requested_count", 5}, {"started", true}, {"final_status", status},
+    return {{"type", "turtle-attempt-ledger"},
+            {"schema", 1},
+            {"record_kind", "attempt_final"},
+            {"attempt_id", attempt},
+            {"requested_count", 5},
+            {"started", true},
+            {"final_status", status},
             {"failure_phase", status == "timeout" ? "scenario" : "none"},
             {"reason", status == "success" ? "" : status + " fixture"},
             {"artifact_status", Json::array({"complete", "complete", "complete"})},
-            {"artifacts", {{"server.jsonl", "complete"}, {"client.jsonl", "complete"},
-                            {"lookup.jsonl", status == "incomplete" ? "partial" : "complete"},
-                            {"ca.jsonl", status == "error" ? "missing" : "complete"}}},
-            {"connections", connections}, {"network_observation_ids", observations}};
+            {"artifacts",
+             {{"server.jsonl", "complete"},
+              {"client.jsonl", "complete"},
+              {"lookup.jsonl", status == "incomplete" ? "partial" : "complete"},
+              {"ca.jsonl", status == "error" ? "missing" : "complete"}}},
+            {"connections", connections},
+            {"network_observation_ids", observations}};
 }
 
 Json ledger_summary(std::size_t requested, std::size_t started, std::size_t success,
                     std::size_t timeout, std::size_t error, std::size_t incomplete) {
-    return {{"type", "turtle-attempt-ledger"}, {"schema", 1},
-            {"record_kind", "run_summary"}, {"requested", requested},
-            {"started", started}, {"success", success}, {"timeout", timeout},
-            {"error", error}, {"incomplete", incomplete},
-            {"not_attempted", requested - started}, {"missing_artifacts", 0},
+    return {{"type", "turtle-attempt-ledger"},
+            {"schema", 1},
+            {"record_kind", "run_summary"},
+            {"requested", requested},
+            {"started", started},
+            {"success", success},
+            {"timeout", timeout},
+            {"error", error},
+            {"incomplete", incomplete},
+            {"not_attempted", requested - started},
+            {"missing_artifacts", 0},
             {"missing_artifact_rows", Json::array()}};
 }
 
 Json tls_header(std::uint64_t sample, bool valid = true) {
-    return {{"type", "sample"}, {"schema", 1}, {"sample", sample}, {"batch", 1},
-            {"measurement_contract_revision", 2},
-            {"role", "client"}, {"valid", valid}, {"profile_hash", "tls-profile"},
-            {"environment_hash", "env"}, {"mode", "timing"}, {"pinned_cpu", 2},
-            {"loaded_context_size", 0}, {"loaded_context_hash", ""},
-            {"perf_complete", false},
-            {"config", {{"scenario_name", "synthetic-lookup-plus-standard-tls"},
-                         {"lookup", {{"enabled", true}, {"cache_mode", "empty"}}},
-                         {"client_adapter", "fixture-client"}, {"server_adapter", "fixture-server"},
-                         {"perf", false}, {"perf_scope", "user"},
-                         {"isolate", true}, {"pin_cores", true},
-                         {"kernel_timestamps", false},
-                         {"timeout_ms", 10000}, {"failure_policy", "fixed-attempts"},
-                         {"flush_grace_ms", 500},
-                         {"warmups", 0}, {"connections", 2}, {"tcp_nodelay", true},
-                         {"socket_send_buffer", 1024}, {"socket_receive_buffer", 2048}}},
-            {"declaration", {{"library", "fixture"}, {"version", "1"},
-                              {"build_options", "default"}}},
-            {"capabilities", {{"monotonic_clock", true}, {"thread_cpu_clock", true},
-                               {"perf", false}, {"perf_requested_scope", "user"},
-                               {"perf_status", "disabled"},
-                               {"perf_effective_scope", nullptr},
-                               {"perf_failure_stage", nullptr}, {"perf_error_number", nullptr},
-                               {"perf_note", "disabled by profile"},
-                               {"heap_tracking", true}, {"affinity", true},
-                               {"kernel_timestamp_configured", false}}},
-            {"observation_level", "L0"},
-            {"connections", Json::array({{{"index", 0}, {"warmup", false},
-                                            {"application_verified", true},
-                                            {"socket", {{"nonblocking", true}, {"tcp_nodelay", true},
-                                                        {"send_buffer", 1024}, {"receive_buffer", 2048},
-                                                        {"kernel_timestamps", false}}},
-                                            {"tcp_start", {{"snd_mss", 1448}, {"rcv_mss", 1448}}}},
-                                          {{"index", 1}, {"warmup", false},
-                                            {"application_verified", true},
-                                            {"socket", {{"nonblocking", true}, {"tcp_nodelay", true},
-                                                        {"send_buffer", 1024}, {"receive_buffer", 2048},
-                                                        {"kernel_timestamps", false}}},
-                                            {"tcp_start", {{"snd_mss", 1448}, {"rcv_mss", 1448}}}}})}};
+    return {
+        {"type", "sample"},
+        {"schema", 3},
+        {"sample", sample},
+        {"batch", 1},
+        {"measurement_contract_revision", 3},
+        {"run_id", "lookup-" + std::to_string(sample)},
+        {"context_id", "context"},
+        {"scenario", Json::object()},
+        {"adapter_connection", {{"mode", "module"}, {"tls_linkage", "fixture"}}},
+        {"role", "client"},
+        {"valid", valid},
+        {"profile_hash", "tls-profile"},
+        {"environment_hash", "env"},
+        {"mode", "timing"},
+        {"pinned_cpu", 2},
+        {"loaded_context_size", 0},
+        {"loaded_context_hash", ""},
+        {"perf_complete", false},
+        {"config",
+         {{"tls", Json::object()},
+          {"scenario_name", "synthetic-lookup-plus-standard-tls"},
+          {"lookup", {{"enabled", true}, {"cache_mode", "empty"}}},
+          {"implementation", "fixture-client"},
+          {"perf", false},
+          {"perf_scope", "user"},
+          {"isolate", true},
+          {"pin_cores", true},
+          {"kernel_timestamps", false},
+          {"timeout_ms", 10000},
+          {"failure_policy", "fixed-attempts"},
+          {"flush_grace_ms", 500},
+          {"warmups", 0},
+          {"connections", 2},
+          {"tcp_nodelay", true},
+          {"socket_send_buffer", 1024},
+          {"socket_receive_buffer", 2048}}},
+        {"declaration", {{"library", "fixture"}, {"version", "1"}, {"build_options", "default"}}},
+        {"capabilities",
+         {{"monotonic_clock", true},
+          {"thread_cpu_clock", true},
+          {"perf", false},
+          {"perf_requested_scope", "user"},
+          {"perf_status", "disabled"},
+          {"perf_effective_scope", nullptr},
+          {"perf_failure_stage", nullptr},
+          {"perf_error_number", nullptr},
+          {"perf_note", "disabled by profile"},
+          {"heap_tracking", true},
+          {"affinity", true},
+          {"kernel_timestamp_configured", false}}},
+        {"observation_level", "L0"},
+        {"connections", Json::array({{{"index", 0},
+                                      {"warmup", false},
+                                      {"end_sequence", 4},
+                                      {"scenario_completed", true},
+                                      {"application_verified", true},
+                                      {"socket",
+                                       {{"nonblocking", true},
+                                        {"tcp_nodelay", true},
+                                        {"send_buffer", 1024},
+                                        {"receive_buffer", 2048},
+                                        {"kernel_timestamps", false}}},
+                                      {"tcp_start", {{"snd_mss", 1448}, {"rcv_mss", 1448}}}},
+                                     {{"index", 1},
+                                      {"warmup", false},
+                                      {"end_sequence", 8},
+                                      {"scenario_completed", true},
+                                      {"application_verified", true},
+                                      {"socket",
+                                       {{"nonblocking", true},
+                                        {"tcp_nodelay", true},
+                                        {"send_buffer", 1024},
+                                        {"receive_buffer", 2048},
+                                        {"kernel_timestamps", false}}},
+                                      {"tcp_start", {{"snd_mss", 1448}, {"rcv_mss", 1448}}}}})}};
 }
 
 void write_tls(const std::filesystem::path& directory, std::uint64_t sample) {
@@ -86,71 +136,119 @@ void write_tls(const std::filesystem::path& directory, std::uint64_t sample) {
     line(out, tls_header(sample));
     for (std::size_t connection = 0; connection < 2; ++connection) {
         const auto base = 1000 + connection * 100;
-        line(out, {{"connection", connection}, {"location", "implementation_boundary"},
-                   {"kind", "CALL_BEGIN"}, {"call", "handshake"},
+        line(out, {{"connection", connection},
+                   {"location", "implementation_boundary"},
+                   {"sequence", connection * 4 + 1},
+                   {"kind", "CALL_BEGIN"},
+                   {"call", "handshake"},
                    {"monotonic_ns", base}});
-        line(out, {{"connection", connection}, {"location", "implementation_boundary"},
-                   {"kind", "CALL_END"}, {"call", "handshake"}, {"result", 0},
+        line(out, {{"connection", connection},
+                   {"location", "implementation_boundary"},
+                   {"sequence", connection * 4 + 2},
+                   {"kind", "CALL_END"},
+                   {"call", "handshake"},
+                   {"result", 0},
                    {"monotonic_ns", base + 20}});
-        line(out, {{"connection", connection}, {"location", "implementation_boundary"},
-                   {"kind", "CALL_BEGIN"}, {"call", "app_recv"},
+        line(out, {{"connection", connection},
+                   {"location", "implementation_boundary"},
+                   {"sequence", connection * 4 + 3},
+                   {"kind", "CALL_BEGIN"},
+                   {"call", "app_recv"},
                    {"monotonic_ns", base + 30}});
-        line(out, {{"connection", connection}, {"location", "implementation_boundary"},
-                   {"kind", "CALL_END"}, {"call", "app_recv"}, {"result", 2},
+        line(out, {{"connection", connection},
+                   {"location", "implementation_boundary"},
+                   {"sequence", connection * 4 + 4},
+                   {"kind", "CALL_END"},
+                   {"call", "app_recv"},
+                   {"result", 2},
                    {"monotonic_ns", base + 50}});
     }
     auto server = tls_header(sample);
     server["role"] = "server";
+    server["config"]["implementation"] = "fixture-server";
     server["pinned_cpu"] = 3;
     std::ofstream(directory / "server.jsonl") << server.dump() << '\n';
 }
 
 Json service_header(std::string type, std::uint64_t sample, int cpu) {
-    return {{"type", type}, {"schema", 1}, {"record_kind", "header"},
+    return {{"type", type},
+            {"schema", 1},
+            {"record_kind", "header"},
+            {"run_id", "lookup-" + std::to_string(sample)},
+            {"context_id", "context"},
             {"sample", sample},
             {"scenario_name", "synthetic-lookup-plus-standard-tls"},
-            {"cache_mode", "empty"}, {"cache_state_id", "empty:fixture"},
-            {"object_id", "fnv1a64:0000000000001234"}, {"object_size", 123},
+            {"cache_mode", "empty"},
+            {"cache_state_id", "empty:fixture"},
+            {"object_id", "fnv1a64:0000000000001234"},
+            {"object_size", 123},
             {"initial_cache_bytes", 0},
-            {"cache_capacity", 256}, {"reference_bytes", 123},
-            {"reference_capacity", 256}, {"framework_reserved_bytes", 4096},
-            {"mode", "timing"}, {"pinned_cpu", cpu}, {"observation_level", "L0"}};
+            {"cache_capacity", 256},
+            {"reference_bytes", 123},
+            {"reference_capacity", 256},
+            {"framework_reserved_bytes", 4096},
+            {"mode", "timing"},
+            {"pinned_cpu", cpu},
+            {"observation_level", "L0"}};
 }
 
 void event(std::ofstream& out, std::string type, std::uint64_t sample, std::size_t connection,
            std::string kind, std::uint64_t monotonic, std::uint64_t cpu) {
-    line(out, {{"type", type}, {"schema", 1}, {"record_kind", "event"},
-               {"sample", sample}, {"connection", connection}, {"request_id", 1},
-               {"sequence", monotonic}, {"participant", type == "mock-ca" ? "mock-ca" : "client"},
-               {"stream_id", "fixture"}, {"kind", kind}, {"monotonic_ns", monotonic},
+    line(out, {{"type", type},
+               {"schema", 1},
+               {"record_kind", "event"},
+               {"sample", sample},
+               {"connection", connection},
+               {"request_id", 1},
+               {"sequence", monotonic},
+               {"participant", type == "mock-ca" ? "mock-ca" : "client"},
+               {"stream_id", "fixture"},
+               {"kind", kind},
+               {"monotonic_ns", monotonic},
                {"thread_cpu_ns", cpu}});
 }
 
-void summary(std::ofstream& out, std::string type, std::uint64_t sample,
-             std::size_t connection, bool hit, std::string status = "complete") {
-    line(out, {{"type", type}, {"schema", 1}, {"record_kind", "connection_summary"},
-               {"sample", sample}, {"connection", connection}, {"warmup", false},
-               {"request_id", 1}, {"object_id", "fnv1a64:0000000000001234"},
-               {"object_size", 123}, {"cache_hit", hit}, {"request_count", hit ? 0 : 1},
-               {"logical_cache_bytes", hit ? 123 : 0}, {"cache_capacity", 256},
-               {"reference_bytes", 123}, {"framework_reserved_bytes", 4096},
-               {"tcp_start", {{"snd_mss", 1448}, {"rcv_mss", 1448},
-                                {"total_retrans", 2}, {"bytes_acked", 10}}},
-               {"tcp_end", {{"snd_mss", 1448}, {"rcv_mss", 1448},
-                              {"total_retrans", sample == 1 ? 9 : 5},
-                              {"bytes_acked", sample == 1 ? 210 : 110}}},
-               {"artifact_status", status}, {"incomplete_reason", ""}});
+void summary(std::ofstream& out, std::string type, std::uint64_t sample, std::size_t connection,
+             bool hit, std::string status = "complete") {
+    line(out, {{"type", type},
+               {"schema", 1},
+               {"record_kind", "connection_summary"},
+               {"sample", sample},
+               {"connection", connection},
+               {"warmup", false},
+               {"request_id", 1},
+               {"object_id", "fnv1a64:0000000000001234"},
+               {"object_size", 123},
+               {"cache_hit", hit},
+               {"request_count", hit ? 0 : 1},
+               {"logical_cache_bytes", hit ? 123 : 0},
+               {"cache_capacity", 256},
+               {"reference_bytes", 123},
+               {"framework_reserved_bytes", 4096},
+               {"tcp_start",
+                {{"snd_mss", 1448}, {"rcv_mss", 1448}, {"total_retrans", 2}, {"bytes_acked", 10}}},
+               {"tcp_end",
+                {{"snd_mss", 1448},
+                 {"rcv_mss", 1448},
+                 {"total_retrans", sample == 1 ? 9 : 5},
+                 {"bytes_acked", sample == 1 ? 210 : 110}}},
+               {"artifact_status", status},
+               {"incomplete_reason", ""}});
 }
 
 void footer(std::ofstream& out, std::string type, std::uint64_t sample,
             std::string status = "complete") {
-    line(out, {{"type", type}, {"schema", 1}, {"record_kind", "footer"},
-               {"sample", sample}, {"artifact_status", status},
-               {"incomplete_reason", ""}, {"capture_dropped", 0}});
+    line(out, {{"type", type},
+               {"schema", 1},
+               {"record_kind", "footer"},
+               {"sample", sample},
+               {"artifact_status", status},
+               {"incomplete_reason", ""},
+               {"capture_dropped", 0}});
 }
 
-void write_services(const std::filesystem::path& directory, std::uint64_t sample,
-                    bool warm_second, bool omit_usable = false) {
+void write_services(const std::filesystem::path& directory, std::uint64_t sample, bool warm_second,
+                    bool omit_usable = false) {
     std::ofstream lookup(directory / "lookup.jsonl");
     line(lookup, service_header("certificate-lookup", sample, 2));
     for (std::size_t connection = 0; connection < 2; ++connection) {
@@ -195,60 +293,70 @@ int main() {
     std::filesystem::create_directories(root);
     {
         std::ofstream ledger(root / "attempts.jsonl");
-        line(ledger, {{"type", "turtle-attempt-ledger"}, {"schema", 1},
-                      {"record_kind", "run_config"}, {"requested_count", 5},
+        line(ledger, {{"type", "turtle-attempt-ledger"},
+                      {"schema", 1},
+                      {"record_kind", "run_config"},
+                      {"requested_count", 5},
                       {"failure_policy", "fixed-attempts"}});
         line(ledger, ledger_row(1, "timeout", Json::array({0}),
                                 Json::array({"1:scenario:begin", "1:scenario:end"})));
         line(ledger, ledger_row(2, "error", Json::array({0})));
         line(ledger, ledger_row(3, "incomplete", Json::array({0})));
-        line(ledger, ledger_row(4, "success", Json::array({0, 1}),
-                                Json::array({"4:setup:begin", "4:setup:end",
-                                             "4:scenario:begin", "4:scenario:end",
-                                             "4:cleanup:begin", "4:cleanup:end"})));
+        line(ledger,
+             ledger_row(4, "success", Json::array({0, 1}),
+                        Json::array({"4:setup:begin", "4:setup:end", "4:scenario:begin",
+                                     "4:scenario:end", "4:cleanup:begin", "4:cleanup:end"})));
         line(ledger, ledger_summary(5, 4, 1, 1, 1, 1));
     }
     std::ofstream(root / "network-provenance.json")
-        << Json({{"type", "turtle-network-provenance"}, {"schema", 1},
-                 {"status", "complete"}, {"reason", nullptr},
-                 {"director", {{"returncode", 0}}},
-                 {"host_network_identity", {{"unchanged", true},
-                                              {"before", {{"supported", true}}},
-                                              {"after", {{"supported", true}}}}},
-                 {"lifecycle", {{"namespace_fds_closed", true},
-                                  {"owned_pipe_fds_closed", true}}},
+        << Json({{"type", "turtle-network-provenance"},
+                 {"schema", 2},
+                 {"status", "complete"},
+                 {"reason", nullptr},
+                 {"runner", {{"returncode", 0}}},
+                 {"host_network_identity",
+                  {{"unchanged", true},
+                   {"before", {{"supported", true}}},
+                   {"after", {{"supported", true}}}}},
+                 {"lifecycle", {{"namespace_fds_closed", true}, {"owned_pipe_fds_closed", true}}},
                  {"cleanup", Json::array({{{"helper", "client"}, {"result", "reaped"}},
-                                            {{"helper", "server"}, {"result", "reaped"}},
-                                            {{"helper", "ca"}, {"result", "reaped"}},
-                                            {{"helper", "router"}, {"result", "reaped"}},
-                                            {{"observer", "reaped"}}})},
+                                          {{"helper", "server"}, {"result", "reaped"}},
+                                          {{"helper", "ca"}, {"result", "reaped"}},
+                                          {{"helper", "router"}, {"result", "reaped"}},
+                                          {{"observer", "reaped"}}})},
                  {"finished_monotonic_ns", 999},
-                 {"condition_identity", {{"topology", "four-veth"},
-                                          {"paths", {{{"logical", "ca_s2c"},
-                                                       {"requested", {{"delay_ms", 5}, {"loss_percent", 20}}},
-                                                       {"actual", {{"delay_ms", 5}, {"loss_percent", 20}}},
-                                                       {"handle", "1:"}, {"drops", 7}}}},
-                                          {"mtu", 1500},
-                                          {"offloads", {{"requested", "off"}, {"actual", "off"}}},
-                                          {"trace", {{"requested", true}}},
-                                          {"namespace_pid", 999}, {"port", 45678}}}})
+                 {"condition_identity",
+                  {{"topology", "four-veth"},
+                   {"paths",
+                    {{{"logical", "ca_s2c"},
+                      {"requested", {{"delay_ms", 5}, {"loss_percent", 20}}},
+                      {"actual", {{"delay_ms", 5}, {"loss_percent", 20}}},
+                      {"handle", "1:"},
+                      {"drops", 7}}}},
+                   {"mtu", 1500},
+                   {"offloads", {{"requested", "off"}, {"actual", "off"}}},
+                   {"trace", {{"requested", true}}},
+                   {"namespace_pid", 999},
+                   {"port", 45678}}}})
                .dump(2)
         << '\n';
     {
         std::ofstream observations(root / "network-observations.jsonl");
-        for (const auto* id : {"1:scenario:begin", "1:scenario:end",
-                               "4:setup:begin", "4:setup:end", "4:scenario:begin",
-                               "4:scenario:end", "4:cleanup:begin", "4:cleanup:end"})
-            line(observations, {{"type", "network-observation"}, {"schema", 1},
-                                {"observation_id", id}, {"attempt", id[0] - '0'},
-                                {"phase", std::string(id).find(":setup:") != std::string::npos
-                                              ? "setup"
-                                              : std::string(id).find(":cleanup:") != std::string::npos
-                                                    ? "cleanup" : "scenario"},
-                                {"edge", std::string(id).ends_with("begin") ? "begin" : "end"},
-                                {"monotonic_ns", 100},
-                                {"qdiscs", {{"ca_s2c", {{"drops", 7}}}}},
-                                {"packet_trace", {{"packets", 3}}}});
+        for (const auto* id :
+             {"1:scenario:begin", "1:scenario:end", "4:setup:begin", "4:setup:end",
+              "4:scenario:begin", "4:scenario:end", "4:cleanup:begin", "4:cleanup:end"})
+            line(observations,
+                 {{"type", "network-observation"},
+                  {"schema", 1},
+                  {"observation_id", id},
+                  {"attempt", id[0] - '0'},
+                  {"phase", std::string(id).find(":setup:") != std::string::npos     ? "setup"
+                            : std::string(id).find(":cleanup:") != std::string::npos ? "cleanup"
+                                                                                     : "scenario"},
+                  {"edge", std::string(id).ends_with("begin") ? "begin" : "end"},
+                  {"monotonic_ns", 100},
+                  {"qdiscs", {{"ca_s2c", {{"drops", 7}}}}},
+                  {"packet_trace", {{"packets", 3}}}});
     }
     for (std::uint64_t sample : {1, 4}) {
         const auto directory = root / ("sample-" + std::to_string(sample));
@@ -258,9 +366,13 @@ int main() {
 
     const auto report = turtle::report::summarize_lookup(root, output);
     assert(report["network_integrity"][0]["integrity"]["status"] == "failed");
-    assert(report["denominators"] == Json({{"requested", 5}, {"started", 4},
-                                            {"success", 1}, {"timeout", 1}, {"error", 1},
-                                            {"incomplete", 1}, {"not_attempted", 1}}));
+    assert(report["denominators"] == Json({{"requested", 5},
+                                           {"started", 4},
+                                           {"success", 1},
+                                           {"timeout", 1},
+                                           {"error", 1},
+                                           {"incomplete", 1},
+                                           {"not_attempted", 1}}));
     assert(report["attempt_table"][0]["final_status"] == "timeout");
     assert(report["attempt_table"][0]["connection_rows"].size() == 1);
     assert(report["attempt_table"][0]["artifacts"]["lookup.jsonl"] == "complete");
@@ -297,8 +409,7 @@ int main() {
     const auto provenance_path = root / "network-provenance.json";
     const auto saved_provenance_path = root / "network-provenance.saved";
     std::filesystem::rename(provenance_path, saved_provenance_path);
-    const auto loopback_report =
-        turtle::report::summarize_lookup(root, root / "loopback-report");
+    const auto loopback_report = turtle::report::summarize_lookup(root, root / "loopback-report");
     std::filesystem::rename(saved_provenance_path, provenance_path);
     assert(loopback_report["joined_rows"][3]["automatic_comparison_eligible"] == false);
     assert(loopback_report["joined_rows"][3]["descriptive_distribution_eligible"] == true);
@@ -306,8 +417,7 @@ int main() {
     for (const auto& group : loopback_report["condition_groups"])
         for (const auto& reference : group["joined_rows"])
             if (reference == 3)
-                retained_distribution =
-                    group["distributions"]["tls_elapsed_ns"]["count"] == 1;
+                retained_distribution = group["distributions"]["tls_elapsed_ns"]["count"] == 1;
     assert(retained_distribution);
 
     auto rewrite_header = [](const std::filesystem::path& path, auto change) {
@@ -323,67 +433,27 @@ int main() {
     const auto sample4 = root / "sample-4";
     assert(cold["condition_identity"]["client_endpoint"]["loaded_context"] ==
            Json({{"size", 0}, {"hash", ""}}));
-    assert(cold["condition_identity"]["client_endpoint"]
-               ["measurement_contract_revision"] == 2);
-    assert(cold["condition_identity"]["server_endpoint"]
-               ["measurement_contract_revision"] == 2);
-    assert(cold["condition_identity"]["client_endpoint"]["measurement_controls"]
-               ["channel_observer"] == true);
-    assert(cold["condition_identity"]["server_endpoint"]["measurement_controls"]
-               ["channel_observer"] == true);
+    assert(cold["condition_identity"]["client_endpoint"]["measurement_contract_revision"] == 3);
+    assert(cold["condition_identity"]["server_endpoint"]["measurement_contract_revision"] == 3);
+    assert(
+        cold["condition_identity"]["client_endpoint"]["measurement_controls"]["channel_observer"] ==
+        true);
+    assert(
+        cold["condition_identity"]["server_endpoint"]["measurement_controls"]["channel_observer"] ==
+        true);
     std::filesystem::rename(provenance_path, saved_provenance_path);
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header.erase("measurement_contract_revision");
-    });
-    const auto legacy_client_contract =
-        turtle::report::summarize_lookup(root, root / "legacy-client-contract-report");
-    const auto& legacy_client_row = legacy_client_contract["joined_rows"][3];
-    assert(legacy_client_row["condition_identity"]["client_endpoint"]
-                            ["measurement_contract_revision"].is_null());
-    assert(legacy_client_row["automatic_comparison_eligible"] == false);
-    assert(legacy_client_row["descriptive_distribution_eligible"] == true);
-    assert(std::find(legacy_client_row["comparison_exclusion_reasons"].begin(),
-                     legacy_client_row["comparison_exclusion_reasons"].end(),
-                     "missing_identity:client_measurement_contract_revision_unknown") !=
-           legacy_client_row["comparison_exclusion_reasons"].end());
-    bool legacy_client_distribution_retained = false;
-    for (const auto& group : legacy_client_contract["condition_groups"])
-        for (const auto& reference : group["joined_rows"])
-            if (reference == 3)
-                legacy_client_distribution_retained =
-                    group["distributions"]["tls_elapsed_ns"]["count"] == 1;
-    assert(legacy_client_distribution_retained);
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["measurement_contract_revision"] = 2;
-    });
-    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
-        header.erase("measurement_contract_revision");
-    });
-    const auto legacy_server_contract =
-        turtle::report::summarize_lookup(root, root / "legacy-server-contract-report");
-    const auto& legacy_server_row = legacy_server_contract["joined_rows"][3];
-    assert(legacy_server_row["condition_identity"]["server_endpoint"]
-                            ["measurement_contract_revision"].is_null());
-    assert(legacy_server_row["automatic_comparison_eligible"] == false);
-    assert(std::find(legacy_server_row["comparison_exclusion_reasons"].begin(),
-                     legacy_server_row["comparison_exclusion_reasons"].end(),
-                     "missing_identity:server_measurement_contract_revision_unknown") !=
-           legacy_server_row["comparison_exclusion_reasons"].end());
-    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
-        header["measurement_contract_revision"] = 2;
-    });
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["measurement_contract_revision"] = 3;
-    });
-    const auto different_contract =
-        turtle::report::summarize_lookup(root, root / "different-contract-report");
-    assert(different_contract["joined_rows"][3]["condition_identity"] !=
-           cold["condition_identity"]);
-    assert(different_contract["joined_rows"][3]["condition_identity"]
-                             ["client_endpoint"]["measurement_contract_revision"] == 3);
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["measurement_contract_revision"] = 2;
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header.erase("measurement_contract_revision"); });
+    bool obsolete_rejected = false;
+    try {
+        turtle::report::summarize_lookup(root, root / "unsupported-contract");
+    } catch (const std::runtime_error& e) {
+        obsolete_rejected = std::string(e.what()).find(
+                                "requires measurement contract revision 3") != std::string::npos;
+    }
+    assert(obsolete_rejected);
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["measurement_contract_revision"] = 3; });
 
     const auto& cold_client = cold["condition_identity"]["client_endpoint"];
     assert(cold_client["measurement_controls"]["perf_scope"] == "user");
@@ -411,66 +481,62 @@ int main() {
                            group["distributions"]["ca_cpu_ns"]["count"] > 0;
         assert(retained);
     };
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["capabilities"].erase("perf_effective_scope");
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["capabilities"].erase("perf_effective_scope"); });
     const auto disabled_missing_client =
         turtle::report::summarize_lookup(root, root / "disabled-missing-client-effective-report");
     const auto& disabled_missing_client_row = disabled_missing_client["joined_rows"][3];
-    assert(!disabled_missing_client_row["condition_identity"]["client_endpoint"]["support"]
-                                        .contains("perf_effective_scope"));
+    assert(
+        !disabled_missing_client_row["condition_identity"]["client_endpoint"]["support"].contains(
+            "perf_effective_scope"));
     assert(disabled_missing_client_row["descriptive_distribution_eligible"] == true);
     assert(std::find(disabled_missing_client_row["comparison_exclusion_reasons"].begin(),
                      disabled_missing_client_row["comparison_exclusion_reasons"].end(),
                      "missing_identity:client_perf_condition_unknown") !=
            disabled_missing_client_row["comparison_exclusion_reasons"].end());
-    require_retained_lookup_distributions(disabled_missing_client,
-                                          disabled_missing_client_row);
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["capabilities"]["perf_effective_scope"] = nullptr;
-    });
-    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
-        header["capabilities"].erase("perf_effective_scope");
-    });
+    require_retained_lookup_distributions(disabled_missing_client, disabled_missing_client_row);
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["capabilities"]["perf_effective_scope"] = nullptr; });
+    rewrite_header(sample4 / "server.jsonl",
+                   [](Json& header) { header["capabilities"].erase("perf_effective_scope"); });
     const auto disabled_missing_server =
         turtle::report::summarize_lookup(root, root / "disabled-missing-server-effective-report");
     const auto& disabled_missing_server_row = disabled_missing_server["joined_rows"][3];
-    assert(!disabled_missing_server_row["condition_identity"]["server_endpoint"]["support"]
-                                        .contains("perf_effective_scope"));
+    assert(
+        !disabled_missing_server_row["condition_identity"]["server_endpoint"]["support"].contains(
+            "perf_effective_scope"));
     assert(disabled_missing_server_row["descriptive_distribution_eligible"] == true);
     assert(std::find(disabled_missing_server_row["comparison_exclusion_reasons"].begin(),
                      disabled_missing_server_row["comparison_exclusion_reasons"].end(),
                      "missing_identity:server_perf_condition_unknown") !=
            disabled_missing_server_row["comparison_exclusion_reasons"].end());
-    require_retained_lookup_distributions(disabled_missing_server,
-                                          disabled_missing_server_row);
-    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
-        header["capabilities"]["perf_effective_scope"] = nullptr;
-    });
+    require_retained_lookup_distributions(disabled_missing_server, disabled_missing_server_row);
+    rewrite_header(sample4 / "server.jsonl",
+                   [](Json& header) { header["capabilities"]["perf_effective_scope"] = nullptr; });
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
         header["config"].erase("perf_scope");
         header["capabilities"].erase("perf_requested_scope");
         header["capabilities"].erase("perf_status");
         header["capabilities"].erase("perf_effective_scope");
     });
-    const auto legacy_perf =
-        turtle::report::summarize_lookup(root, root / "legacy-perf-report");
-    const auto& legacy_perf_row = legacy_perf["joined_rows"][3];
-    assert(legacy_perf_row["condition_identity"]["client_endpoint"]
-                          ["measurement_controls"]["perf_scope"].is_null());
-    assert(legacy_perf_row["automatic_comparison_eligible"] == false);
-    assert(legacy_perf_row["descriptive_distribution_eligible"] == true);
-    assert(std::find(legacy_perf_row["comparison_exclusion_reasons"].begin(),
-                     legacy_perf_row["comparison_exclusion_reasons"].end(),
+    const auto missing_perf = turtle::report::summarize_lookup(root, root / "missing-perf-report");
+    const auto& missing_perf_row = missing_perf["joined_rows"][3];
+    assert(missing_perf_row["condition_identity"]["client_endpoint"]["measurement_controls"]
+                           ["perf_scope"]
+                               .is_null());
+    assert(missing_perf_row["automatic_comparison_eligible"] == false);
+    assert(missing_perf_row["descriptive_distribution_eligible"] == true);
+    assert(std::find(missing_perf_row["comparison_exclusion_reasons"].begin(),
+                     missing_perf_row["comparison_exclusion_reasons"].end(),
                      "missing_identity:client_perf_condition_unknown") !=
-           legacy_perf_row["comparison_exclusion_reasons"].end());
-    bool legacy_perf_distribution_retained = false;
-    for (const auto& group : legacy_perf["condition_groups"])
+           missing_perf_row["comparison_exclusion_reasons"].end());
+    bool missing_perf_distribution_retained = false;
+    for (const auto& group : missing_perf["condition_groups"])
         for (const auto& reference : group["joined_rows"])
             if (reference == 3)
-                legacy_perf_distribution_retained =
+                missing_perf_distribution_retained =
                     group["distributions"]["tls_elapsed_ns"]["count"] == 1;
-    assert(legacy_perf_distribution_retained);
+    assert(missing_perf_distribution_retained);
 
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
         header["config"]["perf"] = true;
@@ -485,22 +551,19 @@ int main() {
     });
     const auto unsupported_perf =
         turtle::report::summarize_lookup(root, root / "unsupported-perf-report");
-    const auto unsupported_identity =
-        unsupported_perf["joined_rows"][3]["condition_identity"];
-    assert(unsupported_identity["client_endpoint"]["support"]["perf_status"] ==
-           "unsupported");
+    const auto unsupported_identity = unsupported_perf["joined_rows"][3]["condition_identity"];
+    assert(unsupported_identity["client_endpoint"]["support"]["perf_status"] == "unsupported");
     assert(std::find(unsupported_perf["joined_rows"][3]["comparison_exclusion_reasons"].begin(),
                      unsupported_perf["joined_rows"][3]["comparison_exclusion_reasons"].end(),
                      "missing_identity:client_perf_condition_unknown") ==
            unsupported_perf["joined_rows"][3]["comparison_exclusion_reasons"].end());
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["capabilities"].erase("perf_effective_scope");
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["capabilities"].erase("perf_effective_scope"); });
     const auto unsupported_missing_client = turtle::report::summarize_lookup(
         root, root / "unsupported-missing-client-effective-report");
     const auto& unsupported_missing_client_row = unsupported_missing_client["joined_rows"][3];
     assert(!unsupported_missing_client_row["condition_identity"]["client_endpoint"]["support"]
-                                           .contains("perf_effective_scope"));
+                .contains("perf_effective_scope"));
     assert(unsupported_missing_client_row["descriptive_distribution_eligible"] == true);
     assert(std::find(unsupported_missing_client_row["comparison_exclusion_reasons"].begin(),
                      unsupported_missing_client_row["comparison_exclusion_reasons"].end(),
@@ -508,9 +571,8 @@ int main() {
            unsupported_missing_client_row["comparison_exclusion_reasons"].end());
     require_retained_lookup_distributions(unsupported_missing_client,
                                           unsupported_missing_client_row);
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["capabilities"]["perf_effective_scope"] = nullptr;
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["capabilities"]["perf_effective_scope"] = nullptr; });
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
         header["capabilities"]["perf_failure_stage"] = "initial_read";
         header["capabilities"]["perf_error_number"] = 95;
@@ -518,8 +580,7 @@ int main() {
     });
     const auto changed_diagnostic =
         turtle::report::summarize_lookup(root, root / "changed-perf-diagnostic-report");
-    assert(changed_diagnostic["joined_rows"][3]["condition_identity"] ==
-           unsupported_identity);
+    assert(changed_diagnostic["joined_rows"][3]["condition_identity"] == unsupported_identity);
     rewrite_header(sample4 / "server.jsonl", [](Json& header) {
         header["config"]["perf"] = true;
         header["capabilities"]["perf"] = false;
@@ -530,7 +591,7 @@ int main() {
         root, root / "unsupported-missing-server-effective-report");
     const auto& unsupported_missing_server_row = unsupported_missing_server["joined_rows"][3];
     assert(!unsupported_missing_server_row["condition_identity"]["server_endpoint"]["support"]
-                                           .contains("perf_effective_scope"));
+                .contains("perf_effective_scope"));
     assert(unsupported_missing_server_row["descriptive_distribution_eligible"] == true);
     assert(std::find(unsupported_missing_server_row["comparison_exclusion_reasons"].begin(),
                      unsupported_missing_server_row["comparison_exclusion_reasons"].end(),
@@ -565,29 +626,31 @@ int main() {
             header["capabilities"]["perf_note"] = "fixture counter group available";
         });
     };
-    auto copy_fixture_run = [&](const std::filesystem::path& collection,
-                                const std::string& name) {
+    auto copy_fixture_run = [&](const std::filesystem::path& collection, const std::string& name) {
         const auto destination = collection / name;
         std::filesystem::create_directories(destination);
         std::filesystem::copy_file(root / "attempts.jsonl", destination / "attempts.jsonl");
-        for (const auto* sample : {"sample-1", "sample-4"})
+        for (const auto* sample : {"sample-1", "sample-4"}) {
             std::filesystem::copy(root / sample, destination / sample,
                                   std::filesystem::copy_options::recursive);
+            for (const auto* role : {"client", "server", "lookup", "ca"})
+                rewrite_header(destination / sample / (std::string(role) + ".jsonl"),
+                               [&](Json& h) { h["run_id"] = name + ":" + sample; });
+        }
     };
     const auto perf_presence_runs = root / "perf-presence-runs";
     for (const auto* status : {"disabled", "unsupported"})
         for (const auto* missing_role : {"client", "server"}) {
             for (const auto* role : {"client", "server"})
-                rewrite_header(sample4 / (std::string(role) + ".jsonl"),
-                               [status](Json& header) {
-                                   const bool enabled = std::string(status) == "unsupported";
-                                   header["config"]["perf"] = enabled;
-                                   header["config"]["perf_scope"] = "user";
-                                   header["capabilities"]["perf"] = false;
-                                   header["capabilities"]["perf_requested_scope"] = "user";
-                                   header["capabilities"]["perf_status"] = status;
-                                   header["capabilities"]["perf_effective_scope"] = nullptr;
-                               });
+                rewrite_header(sample4 / (std::string(role) + ".jsonl"), [status](Json& header) {
+                    const bool enabled = std::string(status) == "unsupported";
+                    header["config"]["perf"] = enabled;
+                    header["config"]["perf_scope"] = "user";
+                    header["capabilities"]["perf"] = false;
+                    header["capabilities"]["perf_requested_scope"] = "user";
+                    header["capabilities"]["perf_status"] = status;
+                    header["capabilities"]["perf_effective_scope"] = nullptr;
+                });
             const auto prefix = std::string(status) + "-" + missing_role;
             copy_fixture_run(perf_presence_runs, prefix + "-known");
             rewrite_header(sample4 / (std::string(missing_role) + ".jsonl"), [](Json& header) {
@@ -595,8 +658,8 @@ int main() {
             });
             copy_fixture_run(perf_presence_runs, prefix + "-missing");
         }
-    const auto perf_presence = turtle::report::summarize_lookup(
-        perf_presence_runs, root / "perf-presence-matrix-report");
+    const auto perf_presence =
+        turtle::report::summarize_lookup(perf_presence_runs, root / "perf-presence-matrix-report");
     std::map<std::string, Json> successful_presence_rows;
     for (const auto& row : perf_presence["joined_rows"])
         if (row.value("attempt_status", "") == "success" &&
@@ -610,18 +673,18 @@ int main() {
             const auto& missing = successful_presence_rows.at(prefix + "-missing");
             assert(known["condition_identity"] != missing["condition_identity"]);
             const auto endpoint = std::string(missing_role) + "_endpoint";
-            assert(known["condition_identity"][endpoint]["support"].contains(
-                "perf_effective_scope"));
+            assert(
+                known["condition_identity"][endpoint]["support"].contains("perf_effective_scope"));
             assert(!missing["condition_identity"][endpoint]["support"].contains(
                 "perf_effective_scope"));
-            const auto reason = std::string("missing_identity:") + missing_role +
-                                "_perf_condition_unknown";
+            const auto reason =
+                std::string("missing_identity:") + missing_role + "_perf_condition_unknown";
             assert(std::find(known["comparison_exclusion_reasons"].begin(),
-                             known["comparison_exclusion_reasons"].end(), reason) ==
-                   known["comparison_exclusion_reasons"].end());
+                             known["comparison_exclusion_reasons"].end(),
+                             reason) == known["comparison_exclusion_reasons"].end());
             assert(std::find(missing["comparison_exclusion_reasons"].begin(),
-                             missing["comparison_exclusion_reasons"].end(), reason) !=
-                   missing["comparison_exclusion_reasons"].end());
+                             missing["comparison_exclusion_reasons"].end(),
+                             reason) != missing["comparison_exclusion_reasons"].end());
             require_retained_lookup_distributions(perf_presence, known);
             require_retained_lookup_distributions(perf_presence, missing);
         }
@@ -636,8 +699,8 @@ int main() {
     set_available_perf("server", "user+kernel");
     copy_fixture_run(perf_scope_runs, "server-kernel");
 
-    const auto perf_scopes = turtle::report::summarize_lookup(
-        perf_scope_runs, root / "perf-scope-matrix-report");
+    const auto perf_scopes =
+        turtle::report::summarize_lookup(perf_scope_runs, root / "perf-scope-matrix-report");
     std::map<std::string, Json> successful_scope_rows;
     for (const auto& row : perf_scopes["joined_rows"])
         if (row.value("attempt_status", "") == "success" &&
@@ -698,60 +761,54 @@ int main() {
     const auto explicit_off_identity =
         explicit_observer_off["joined_rows"][3]["condition_identity"];
     assert(explicit_off_identity != cold["condition_identity"]);
-    assert(explicit_off_identity["client_endpoint"]["measurement_controls"]
-                                ["channel_observer"] == false);
-    assert(explicit_off_identity["server_endpoint"]["measurement_controls"]
-                                ["channel_observer"] == false);
+    assert(explicit_off_identity["client_endpoint"]["measurement_controls"]["channel_observer"] ==
+           false);
+    assert(explicit_off_identity["server_endpoint"]["measurement_controls"]["channel_observer"] ==
+           false);
     for (const auto* role : {"client", "server"})
-        rewrite_header(sample4 / (std::string(role) + ".jsonl"), [](Json& header) {
-            header["config"].erase("channel_observer");
-        });
+        rewrite_header(sample4 / (std::string(role) + ".jsonl"),
+                       [](Json& header) { header["config"].erase("channel_observer"); });
     const auto marker_only_off =
         turtle::report::summarize_lookup(root, root / "marker-only-observer-off-report");
     assert(marker_only_off["joined_rows"][3]["condition_identity"] == explicit_off_identity);
     assert(marker_only_off["joined_rows"][3]["condition_identity"] != cold["condition_identity"]);
 
-    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
-        header["observation_level"] = "L0";
-    });
+    rewrite_header(sample4 / "server.jsonl",
+                   [](Json& header) { header["observation_level"] = "L0"; });
     const auto client_only_off =
         turtle::report::summarize_lookup(root, root / "client-only-observer-off-report");
     const auto client_only_identity = client_only_off["joined_rows"][3]["condition_identity"];
     assert(client_only_identity != cold["condition_identity"] &&
            client_only_identity != explicit_off_identity);
-    assert(client_only_identity["client_endpoint"]["measurement_controls"]
-                               ["channel_observer"] == false);
-    assert(client_only_identity["server_endpoint"]["measurement_controls"]
-                               ["channel_observer"] == true);
+    assert(client_only_identity["client_endpoint"]["measurement_controls"]["channel_observer"] ==
+           false);
+    assert(client_only_identity["server_endpoint"]["measurement_controls"]["channel_observer"] ==
+           true);
 
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["observation_level"] = "L0";
-    });
-    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
-        header["observation_level"] = "observer-disabled";
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["observation_level"] = "L0"; });
+    rewrite_header(sample4 / "server.jsonl",
+                   [](Json& header) { header["observation_level"] = "observer-disabled"; });
     const auto server_only_off =
         turtle::report::summarize_lookup(root, root / "server-only-observer-off-report");
     const auto server_only_identity = server_only_off["joined_rows"][3]["condition_identity"];
     assert(server_only_identity != cold["condition_identity"] &&
            server_only_identity != explicit_off_identity &&
            server_only_identity != client_only_identity);
-    assert(server_only_identity["client_endpoint"]["measurement_controls"]
-                               ["channel_observer"] == true);
-    assert(server_only_identity["server_endpoint"]["measurement_controls"]
-                               ["channel_observer"] == false);
-    rewrite_header(sample4 / "server.jsonl", [](Json& header) {
-        header["observation_level"] = "L0";
-    });
+    assert(server_only_identity["client_endpoint"]["measurement_controls"]["channel_observer"] ==
+           true);
+    assert(server_only_identity["server_endpoint"]["measurement_controls"]["channel_observer"] ==
+           false);
+    rewrite_header(sample4 / "server.jsonl",
+                   [](Json& header) { header["observation_level"] = "L0"; });
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
         header["loaded_context_size"] = 8;
         header["loaded_context_hash"] = "context-a";
     });
     const auto context_a = turtle::report::summarize_lookup(root, root / "context-a-report");
     assert(context_a["joined_rows"][3]["condition_identity"] != cold["condition_identity"]);
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["loaded_context_hash"] = "context-b";
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["loaded_context_hash"] = "context-b"; });
     const auto context_b = turtle::report::summarize_lookup(root, root / "context-b-report");
     assert(context_b["joined_rows"][3]["condition_identity"] !=
            context_a["joined_rows"][3]["condition_identity"]);
@@ -772,20 +829,18 @@ int main() {
     assert(memory_report["condition_groups"][0]["timing_interpretation"] == "diagnostic_only" ||
            memory_report["condition_groups"][1]["timing_interpretation"] == "diagnostic_only");
     rewrite_header(sample4 / "lookup.jsonl", [](Json& header) { header["mode"] = "timing"; });
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["config"]["client_adapter"] = "different-client";
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["config"]["implementation"] = "different-client"; });
     const auto adapter_report = turtle::report::summarize_lookup(root, root / "adapter-report");
     assert(adapter_report["joined_rows"][3]["condition_identity"] != cold["condition_identity"]);
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["config"]["client_adapter"] = "fixture-client";
-    });
-    rewrite_header(sample4 / "lookup.jsonl", [](Json& header) {
-        header.erase("initial_cache_bytes");
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["config"]["implementation"] = "fixture-client"; });
+    rewrite_header(sample4 / "lookup.jsonl",
+                   [](Json& header) { header.erase("initial_cache_bytes"); });
     const auto no_initial = turtle::report::summarize_lookup(root, root / "no-initial-report");
     assert(no_initial["joined_rows"][3]["automatic_comparison_eligible"] == false);
-    rewrite_header(sample4 / "lookup.jsonl", [](Json& header) { header["initial_cache_bytes"] = 0; });
+    rewrite_header(sample4 / "lookup.jsonl",
+                   [](Json& header) { header["initial_cache_bytes"] = 0; });
     auto rewrite_rows = [](const std::filesystem::path& path, auto change) {
         std::ifstream input(path);
         std::vector<Json> rows;
@@ -819,9 +874,8 @@ int main() {
             row.value("connection", std::size_t(-1)) == 0)
             row["tcp_start"]["snd_mss"] = 1448;
     });
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["config"].erase("timeout_ms");
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["config"].erase("timeout_ms"); });
     const auto policy_missing =
         turtle::report::summarize_lookup(root, root / "policy-missing-report");
     assert(policy_missing["joined_rows"][3]["automatic_comparison_eligible"] == false);
@@ -852,48 +906,42 @@ int main() {
     const auto warmup_baseline =
         turtle::report::summarize_lookup(root, root / "warmup-baseline-report");
     assert(warmup_baseline["joined_rows"][4]["warmup"] == true);
-    const auto warmup_identity =
-        warmup_baseline["joined_rows"][3]["condition_identity"];
+    const auto warmup_identity = warmup_baseline["joined_rows"][3]["condition_identity"];
     const auto warmup_group = warmup_baseline["joined_rows"][4]["condition_identity"];
     bool warmup_metrics_excluded = false;
     bool measured_metrics_retained = false;
     for (const auto& group : warmup_baseline["condition_groups"])
         if (group["condition_identity"] == warmup_group) {
-            warmup_metrics_excluded =
-                group["distributions"]["tls_elapsed_ns"]["count"] == 0;
+            warmup_metrics_excluded = group["distributions"]["tls_elapsed_ns"]["count"] == 0;
         } else if (group["condition_identity"] == warmup_identity) {
-            measured_metrics_retained =
-                group["distributions"]["tls_elapsed_ns"]["count"] == 1;
+            measured_metrics_retained = group["distributions"]["tls_elapsed_ns"]["count"] == 1;
         }
     assert(warmup_metrics_excluded);
     assert(measured_metrics_retained);
 
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["connections"][1]["socket"]["send_buffer"] = 4096;
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["connections"][1]["socket"]["send_buffer"] = 4096; });
     const auto warmup_socket_changed =
         turtle::report::summarize_lookup(root, root / "warmup-socket-changed-report");
     assert(warmup_socket_changed["joined_rows"][3]["condition_identity"] != warmup_identity);
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["connections"][1]["socket"]["send_buffer"] = 1024;
-    });
-    rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["connections"][1].erase("socket");
-    });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["connections"][1]["socket"]["send_buffer"] = 1024; });
+    rewrite_header(sample4 / "client.jsonl",
+                   [](Json& header) { header["connections"][1].erase("socket"); });
     const auto warmup_socket_missing =
         turtle::report::summarize_lookup(root, root / "warmup-socket-missing-report");
     assert(warmup_socket_missing["joined_rows"][3]["automatic_comparison_eligible"] == false);
-    assert(std::find(warmup_socket_missing["joined_rows"][3]
-                         ["comparison_exclusion_reasons"].begin(),
-                     warmup_socket_missing["joined_rows"][3]
-                         ["comparison_exclusion_reasons"].end(),
-                     "missing_identity:connection_policy_incomplete") !=
-           warmup_socket_missing["joined_rows"][3]
-               ["comparison_exclusion_reasons"].end());
+    assert(
+        std::find(warmup_socket_missing["joined_rows"][3]["comparison_exclusion_reasons"].begin(),
+                  warmup_socket_missing["joined_rows"][3]["comparison_exclusion_reasons"].end(),
+                  "missing_identity:connection_policy_incomplete") !=
+        warmup_socket_missing["joined_rows"][3]["comparison_exclusion_reasons"].end());
     rewrite_header(sample4 / "client.jsonl", [](Json& header) {
-        header["connections"][1]["socket"] = {
-            {"nonblocking", true}, {"tcp_nodelay", true}, {"send_buffer", 1024},
-            {"receive_buffer", 2048}, {"kernel_timestamps", false}};
+        header["connections"][1]["socket"] = {{"nonblocking", true},
+                                              {"tcp_nodelay", true},
+                                              {"send_buffer", 1024},
+                                              {"receive_buffer", 2048},
+                                              {"kernel_timestamps", false}};
     });
     for (const auto* role : {"client", "server"})
         rewrite_header(sample4 / (std::string(role) + ".jsonl"), [](Json& header) {
@@ -944,8 +992,8 @@ int main() {
     const std::string saved_observations{std::istreambuf_iterator<char>(observation_input),
                                          std::istreambuf_iterator<char>()};
     observation_input.close();
-    std::ofstream(observations_path) <<
-        "{\"type\":\"network-observation\",\"schema\":1,\"observation_id\":\"4:scenario:begin\"}\n";
+    std::ofstream(observations_path) << "{\"type\":\"network-observation\",\"schema\":1,"
+                                        "\"observation_id\":\"4:scenario:begin\"}\n";
     const auto missing_observation =
         turtle::report::summarize_lookup(root, root / "missing-observation-report");
     assert(missing_observation["joined_rows"][3]["network_integrity"]["eligible"] == false);
@@ -960,25 +1008,26 @@ int main() {
     const auto missing_identity = turtle::report::summarize_lookup(root, root / "missing-report");
     assert(missing_identity["condition_groups"][0]["automatic_comparison_eligible"] == false);
 
-    const auto legacy = root / "legacy";
-    std::filesystem::create_directories(legacy / "sample");
-    write_tls(legacy / "sample", 9);
-    auto server = tls_header(9);
-    server["role"] = "server";
-    std::ofstream(legacy / "sample" / "server.jsonl") << server.dump() << '\n';
-    std::ofstream(legacy / "sample" / "director.txt") << "invalid: child failed\n";
-    const auto legacy_report = turtle::report::summarize_lookup(legacy, legacy / "report");
-    assert(legacy_report["attempt_ledger_status"] ==
-           "absent_using_legacy_tls_and_director_fallback");
-    assert(legacy_report["denominators"]["error"] == 1);
-    assert(legacy_report["attempt_table"][0]["source"] == "legacy_tls_director_fallback");
+    const auto without_ledger = root / "without-ledger";
+    std::filesystem::create_directories(without_ledger / "sample");
+    write_tls(without_ledger / "sample", 9);
+    bool missing_ledger_rejected = false;
+    try {
+        turtle::report::summarize_lookup(without_ledger, without_ledger / "report");
+    } catch (const std::runtime_error& e) {
+        missing_ledger_rejected =
+            std::string(e.what()).find("requires attempts.jsonl") != std::string::npos;
+    }
+    assert(missing_ledger_rejected);
 
     const auto multi = root / "multi-run";
     for (const auto* run_name : {"run-a", "run-b"}) {
         std::filesystem::create_directories(multi / run_name);
         std::ofstream ledger(multi / run_name / "attempts.jsonl");
-        line(ledger, {{"type", "turtle-attempt-ledger"}, {"schema", 1},
-                      {"record_kind", "run_config"}, {"requested_count", 1},
+        line(ledger, {{"type", "turtle-attempt-ledger"},
+                      {"schema", 1},
+                      {"record_kind", "run_config"},
+                      {"requested_count", 1},
                       {"failure_policy", "fixed-attempts"}});
         line(ledger, ledger_row(1, "success", Json::array()));
         line(ledger, ledger_summary(1, 1, 1, 0, 0, 0));
@@ -1006,36 +1055,35 @@ int main() {
     };
     require_bad_ledger("empty-ledger", "");
     require_bad_ledger("malformed-ledger", "{broken\n");
-    const std::string config =
-        "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
-        "\"record_kind\":\"run_config\",\"requested_count\":1}\n";
-    require_bad_ledger("malformed-middle-ledger", config + "{broken\n" +
-        ledger_summary(1, 0, 0, 0, 0, 0).dump() + "\n");
+    const std::string config = "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
+                               "\"record_kind\":\"run_config\",\"requested_count\":1}\n";
+    require_bad_ledger("malformed-middle-ledger",
+                       config + "{broken\n" + ledger_summary(1, 0, 0, 0, 0, 0).dump() + "\n");
     require_bad_ledger("header-then-garbage-ledger", config + "{broken\n");
-    require_bad_ledger("invalid-schema-ledger", config +
-        "{\"type\":\"turtle-attempt-ledger\",\"schema\":2,"
-        "\"record_kind\":\"attempt_started\",\"attempt_id\":1}\n");
-    require_bad_ledger("wrong-type-terminal-ledger", config +
-        "{\"type\":\"turtle-attempt-ledger\",\"schema\":\"1\","
-        "\"record_kind\":\"attempt_started\",\"attempt_id\":1}\n");
-    require_bad_ledger("invalid-kind-ledger", config +
-        "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
-        "\"record_kind\":\"unknown\",\"attempt_id\":1}\n");
-    require_bad_ledger("missing-summary-ledger", config +
-        ledger_row(1, "success", Json::array()).dump() + "\n");
-    require_bad_ledger("truncated-summary-ledger", config +
-        ledger_row(1, "success", Json::array()).dump() + "\n" +
-        "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
-        "\"record_kind\":\"run_summary\",\"requested\":" );
-    require_bad_ledger("invalid-id-ledger", config +
-        "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
-        "\"record_kind\":\"attempt_started\",\"attempt_id\":2}\n");
-    require_bad_ledger("invalid-summary-ledger", config +
-        ledger_summary(1, 1, 0, 0, 0, 0).dump() + "\n");
-    require_bad_ledger("row-after-summary-ledger", config +
-        ledger_summary(1, 0, 0, 0, 0, 0).dump() + "\n" +
-        "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
-        "\"record_kind\":\"attempt_started\",\"attempt_id\":1}\n");
+    require_bad_ledger("invalid-schema-ledger",
+                       config + "{\"type\":\"turtle-attempt-ledger\",\"schema\":2,"
+                                "\"record_kind\":\"attempt_started\",\"attempt_id\":1}\n");
+    require_bad_ledger("wrong-type-terminal-ledger",
+                       config + "{\"type\":\"turtle-attempt-ledger\",\"schema\":\"1\","
+                                "\"record_kind\":\"attempt_started\",\"attempt_id\":1}\n");
+    require_bad_ledger("invalid-kind-ledger",
+                       config + "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
+                                "\"record_kind\":\"unknown\",\"attempt_id\":1}\n");
+    require_bad_ledger("missing-summary-ledger",
+                       config + ledger_row(1, "success", Json::array()).dump() + "\n");
+    require_bad_ledger("truncated-summary-ledger",
+                       config + ledger_row(1, "success", Json::array()).dump() + "\n" +
+                           "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
+                           "\"record_kind\":\"run_summary\",\"requested\":");
+    require_bad_ledger("invalid-id-ledger",
+                       config + "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
+                                "\"record_kind\":\"attempt_started\",\"attempt_id\":2}\n");
+    require_bad_ledger("invalid-summary-ledger",
+                       config + ledger_summary(1, 1, 0, 0, 0, 0).dump() + "\n");
+    require_bad_ledger("row-after-summary-ledger",
+                       config + ledger_summary(1, 0, 0, 0, 0, 0).dump() + "\n" +
+                           "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
+                           "\"record_kind\":\"attempt_started\",\"attempt_id\":1}\n");
 
     const auto partial = root / "partial-ledger";
     std::filesystem::create_directories(partial);
@@ -1045,8 +1093,7 @@ int main() {
            "\"record_kind\":\"attempt_started\",\"attempt_id\":1}\n"
         << "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
            "\"record_kind\":\"attempt_final\",\"attempt_id\":";
-    const auto partial_report =
-        turtle::report::summarize_lookup(partial, partial / "report");
+    const auto partial_report = turtle::report::summarize_lookup(partial, partial / "report");
     assert(partial_report["attempt_ledger_status"] == "authoritative_partial");
     assert(partial_report["attempt_table"][0]["final_status"] == "incomplete");
 

@@ -4,7 +4,7 @@
 
 계약은 `include/turtle/adapter.hpp` 하나입니다. `implementations/mock/`은 계약과 비차단 상태 진행의 예제이고, 실제 TLS 예제는 `implementations/openssl/`, `wolfssl/`, `mbedtls/`에 있습니다. mock은 TLS 구현이 아니므로 성능 비교 대상으로 쓰지 않습니다.
 
-새 `implementations/<이름>/`에서 공유 모듈을 만들고 `turtle_adapter_v3()`를 내보냅니다. 이 함수는 소유 객체가 아닌 함수표를 값으로 돌려줍니다. `ImplementationApi::version`은 `adapter_api_version`과 같은 3이어야 합니다. 초기화는 `setup`에서 수행합니다. 코어에 라이브러리 이름별 분기를 추가할 필요는 없습니다. 빌드된 `<이름>.so`를 모듈 폴더에 넣고 `--client` 또는 `--server`로 선택합니다.
+새 `implementations/<이름>/`에서 동일 소스를 내장 연결 또는 공유 모듈로 빌드하고 `turtle_adapter_v3()`를 내보냅니다. 이 함수는 소유 객체가 아닌 함수표를 값으로 돌려줍니다. `ImplementationApi::version`은 `adapter_api_version`과 같은 3이어야 합니다. 초기화는 `setup`에서 수행합니다. 코어에 라이브러리 이름별 분기를 추가할 필요는 없습니다. 직접 실행에서는 `--module <이름>.so`를 지정합니다. 내장 연결은 CMake의 `TURTLE_IMPLEMENTATION`으로 하나를 선택합니다. 외부 `turtle-local`의 `--client`·`--server`는 모듈 경로를 전달하는 선택입니다.
 
 이 계약은 **C++20 ABI**입니다. `extern "C"`는 진입점의 이름을 고정할 뿐, 반환하는 C++ 구조체를 순수 C ABI로 바꾸지 않습니다. C TLS 라이브러리도 얇은 C++ 어댑터로 연결하며, 프레임워크와 호환되는 컴파일러·표준 라이브러리로 함께 빌드합니다. ABI를 바꿀 때는 버전도 바꿉니다.
 
@@ -12,7 +12,7 @@
 
 로더는 `turtle_adapter_v3` 진입점만 찾으며 v1·v2 전용 모듈을 `declaration`이나 `setup` 호출 전에 거절합니다. 이때 오류는 `adapter ABI v3 entry turtle_adapter_v3 is missing`으로 진입점 불일치를 밝힙니다. v1·v2 함수표를 v3로 해석하는 호환 계층은 없습니다. 모듈은 코어 실행 파일과 같은 헤더·컴파일러·표준 라이브러리로 빌드합니다.
 
-어댑터 ABI 3는 모듈 바이너리 호환성을 나타냅니다. 원자료 `schema` 2는 JSON 형식의 호환성, `measurement_contract_revision=3`은 측정 귀속의 의미를 나타내며 서로 다른 버전입니다.
+어댑터 ABI 3는 모듈 바이너리 호환성을 나타냅니다. 원자료 `schema` 3는 JSON 형식의 호환성, `measurement_contract_revision=4`은 측정 귀속의 의미를 나타내며 서로 다른 버전입니다.
 
 ## 함수와 소유권
 
@@ -44,9 +44,11 @@
 `mock`은 완료한 모의 핸드셰이크 수를 8바이트 리틀 엔디언 정수로 저장합니다. 다음 예제는
 TLS나 성능 시험이 아니라 공개 계약의 저장·복원 동작을 확인하는 개발용 실행입니다.
 
+모듈 실험 빌드(`TURTLE_ADAPTER_LINKAGE=module`, `TURTLE_BUILD_MODULES=ON`)에서 실행합니다.
+
 ```sh
-./build/turtle run --client mock --server mock --samples 2 --output results/context-cold
-./build/turtle run --client mock --server mock --samples 2 \
+./build/turtle-local --client mock --server mock --samples 2 --output results/context-cold
+./build/turtle-local --client mock --server mock --samples 2 \
   --context results/context-cold/sample-000001 --output results/context-restored
 ```
 
@@ -75,7 +77,7 @@ TLS 역할에서는 시행마다 소켓을 만들기 위해 파일 설명자 한
 
 ## 수정하지 않은 OpenSSL CLI와 상호운용 시험
 
-`turtle_adapter_cli_endpoint`는 `include/turtle/adapter.hpp`의 공개 API만 사용해 어댑터 한 역할을 구동합니다. 생산 director나 어댑터 내부 헤더를 사용하지 않습니다. 통합 시험은 이 구동기를 수정하지 않은 `/usr/bin/openssl` 3.0.13의 `s_client` 또는 `s_server`와 실제 loopback TCP로 연결합니다.
+`turtle_adapter_cli_endpoint`는 `include/turtle/adapter.hpp`의 공개 API만 사용해 어댑터 한 역할을 구동합니다. 엔드포인트 실행기나 어댑터 내부 헤더를 사용하지 않습니다. 통합 시험은 이 구동기를 수정하지 않은 `/usr/bin/openssl` 3.0.13의 `s_client` 또는 `s_server`와 실제 loopback TCP로 연결합니다.
 
 ```sh
 ctest --test-dir build-tests -N -R '^openssl_cli_'
@@ -87,4 +89,4 @@ ctest --test-dir build-tests --output-on-failure \
 
 협상 필드에는 값과 함께 `observed`, `inferred`, `unobserved` 출처를 기록합니다. OpenSSL 어댑터는 그룹·세션 재개·HelloRetryRequest를 동적으로 관측하지만 서명 방식은 관측하지 못합니다. wolfSSL은 그룹·서명 방식·세션 재개를 관측하고 HelloRetryRequest를 단일 허용 그룹에서 추론합니다. Mbed TLS의 그룹·서명 방식·세션 재개·HelloRetryRequest는 고정 설정에 따른 추론입니다. 추론값을 실행 중 관측이라고 바꾸지 않습니다.
 
-현재 어댑터 ABI 3에는 TLS `close_notify` 함수가 없습니다. 응용 교환 뒤 객체와 소켓을 닫고 CLI에는 `-ignore_unexpected_eof`를 사용합니다. 따라서 이 시험은 정상 종료 알림의 완전성을 검증하지 않습니다. 단독 상호운용 시험은 콜백 정상 경로의 기능 증거이며 라이브러리 직접 소켓 경로와의 동등성, 지휘 프로세스 계측, 패킷 관측이나 성능 결과를 대신하지 않습니다.
+현재 어댑터 ABI 3에는 TLS `close_notify` 함수가 없습니다. 응용 교환 뒤 객체와 소켓을 닫고 CLI에는 `-ignore_unexpected_eof`를 사용합니다. 따라서 이 시험은 정상 종료 알림의 완전성을 검증하지 않습니다. 단독 상호운용 시험은 콜백 정상 경로의 기능 증거이며 라이브러리 직접 소켓 경로와의 동등성, 외부 실행기의 관측, 패킷 관측이나 성능 결과를 대신하지 않습니다.

@@ -4,6 +4,7 @@ elseif(DEFINED ENV{TURTLE_DEPS_ROOT} AND EXISTS "$ENV{TURTLE_DEPS_ROOT}/openssl"
   set(OPENSSL_ROOT_DIR "$ENV{TURTLE_DEPS_ROOT}/openssl")
 endif()
 find_package(OpenSSL 3.0 REQUIRED)
+set_property(TARGET OpenSSL::SSL OpenSSL::Crypto PROPERTY IMPORTED_GLOBAL TRUE)
 file(STRINGS "${OPENSSL_INCLUDE_DIR}/openssl/ssl.h" _turtle_openssl_trace
      REGEX "^# *define TURTLE_OPENSSL_TRACE_PATCH")
 add_library(turtle_adapter_openssl MODULE adapter.cpp)
@@ -23,3 +24,11 @@ endif()
 target_compile_definitions(turtle_adapter_openssl PRIVATE TURTLE_PATCH_SHA256="${_turtle_patch_hash}")
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/instrumentation.patch")
+
+if(OPENSSL_SSL_LIBRARY MATCHES "\\.a$")
+  set(_tls_linkage "static")
+else()
+  set(_tls_linkage "dynamic")
+endif()
+target_compile_definitions(turtle_adapter_openssl PRIVATE TURTLE_LIBRARY_LINKAGE="${_tls_linkage}")
+set_property(TARGET turtle_adapter_openssl PROPERTY TURTLE_LIBRARY_LINKAGE "${_tls_linkage}")

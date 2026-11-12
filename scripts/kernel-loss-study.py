@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """지정 바이트 손실·커널 재전송·랜덤 손실을 실제 TLS와 원자료로 검증합니다."""
+from profile_config import experiment_profile, flatten_experiment
 import argparse
 import csv
 import importlib.util
 import json
 import os
 from pathlib import Path
+from raw_record import read_tls_header
 import subprocess
 import sys
 
@@ -36,7 +38,7 @@ def analyze(root, build):
         if len(raw_files) != entry['samples'] * 2:
             failures.append({'run': entry['directory'], 'reason': 'endpoint_artifacts_missing'})
         for raw in raw_files:
-            header = json.loads(raw.read_text().splitlines()[0])
+            header = read_tls_header(raw)
             if not header['valid'] or not all(c['scenario_completed'] and c['application_verified']
                                               for c in header['connections']):
                 failures.append({'run': str(raw.relative_to(root)), 'reason': 'tls_or_payload_incomplete'})
@@ -113,7 +115,7 @@ def main():
                                    'pin_cores': False, 'perf': False, 'tx_timestamps': True,
                                    'timeout_ms': 30000}}
         profile_path = root / 'tls-profile.json'
-        profile_path.write_text(json.dumps(profile, indent=2) + '\n')
+        profile_path.write_text(json.dumps(experiment_profile(**profile), indent=2) + '\n')
         template = json.loads((Path(__file__).resolve().parent.parent /
                               'examples/networks/tls-kernel-no-loss.json').read_text())
         cases = [('no-loss', None, None, 0), ('client-first', 0, None, 0),

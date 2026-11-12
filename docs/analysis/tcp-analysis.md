@@ -22,7 +22,7 @@ TLS 실행의 `--mode trace --tx-timestamps` 또는 프로필의 `measurement.tx
 
 ## 속도와 초기 혼잡 윈도
 
-네트워크 프로필 schema 2의 각 방향 `rate_bps`는 bit/s 또는 제한 없음 null이며, `initial_cwnd.client/server`는 TCP 초기 혼잡 윈도의 세그먼트 수 또는 기본값 null입니다. schema 1의 기존 모양·뜻은 바꾸지 않습니다. `examples/networks/tls-1mbit-cwnd4.json`은 MTU 1500, offload 끔, 각 방향 5ms·1Mbit/s, 양쪽 초기 cwnd 4입니다.
+네트워크 프로필 schema 3의 각 방향 `rate_bps`는 bit/s 또는 제한 없음 null이며, `initial_cwnd.client/server`는 TCP 초기 혼잡 윈도의 세그먼트 수 또는 기본값 null입니다. `examples/networks/tls-1mbit-cwnd4.json`은 MTU 1500, offload 끔, 각 방향 5ms·1Mbit/s, 양쪽 초기 cwnd 4입니다.
 
 속도는 해당 라우터 방향의 netem에, 초기 cwnd는 엔드포인트의 상대 TLS 주소 경로에 적용합니다. `tc -j`의 byte/s를 bit/s로 환산해 확인하고 `ip -j route get`의 initcwnd와 연결 시작 `TCP_INFO.snd_cwnd`도 대조합니다. 요청값만으로 적용됐다고 판단하지 않습니다. 실제 적용값을 네트워크 비교 조건에 포함합니다. 경로 설정은 수신 윈도나 서버 응용 버퍼 크기와 다릅니다.
 
@@ -45,7 +45,7 @@ python3 scripts/tcp-correlate.py RESULTS/packets.jsonl \
 
 ## 지정 바이트 손실과 커널 재전송
 
-네트워크 프로필 schema 3은 `kernel_events`와 `targeted_drop.tls_c2s/tls_s2c`를 추가합니다. 방향별 값은 TLS 스트림의 0부터 시작하는 바이트 위치이며 null이면 지정 손실을 사용하지 않습니다. `tls-target-client-first.json`, `tls-target-server-first.json`, `tls-kernel-no-loss.json`이 예시입니다. 이 프로필은 패킷 추적과 TSO/GSO/GRO 끔을 요구합니다. 이전 schema 1·2의 뜻과 기본 실행은 유지합니다.
+네트워크 프로필 schema 3은 `kernel_events`와 `targeted_drop.tls_c2s/tls_s2c`를 추가합니다. 방향별 값은 TLS 스트림의 0부터 시작하는 바이트 위치이며 null이면 지정 손실을 사용하지 않습니다. `tls-target-client-first.json`, `tls-target-server-first.json`, `tls-kernel-no-loss.json`이 예시입니다. 이 프로필은 패킷 추적과 TSO/GSO/GRO 끔을 요구합니다.
 
 ```sh
 # 의존성 준비 때만 고정 libbpf 1.6.3 헤더를 받습니다.
@@ -77,5 +77,6 @@ tc clsact egress 프로그램이 SYN/SYN-ACK 다음 순번을 기준으로 연�
 - [송신 시각 행렬](../../artifacts/tx-timestamp-matrix-1/verification.json)은 세 라이브러리 × 네 시나리오 × 새 TCP 두 연결입니다. 48개 역할/연결에서 세 종류 커널 사건과 최종 바이트의 누적 ACK를 확인했습니다.
 - [속도·초기 윈도 검증](../../artifacts/network-tx-pilot-2/verification.json)은 양방향 1Mbit/s·5ms·initcwnd=4, 64KiB 응용 교환에서 실제 TCP_INFO와 원본 패킷·Finished의 커널 ACK를 대조합니다.
 - [커널 손실 행렬](../../artifacts/kernel-loss-matrix-final/verification.json)은 세 라이브러리 × 다섯 조건 × 두 새 프로세스 쌍 × 컨텍스트당 두 연결입니다. 60개 실제 TLS 연결·120개 역할/연결에서 양방향 32KiB, 스트림·패킷 일치와 정상 복구를 확인했습니다. 지정 제거 48건은 각각 후속 커널 재전송과 대응하며, 랜덤 5% 조건의 qdisc 제거는 51건입니다. seed는 고정되지 않았습니다.
+- [측정 계약 개정 4의 후속 실측](../../results/measurement-audit-20261112/privileged-followup/network/verification.json)은 세 라이브러리·각 두 연결에서 양방향 첫 패킷 제거 12건과 같은 바이트 범위의 후속 커널 재전송 12건, 정상 TLS·응용 완료를 확인했습니다. 관리자 권한으로 새로 수집했으며 이전 권한 부족 실패와 구별합니다. 수집 누락 0, pcap·TLS 바이트 일치, 호스트 네트워크 불변과 소유 자원 정리도 확인했습니다.
 
 네이티브 Linux의 패킷·BPF 관측 부담 평가와 ARM의 BTF·도구 호환성 재확인은 사용자 요청으로 유보합니다. 최신 회귀 검증과 자료의 해석 한계는 [검증 문서](../project/validation.md)를 따릅니다.

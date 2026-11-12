@@ -1,7 +1,22 @@
 # 보고서의 측정 구간과 비교 후보
 
+## 독립 엔드포인트 원자료 선택
+
+```sh
+build/turtle-report --pair CLIENT/client.jsonl SERVER/server.jsonl REPORT
+```
+
+두 경로는 서로 다른 작업·출력 폴더에서 회수한 자료일 수 있습니다. 각 원자료의 스트림·키 로그·해독 부가정보는 자기 파일 옆에 둡니다. schema 3은 명시한 파일 또는 입력 폴더에서 선택한 파일만 `(run_id, context_id, role)`로 찾습니다. 반대 역할을 임의의 이웃 폴더에서 추정하지 않으며 중복 식별자는 오류입니다. 공유 시나리오·표본·묶음·연결 순번도 대조합니다. TLS schema 1·2의 판독 경로는 제공하지 않습니다.
+
+경과 시간·스레드 CPU·PMU는 각 엔드포인트 안에서만 계산합니다. `cross_endpoint_elapsed_ns=null`, `cross_endpoint_time_reason=uncalibrated_clock_relationship`은 교차 장비 시간 관계를 관측하지 않았다는 뜻입니다. 실행 ID가 같아도 두 장비의 단조 시각을 직접 빼지 않습니다.
+
+schema 3의 조건에는 양쪽 어댑터 연결 방식·TLS 링크 방식·환경·인증서 입력 지문과 각 엔드포인트의 계측 설정을 넣습니다. 준비 교환을 기록한 자료는 `preparation_version`과 `peer_preparation_version`도 조건으로 구별합니다. 파일 경로·실행 ID·임시 TCP 포트는 반복 표본의 조건 키로 쓰지 않습니다. `builtin`의 모듈 로드 구간은 해당 없음이며 0비용 표본으로 평균하지 않습니다. 상대 원자료 부재·실패, 자기 정리 실패 표식과 외부 원장의 실패를 숨기지 않습니다.
+
+표본별 `preparation`은 제어 TCP 접속·시나리오 합의·양쪽 준비와 계측 지원 요약을 보존합니다. 과거 자료에 이 필드가 없으면 null입니다. `failure_phase`와 최종 `valid`를 함께 확인하며, 준비 완료 자체를 TLS 성공으로 해석하지 않습니다. 준비 시점의 `data_connection=not_probed`와 `peer_authentication=not_checked`는 첫 실제 연결의 인증·시나리오 완료 결과와 별개입니다.
+
+
 `turtle-report`는 원자료인 `client.jsonl`과 `server.jsonl`만 있어도 기본 보고서를 만듭니다.
-기본 측정 구간은 클라이언트와 서버를 따로 다룹니다. 개정 3은 클라이언트 첫 핸드셰이크 호출 또는 서버 첫 성공 TLS 수신부터 선택한 시나리오 완료까지입니다. 개정 1·2는 기존 클라이언트 응용 수신/서버 응용 송신 종료를 유지합니다. 해독 파일이 없거나 완전하지 않아도 이 기본 결과는
+기본 측정 구간은 클라이언트와 서버를 따로 다룹니다. 개정 4는 클라이언트 첫 핸드셰이크 호출 또는 서버 첫 성공 TLS 수신부터 시나리오의 마지막 성공 TLS API 반환까지입니다. 개정 3의 종료 표식과 소급해서 같게 취급하지 않습니다. 해독 파일이 없거나 완전하지 않아도 이 기본 결과는
 바뀌지 않습니다.
 
 ## 개정 3의 추가 보기
@@ -77,18 +92,20 @@ I/O 사건이나 완전한 해독 레코드 대응이 없으면 값을 만들지
 
 하나의 메시지가 여러 레코드에 걸치면 먼저 받은 레코드의 외피가 완성된 시점과 메시지 전체가 완성된 시점은 다릅니다. 이 한 메시지만 여러 레코드에 걸친 사실은 묶임이 아닙니다. `bundled`는 현재 I/O 경계의 `record_indices`에서 같이 선택된 메시지 인스턴스만으로 판정합니다. 다른 레코드에서만 다른 메시지와 공유한 상태를 현재 경계의 묶임으로 전파하지 않습니다. 반대로 한 레코드에 여러 메시지가 들면 인스턴스별 이름을 모두 남기고 `bundled=true`로 표시합니다. 하나의 암호화 레코드를 여러 번에 나눠 보내면 같은 레코드·메시지 이름이 여러 `before_send`에 나타날 수 있습니다. 이때 `names`는 해독한 레코드 외피가 겹친 후보이며, 그 반환 바이트에 각 메시지 전체가 독립적으로 들었다는 뜻이 아닙니다. 어느 경우에도 구간 시간을 이름 수로 나누거나 같은 이름으로 다시 합산하지 않습니다.
 
-이 보기는 라이브러리가 언제 작업을 배치했는지를 보는 구조 진단입니다. 특정 메시지의 내재적 비용이나 순수한 라이브러리 연산 시간이 아닙니다. 측정 계약 개정값 1은 I/O 반환 스냅샷 뒤에 스트림을 복사했으므로 그 비용이 후속 연산 구간에 들 수 있었습니다. 개정값 2는 스트림 복사와 반환·`KernelRx` 고정 공간 준비를 스냅샷 전 I/O로 옮겼지만, 복합 계측 읽기와 스냅샷 뒤 공간 대입·복귀 비용은 남습니다. 개정값 1의 귀속을 2로 소급 보정하지 않습니다. 특히 묶인 이름의 시간을 메시지별로 비교하지 않습니다. 비교가 필요하면 개별 이름이 아니라 `client_hello_to_finished_send`나 `server_client_hello_to_finished_send`같이 같은 이름·같은 경계로 정의한 전체 구간의 합계를 씁니다. `record_computation_attribution`은 그룹 통계나 자동 비교를 만들지 않습니다.
+이 보기는 라이브러리가 언제 작업을 배치했는지를 보는 구조 진단입니다. 특정 메시지의 내재적 비용이나 순수한 라이브러리 연산 시간이 아닙니다. 스트림 복사와 반환·`KernelRx` 고정 공간 준비는 스냅샷 전 I/O 구간에 포함하지만, 복합 계측 읽기와 스냅샷 뒤 대입·복귀 비용은 남습니다. 특히 묶인 이름의 시간을 메시지별로 비교하지 않습니다. 비교가 필요하면 개별 이름이 아니라 `client_hello_to_finished_send`나 `server_client_hello_to_finished_send`같이 같은 이름·같은 경계로 정의한 전체 구간의 합계를 씁니다. `record_computation_attribution`은 그룹 통계나 자동 비교를 만들지 않습니다.
 
-I/O가 관측되지 않았으면 원자료의 이유, 예를 들어 `channel_observer_disabled`나 `native_socket_io_not_observed`를 그대로 남기고 `segments=null`입니다. 이유가 없는 구 자료는 `io_events_not_observed`로 남깁니다. 해독 파일이 없으면 `decoded_sidecar_absent`, 손상·불완전하면 `decoded_sidecar_<기존 이유>`, 레코드 대응을 만들 수 없으면 `decoded_record_mapping_unavailable`입니다. 경과 시간이 있어도 CPU 스냅샷이 없거나 역전되면 해당 `thread_cpu_ns`만 `null`이고 이유를 따로 남깁니다.
+I/O가 관측되지 않았으면 원자료의 이유, 예를 들어 `channel_observer_disabled`나 `native_socket_io_not_observed`를 그대로 남기고 `segments=null`입니다. 이유가 누락되면 `io_events_not_observed`로 남깁니다. 해독 파일이 없으면 `decoded_sidecar_absent`, 손상·불완전하면 `decoded_sidecar_<기존 이유>`, 레코드 대응을 만들 수 없으면 `decoded_record_mapping_unavailable`입니다. 경과 시간이 있어도 CPU 스냅샷이 없거나 역전되면 해당 `thread_cpu_ns`만 `null`이고 이유를 따로 남깁니다.
 
 ## 기능 유효성과 지표 가용성
+
+분해 사건의 순번이 누락되면 합계가 경과 시간과 같더라도 I/O와 연산의 귀속을 입증할 수 없습니다. 이때 `io_breakdown.available=false`와 이유를 남기고 네 분해값과 `segments`는 null입니다. 힙 최고치도 시작 현재량과 이후 독립 읽기의 구간 최고치가 모두 있어야 합니다. 누락 시 `heap_peak_bytes=null`, `heap_peak_reason=heap_snapshot_missing`이며 부분 최고치나 0을 대신 쓰지 않습니다. 동일한 시각의 서로 다른 읽기는 순번으로 구별하고 수신과 공유하는 `KERNEL_RX` 스냅샷은 다시 포함하지 않습니다.
 
 `connections[*].valid`는 인증과 응용 교환을 포함한 기능 결과입니다. `primary_window`와
 `io_breakdown`은 그 연결에서 특정 측정 구간·분해를 관측할 수 있는지 따로 설명합니다. 한쪽을
 다른 쪽으로 대신하지 않습니다.
 
 - 콜백 클라이언트와 서버는 기존 주 구간과 I/O 분해를 계산합니다.
-- 라이브러리 직접 소켓을 쓰는 클라이언트는 첫 핸드셰이크 호출부터 마지막 응용 수신 완료까지의 `elapsed_ns`와 `thread_cpu_ns`를 보존하지만 `computation_ns`, `io_ns`, `wait_ns`, `gap_ns`는 `null`입니다.
+- 라이브러리 직접 소켓을 쓰는 클라이언트는 첫 핸드셰이크 호출부터 시나리오의 마지막 성공 TLS API 반환까지의 `elapsed_ns`와 `thread_cpu_ns`를 보존하지만 `computation_ns`, `io_ns`, `wait_ns`, `gap_ns`는 `null`입니다.
 - 라이브러리 직접 소켓을 쓰는 서버는 첫 성공 프레임워크 수신을 볼 수 없으므로 주 구간 자체를 사용할 수 없으며 경과·CPU를 만들지 않습니다.
 
 라이브러리 직접 소켓 그룹은 관측 수준이 `library-only`이고 스트림·I/O를 관측할 수 없으므로 기존 자동 성능 비교에서 항상 제외합니다. 해당 클라이언트에 호출 경과가 있다는 이유로 콜백 경로와 자동 비교하지 않으며, 해당 서버의 없는 값을 0이나 순수 연산으로 채우지 않습니다. 주 `elapsed_ns`가 없는 그룹은 묶음과 비교 후보 계산에서도 제외합니다.
@@ -97,7 +114,7 @@ I/O가 관측되지 않았으면 원자료의 이유, 예를 들어 `channel_obs
 
 `handshake_call_begin_to_application_complete`는 관측자 켬/끔과 라이브러리 직접 소켓 경로를 포함해 CALL 사건이
 남은 실행에 공통으로 계산할 수 있는 별도 경계입니다. 첫 `handshake` `CALL_BEGIN`에서 역할별
-전체 응용 요청을 완료한 마지막 성공 `CALL_END`까지입니다. 클라이언트 끝은 `app_recv`, 서버 끝은 `app_send`입니다. 여러 부분 호출의 `transferred`를 요청량까지 합산하며 재시도나 첫 부분
+전체 응용 요청을 완료한 마지막 성공 `CALL_END`까지입니다. 클라이언트 요청·서버 응답에서는 클라이언트 끝이 `app_recv`, 서버 끝이 `app_send`입니다. 서버 Ping과 Finished+Ping에서는 반대로 클라이언트가 `app_send`, 서버가 `app_recv`에서 끝납니다. 순수 핸드셰이크에는 이 응용 구간이 해당하지 않습니다. 여러 부분 호출의 `transferred`를 요청량까지 합산하며 재시도나 첫 부분
 성공을 완료 경계로 쓰지 않습니다. 준비 연결과 다른 연결 사건도 섞지 않습니다.
 
 표본에는 정의, 가용 여부와 이유, 시작·끝 사건 순번, `elapsed_ns`,
@@ -107,7 +124,7 @@ primary `elapsed_ns`가 없는 그룹은 기존 자동 비교·묶음에 계속 
 
 그룹 지표 이름은 `handshake_call_begin_to_application_complete_elapsed_ns`와
 `handshake_call_begin_to_application_complete_thread_cpu_ns`입니다. `run_controls.channel_observer`
-도 조건 식별값에 들어가고 과거 필드 부재는 `true`입니다. TLS 표본, 상위 프로세스 시도 또는 필요한
+도 조건 식별값에 들어가고 필드 누락는 `true`입니다. TLS 표본, 상위 프로세스 시도 또는 필요한
 네트워크 무결성이 실패하면 원자료에 계산 가능한 공통 경계가 있더라도 그룹 분포에는 넣지
 않습니다.
 
@@ -137,44 +154,31 @@ primary `elapsed_ns`가 없는 그룹은 기존 자동 비교·묶음에 계속 
 다른 조건이 맞으면 기존 자동 비교 후보를 만들 수 있지만, 서로 다른 개정값은 하나의
 계약으로 정규화하지 않습니다.
 
-예전 원자료처럼 개정 필드가 없거나 값이 양의 정수가 아니면 해당 차원은 JSON `null`인 알 수 없음입니다.
-자기 역할이 알 수 없으면 `measurement_contract_revision_unknown`, 상대 역할이 알 수 없으면
-`peer_measurement_contract_revision_unknown`을 `comparison_exclusion_reasons`에 남기고 자동 비교에서만
-제외합니다. 이 판정은 지표 수용 조건이 아니므로 기존 성공 연결, 표본 수, 지표와 분포는
-계속 보고합니다. 조회 보고서에서는 클라이언트 계약을 알 수 없을 때
-`missing_identity:client_measurement_contract_revision_unknown`, 서버 계약을 알 수 없을 때
-`missing_identity:server_measurement_contract_revision_unknown`을 남깁니다. 이 경우
-`missing_identity:endpoint_identity_incomplete`도 함께 남지만 설명용 분포와 분모는 삭제하지
-않습니다.
+판독하는 TLS 원자료는 schema 3, 측정 계약 개정 3·4로 제한합니다. 필수 버전이 없거나 다르면 보고서 생성을 중단합니다. 누락된 상대 파일은 별도의 미확인 상태이며 자기 원자료의 정상 지표를 없애지 않습니다.
 
-성능 카운터 조건은 요청·상태·실제 범위를 함께 사용합니다. 일반 보고서의 새 명시 원자료는 `groups[].dimensions.run_controls.perf_scope`, `perf_support.{perf_requested_scope,perf_status,perf_effective_scope}`를 남깁니다. 상대 엔드포인트는 `peer_run_controls.{perf,perf_scope}`와 `peer_perf_support`의 같은 세 필드를 사용합니다. `disabled`은 `perf=false`와 실제 범위 `null`, `unsupported`는 `perf=true`와 실제 범위 `null`일 때 완전한 조건입니다. `available`은 `perf=true`이고 실제 범위가 요청 범위와 같아야 합니다.
+성능 카운터 조건은 요청·상태·실제 범위를 함께 사용합니다. 일반 보고서는 `groups[].dimensions.run_controls.perf_scope`, `perf_support.{perf_requested_scope,perf_status,perf_effective_scope}`를 남깁니다. 상대 엔드포인트는 `peer_run_controls.{perf,perf_scope}`와 `peer_perf_support`의 같은 세 필드를 사용합니다. `disabled`은 `perf=false`와 실제 범위 `null`, `unsupported`는 `perf=true`와 실제 범위 `null`일 때 완전한 조건입니다. `available`은 `perf=true`이고 실제 범위가 요청 범위와 같아야 합니다.
 
 조회 보고서는 `joined_rows[].condition_identity.client_endpoint`와 `server_endpoint`의 `measurement_controls.{perf,perf_scope}` 및 `support.{perf_requested_scope,perf_status,perf_effective_scope}`에 같은 조건을 남깁니다. 조건 그룹도 이 엔드포인트 식별값을 그대로 가집니다. 실패 단계, errno, `perf_note`는 해당 실행의 진단이므로 일반·조회 조건 키에 넣지 않습니다. 따라서 요청·상태·실제 범위가 같고 다른 조건도 같은 자료는 진단 문구나 errno가 다르다는 이유로 별도 그룹이 되지 않습니다.
 
 필드 **부재**와 명시적 JSON `null`은 다릅니다. 원자료에 `perf_scope`나 요청·상태·실제 범위 중 일부가 있지만 `capabilities.perf_effective_scope`만 없으면, 일반 보고서의 해당 `perf_support` 또는 `peer_perf_support`와 조회 보고서의 해당 엔드포인트 `support`에서 `perf_effective_scope` 키 자체를 생략합니다. 원자료에 키가 있고 값이 `null`이면 보고서에도 `"perf_effective_scope": null`을 그대로 남깁니다. 새 존재 여부 표식이나 형식 개정값을 만들지 않습니다.
 
-안정 필드 전체가 없는 완전한 구 자료는 일반 보고서에서 `perf_support`를 만들지 않고, 조회 보고서에서는 기존 세 필드의 `null` 표현을 유지합니다. 일부만 누락된 자료는 일반 보고서의 `perf_condition_unknown` 또는 `peer_perf_condition_unknown`, 조회 보고서의 `missing_identity:client_perf_condition_unknown` 또는 `missing_identity:server_perf_condition_unknown`과 `missing_identity:endpoint_identity_incomplete`를 남깁니다. 이 경우 자동 비교만 제외하며 경과 시간·스레드 CPU와 조회 TLS·CA CPU의 표본·분포는 계속 보존합니다. 알려진 `disabled`·`unsupported`의 명시적 실제 범위 `null`은 알 수 없음으로 취급하지 않습니다.
+계측 조건이 누락된 자료는 일반 보고서의 `perf_condition_unknown` 또는 `peer_perf_condition_unknown`, 조회 보고서의 `missing_identity:client_perf_condition_unknown` 또는 `missing_identity:server_perf_condition_unknown`과 `missing_identity:endpoint_identity_incomplete`를 남깁니다. 이 경우 자동 비교만 제외하며 경과 시간·스레드 CPU와 조회 TLS·CA CPU의 표본·분포는 계속 보존합니다. 알려진 `disabled`·`unsupported`의 명시적 실제 범위 `null`은 알 수 없음으로 취급하지 않습니다.
 
-상대 엔드포인트가 고정되었는지는 같은 표본 폴더의 반대 역할 원자료 머리글로 확인합니다.
-두 머리글의 표본 번호, 묶음 번호, 프로필이 맞아야 합니다. 비교 조건에는 양쪽에 실제로
-고정된 CPU 번호와 상대 어댑터의 라이브러리 이름, 버전, 빌드 옵션, 유효 여부, 계측 지원
-정보가 들어갑니다. 반대 역할 파일이 없거나 머리글을 확인하지 못한 단일 역할 결과도
-요약에는 남지만 자동 비교 후보에서는 제외합니다. `director.txt`가 표본을 무효라고
-표시하면 그 폴더의 역할 결과도 유효한 그룹에 넣지 않습니다.
+상대 엔드포인트의 조건은 선택된 반대 역할 원자료 머리글로 확인하며, 비교 적격성에는 실제 측정 사건과 요청 연결의 완결성도 요구합니다. `peer_measurement_status=missing`과 이유가 있으면 자기 역할의 설명용 지표는 보존하되 `peer_measurement_incomplete`로 자동 비교에서 제외합니다. 선택한 schema 3 원자료를 위의 실행 ID로 결합합니다. 한 역할만 선택해도 로컬 지표는 요약하지만 자동 비교에서는 제외합니다. 양쪽 CPU·라이브러리·계측 지원과 실제 소켓 설정도 조건으로 남깁니다. 정리 실패 표식·외부 원장의 실패는 유효한 그룹에서 제외합니다.
 
 두 그룹이 포함한 묶음 번호의 집합도 완전히 같아야 합니다. 서로 다른 묶음에서 나온 두
 그룹을 자동으로 비교하지 않습니다.
 
 양쪽 엔드포인트에서 조회한 실제 소켓 설정도 비교 조건에 포함합니다. 준비 연결과 측정 연결의
 실제 설정을 모두 순서대로 조건 식별값에 넣습니다. 요청 버퍼 크기가 같더라도 커널이 적용한
-값이 다르면 그룹을 나눕니다. 연결의 `socket`이 없는 예전 자료는
+값이 다르면 그룹을 나눕니다. 연결의 `socket`이 없는 자료는
 미관측으로 유지하며 새 자료의 조회값으로 대신 채우지 않습니다.
 자기 역할이나 상대 역할의 실제 소켓 설정이 빠진 자료는 요약만 만들고 자동 비교에서는
 제외합니다.
 
 컨텍스트 입력은 양쪽 역할의 크기와 `loaded_context_hash`로 구분합니다. 같은 크기의
 서로 다른 저장본을 한 초기 상태로 취급하지 않습니다. 비어 있지 않은 입력인데 지문이
-없는 예전 자료는 원자료 요약만 만들고 자동 비교 후보에서는 제외합니다.
+없는 자료는 원자료 요약만 만들고 자동 비교 후보에서는 제외합니다.
 
 한 표본에서 여러 연결을 측정하면 `connection` 번호별로 그룹을 나눕니다. 예를 들어 준비
 연결 1개와 측정 연결 2개를 표본 10개에서 실행하면, 각 역할의 연결 1과 연결 2 분포에
@@ -202,7 +206,7 @@ primary `elapsed_ns`가 없는 그룹은 기존 자동 비교·묶음에 계속 
 
 차이와 95퍼센트 구간은 context 대표값을 재표집하는 `independent_context_percentile_bootstrap`이며, 관측한 batch 안에서 context가 독립이라는 가정에 조건부인 탐색 결과입니다. batch마다 따로 계산하고 여러 batch를 합친 CI는 만들지 않습니다. `batch_diagnostics`에는 batch별 StQ2와 범위만 남깁니다. 새 프로세스 실행도 독립성을 스스로 증명하지 않으며, 구간이 겹치거나 겹치지 않는다는 사실을 동등성·정상상태 판정으로 바꾸지 않습니다.
 
-부분 선택과 누락·실패·불완전 컨텍스트는 상태와 이유를 남기며, 완결한 나머지 컨텍스트의 값도 성공 조건부 기술통계일 뿐 자동 비교에는 쓰지 않습니다. 원장이 없는 legacy 자료는 `parent_status_unverified`로 표시하고 새 보기의 적격 통계에서 제외하되 기존 위치별 결과를 보존합니다. 단일 run은 확인 가능한 기술통계만 만들 수 있습니다. 조회 또는 조회가 섞인 입력은 `unsupported_lookup_scenario`로 표시하며 해당 컨텍스트를 v1 통계·비교에서 제외합니다. 원장이 손상됐으면 opt-in 호출 자체가 실패하며, 없는 값을 0이나 성공으로 만들지 않습니다.
+부분 선택과 누락·실패·불완전 컨텍스트는 상태와 이유를 남기며, 완결한 나머지 컨텍스트의 값도 성공 조건부 기술통계일 뿐 자동 비교에는 쓰지 않습니다. 수동 실행처럼 원장이 없는 자료는 `parent_status_unverified`로 표시하고 새 보기의 적격 통계에서 제외하되 기존 위치별 결과를 보존합니다. 단일 run은 확인 가능한 기술통계만 만들 수 있습니다. 조회 또는 조회가 섞인 입력은 `unsupported_lookup_scenario`로 표시하며 해당 컨텍스트를 v1 통계·비교에서 제외합니다. 원장이 손상됐으면 opt-in 호출 자체가 실패하며, 없는 값을 0이나 성공으로 만들지 않습니다.
 
 ### 순수 TLS의 격리 네트워크 조건
 
@@ -231,11 +235,11 @@ requested = started + not_attempted
 started = success + timeout + error + incomplete
 ```
 
-`attempt_table`은 시도 상태와 그 시도에 속한 연결 행 참조를 담습니다. `connection_table`은 준비 연결 여부와 연결 상태를 담습니다. 여러 연결의 시간을 더해 독립 시도 시간으로 만들지 않습니다. 시간 초과의 누락값을 성공 분포에 시간 초과 길이나 0으로 넣지 않습니다. 과거 원자료에 원장이 없으면 TLS 머리글과 `director.txt` 대체 판독을 명시적으로 표시하며, 새 원장이 있을 때는 대체 판독으로 상태를 바꾸지 않습니다.
+`attempt_table`은 시도 상태와 그 시도에 속한 연결 행 참조를 담습니다. `connection_table`은 준비 연결 여부와 연결 상태를 담습니다. 여러 연결의 시간을 더해 독립 시도 시간으로 만들지 않습니다. 시간 초과의 누락값을 성공 분포에 시간 초과 길이나 0으로 넣지 않습니다. 조회 보고서는 `attempts.jsonl`이 없으면 오류로 끝납니다. 남아 있는 성공 파일 수에서 요청한 시도 분모를 추정하지 않습니다.
 
 ### 연결 행의 시간과 자원
 
-`joined_rows`는 조회·CA·TLS와 네트워크 관측을 `(attempt, connection, request_id)` 및 관측 ID로 연결합니다.
+`joined_rows`는 조회·CA·TLS와 네트워크 관측을 실행·컨텍스트 ID, `(attempt, connection, request_id)` 및 관측 ID로 연결합니다. 새 TLS 원자료와 서비스 ID가 다르면 불완전 상태로 남기며 자동 비교에서 제외합니다.
 
 - `remote_lookup_duration_ns`: 캐시 누락의 `REQUEST_BEGIN`→`RESPONSE_COMPLETE`입니다. 캐시 적중이면 해당 없음 `null`입니다.
 - `usable_duration_ns`: 조회 시작→`USABLE_OBJECT`입니다. 응답 수신 뒤 바이트 대조와 캐시 삽입을 포함합니다.

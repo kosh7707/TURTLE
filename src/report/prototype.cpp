@@ -23,11 +23,20 @@ Json interval(const Json* begin, const Json* end) {
                    {"reason", nullptr},
                    {"begin_sequence", begin->at("sequence")},
                    {"end_sequence", end->at("sequence")}};
-    for (const char* metric : {"monotonic_ns", "thread_cpu_ns"}) {
-        const auto a = begin->at(metric).get<std::uint64_t>();
-        const auto b = end->at(metric).get<std::uint64_t>();
-        result[std::string(metric) == "monotonic_ns" ? "elapsed_ns" : metric] =
-            b >= a ? Json(b - a) : Json(nullptr);
+    result["elapsed_ns"] = end->at("monotonic_ns").get<std::uint64_t>() -
+                           begin->at("monotonic_ns").get<std::uint64_t>();
+    result["thread_cpu_ns"] = nullptr;
+    result["thread_cpu_reason"] = nullptr;
+    if (!begin->contains("thread_cpu_ns") || !end->contains("thread_cpu_ns") ||
+        begin->at("thread_cpu_ns").is_null() || end->at("thread_cpu_ns").is_null()) {
+        result["thread_cpu_reason"] = "thread_cpu_snapshot_missing";
+    } else {
+        const auto a = begin->at("thread_cpu_ns").get<std::uint64_t>();
+        const auto b = end->at("thread_cpu_ns").get<std::uint64_t>();
+        if (b >= a)
+            result["thread_cpu_ns"] = b - a;
+        else
+            result["thread_cpu_reason"] = "thread_cpu_regression";
     }
     return result;
 }
@@ -114,8 +123,6 @@ Json transmit_observations(const Json& header, const std::vector<const Json*>& e
 } // namespace
 Json prototype_observations(const Json& header, const std::vector<Json>& input,
                             std::size_t connection, const Json* decoded) {
-    if (header.value("measurement_contract_revision", 0) < 3)
-        return {{"status", "not_applicable"}, {"reason", "legacy_measurement_contract"}};
     if (!header.contains("config") || !header.at("config").contains("tls"))
         return {{"status", "missing"}, {"reason", "scenario_configuration_missing"}};
     std::vector<const Json*> events;
@@ -153,6 +160,10 @@ Json prototype_observations(const Json& header, const std::vector<Json>& input,
             (std::string(name) == "module_load" || std::string(name) == "context_setup"))
             windows[name] =
                 absent("not_applicable", "shared_context_setup_recorded_on_connection_zero");
+        else if (std::string(name) == "module_load" &&
+                 header.at("adapter_connection").value("mode", "") == "builtin")
+            windows[name] =
+                absent("not_applicable", "builtin_adapter_pre_entry_loading_unobserved");
         else if (scenario == "handshake" && std::string(name) == "payload_prepare")
             windows[name] = absent("not_applicable", "handshake_only");
         else
@@ -234,6 +245,7 @@ Json prototype_observations(const Json& header, const std::vector<Json>& input,
                 continue;
             }
             auto span = interval(start->second, event);
+            complete &= span.at("status") == "available";
             span["operation"] = key.first;
             span["message_id"] = key.second;
             span["message_type"] = event->at("message_type");

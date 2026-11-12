@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from profiles import experiment_profile, flatten_experiment
 import argparse
 import json
 import os
@@ -196,20 +197,22 @@ def write_profile(path: Path, pki: Path, framework_io: bool, mutual_auth: bool,
         },
         "technique": {"name": "unmodified-baseline"},
     }
-    path.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n")
+    path.write_text(json.dumps(experiment_profile(**profile), indent=2, sort_keys=True) + "\n")
     return profile
 
 
 def write_net_profile(path: Path) -> dict[str, object]:
-    policy = {"delay_ms": 0, "loss_percent": 0.0, "limit_packets": 10000}
+    policy = {"delay_ms": 0, "loss_percent": 0.0, "limit_packets": 10000, "rate_bps": None}
     profile = {
         "type": "turtle-netem-profile",
-        "schema": 1,
+        "schema": 3,
         "qdisc": "netem",
         "mtu": 1500,
         "offload": {"tso": False, "gso": False, "gro": False},
         "trace": True,
         "loss_seed": None,
+        "initial_cwnd": {"client": None, "server": None},
+        "kernel_events": False, "targeted_drop": {name: None for name in TLS_PATHS},
         "paths": {name: dict(policy) for name in sorted(TLS_PATHS)},
     }
     path.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n")
@@ -228,7 +231,7 @@ def validate_role(raw: Path, role: str, framework_io: bool, mutual_auth: bool,
                   interpret: Path) -> dict[str, object]:
     rows = read_jsonl(raw)
     header = rows[0]
-    check(header.get("type") == "sample" and header.get("schema") == 2,
+    check(header.get("type") == "sample" and header.get("schema") == 3,
           f"{raw}: wrong sample header")
     check(header.get("valid") is True, f"{raw}: invalid sample: {header.get('invalid_reason')}")
     declaration = header.get("declaration", {})
@@ -317,8 +320,8 @@ def validate_role(raw: Path, role: str, framework_io: bool, mutual_auth: bool,
 
 def validate_sample(sample: Path, framework_io: bool, mutual_auth: bool,
                     interpret: Path) -> None:
-    check((sample / "director.txt").read_text().strip() == "valid",
-          f"{sample}: parent director did not retain a valid child-pair outcome")
+    check(json.loads((sample / "execution.json").read_text())["final_status"] == "success",
+          f"{sample}: parent runner did not retain a valid child-pair outcome")
     check(not any((sample / name).exists() for name in
                   ("ca.jsonl", "lookup.jsonl", "lookup-summary.json", "snapshot.json")),
           f"{sample}: lookup=false run synthesized CA/lookup artifacts")
@@ -435,7 +438,7 @@ def normal(args: argparse.Namespace, root: Path, manifest: dict[str, object]) ->
             write_profile(profile, args.pki, framework_io, mutual_auth, 1)
             output = runs / name
             record = command_record([
-                args.turtle, "run", "--profile", profile,
+                args.turtle, "--profile", profile,
                 "--client", "openssl", "--server", "openssl",
                 "--adapter-dir", args.adapters, "--output", output,
             ], timeout=20)
@@ -512,7 +515,7 @@ def validate_network(output: Path) -> dict[str, object]:
     provenance = json.loads((output / "network-provenance.json").read_text())
     identity = provenance.get("condition_identity", {})
     check(provenance.get("status") == "complete" and
-          provenance.get("director", {}).get("returncode") == 0,
+          provenance.get("runner", {}).get("returncode") == 0,
           f"{output}: coordinator did not complete")
     check(set(manifest.get("namespace_fds", {})) == {"client", "server"} and
           set(manifest.get("addresses", {})) == {"client_tls", "server"},
@@ -531,7 +534,7 @@ def validate_network(output: Path) -> dict[str, object]:
           f"{output}: requested/actual TLS-only qdisc identity missing")
     for path in TLS_PATHS:
         check(requested["paths"][path] == {
-            "delay_ms": 0, "loss_percent": 0.0, "limit_packets": 10000,
+            "delay_ms": 0, "loss_percent": 0.0, "limit_packets": 10000, "rate_bps": None,
         }, f"{output}: {path} is not the frozen zero-delay/zero-loss policy")
         observed = actual["paths"][path]
         check(observed.get("kind") == "netem" and observed.get("delay_ms") == 0 and

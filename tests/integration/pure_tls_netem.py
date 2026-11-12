@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Actual stock OpenSSL TLS over the lookup-free owned netem topology."""
 
+from profiles import experiment_profile, flatten_experiment
 import json
 from pathlib import Path
 import shutil
@@ -81,19 +82,21 @@ def write_profile(path, pki):
         },
         "technique": {"name": "standard-tls"},
     }
-    path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n")
+    path.write_text(json.dumps(experiment_profile(**profile), sort_keys=True, indent=2) + "\n")
 
 
 def write_net_profile(path, delay_ms):
-    policy = {"delay_ms": delay_ms, "loss_percent": 0.0, "limit_packets": 10000}
+    policy = {"delay_ms": delay_ms, "loss_percent": 0.0, "limit_packets": 10000, "rate_bps": None}
     profile = {
         "type": "turtle-netem-profile",
-        "schema": 1,
+        "schema": 3,
         "qdisc": "netem",
         "mtu": 1500,
         "offload": {"tso": False, "gso": False, "gro": False},
         "trace": True,
         "loss_seed": None,
+        "initial_cwnd": {"client": None, "server": None},
+        "kernel_events": False, "targeted_drop": {name: None for name in TLS_PATHS},
         "paths": {name: dict(policy) for name in sorted(TLS_PATHS)},
     }
     path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n")
@@ -133,7 +136,7 @@ def validate_network(output, delay_ms):
     manifest = json.loads((output / "network-manifest.json").read_text())
     provenance = json.loads((output / "network-provenance.json").read_text())
     check(set(manifest["namespace_fds"]) == {"client", "server"},
-          f"{output}: CA or router fd was passed to the TLS director")
+          f"{output}: CA or router fd was passed to the TLS runner")
     check(set(manifest["addresses"]) == {"client_tls", "server"},
           f"{output}: inactive CA addresses remain in the manifest")
     check(set(manifest["interfaces"]) == {
@@ -144,7 +147,7 @@ def validate_network(output, delay_ms):
 
     identity = provenance["condition_identity"]
     check(provenance.get("status") == "complete" and
-          provenance.get("director", {}).get("returncode") == 0,
+          provenance.get("runner", {}).get("returncode") == 0,
           f"{output}: coordinator did not finish successfully")
     check(identity["topology"]["kind"] == "three-netns-receiver-facing-router-egress",
           f"{output}: wrong fixed topology")
@@ -160,7 +163,7 @@ def validate_network(output, delay_ms):
         requested = identity["requested"]["paths"][logical_path]
         actual = identity["actual"]["paths"][logical_path]
         check(requested == {"delay_ms": delay_ms, "loss_percent": 0.0,
-                            "limit_packets": 10000},
+                            "limit_packets": 10000, "rate_bps": None},
               f"{output}: requested {logical_path} policy changed")
         check(abs(actual["delay_ms"] - delay_ms) <= .001 and
               actual["loss_percent"] == 0 and actual["limit_packets"] == 10000 and
@@ -183,7 +186,7 @@ def validate_network(output, delay_ms):
     packets = read_jsonl(output / "packets.jsonl")
     packet_rows = [row for row in packets if row.get("record_kind") == "packet"]
     check(set(packets[0].get("interfaces", [])) == {"rctls", "rstls"} and
-          all(row.get("logical_path") in TLS_PATHS for row in packet_rows),
+          all(row.get("logical_path") in (*TLS_PATHS, "control_tls_c2s", "control_tls_s2c") for row in packet_rows),
           f"{output}: trace observed an inactive CA interface or path")
     host = provenance.get("host_network_identity", {})
     check(host.get("unchanged") is True,
@@ -201,12 +204,12 @@ def validate_network(output, delay_ms):
 def validate_role(raw, role, interpret):
     rows = read_jsonl(raw)
     header = rows[0]
-    check(header.get("type") == "sample" and header.get("schema") == 2 and header.get("valid"),
+    check(header.get("type") == "sample" and header.get("schema") == 3 and header.get("valid"),
           f"{raw}: invalid sample: {header.get('invalid_reason')}")
     check(header["role"] == role and not header["declaration"]["is_mock"],
           f"{raw}: role or actual-TLS declaration changed")
     config = header["config"]
-    check(config["samples"] == SAMPLES and config["warmups"] == 0 and
+    check("samples" not in config and config["warmups"] == 0 and
           config["connections"] == 1 and config["pin_cores"] is False and
           config["perf"] is False,
           f"{raw}: explicit WSL-safe execution controls changed")

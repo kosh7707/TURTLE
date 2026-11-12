@@ -307,6 +307,9 @@ turtle::Declaration declaration(const turtle::Context* base) {
         "TLS 1.3; callback I/O; ECDSA P-256; AES-128-GCM; MBEDTLS_PLATFORM_MEMORY; "
         "negotiated group and "
         "signature inferred from single-item allow-lists; HelloRetryRequest not observed";
+#ifdef TURTLE_LIBRARY_LINKAGE
+    result.build_options += ";tls_linkage=" TURTLE_LIBRARY_LINKAGE;
+#endif
     result.context_description = "No resumable context; tickets are disabled";
     result.callback_io = true;
     const auto* context = static_cast<const MbedContext*>(base);
@@ -468,7 +471,7 @@ turtle::Step translate_result(MbedConnection& connection, int result) noexcept {
         connection.set_error(result);
         return turtle::Step::Failed;
     }
-    return turtle::Step::Done;
+    return turtle::Step::Complete;
 }
 
 turtle::Step handshake_step(turtle::Connection* base) {
@@ -507,7 +510,7 @@ turtle::Step handshake_step(turtle::Connection* base) {
         }
     }
     connection.handshake_done = true;
-    return turtle::Step::Done;
+    return turtle::Step::Complete;
 }
 
 turtle::Verification peer_verification(turtle::Connection* base) {

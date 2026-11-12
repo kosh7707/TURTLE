@@ -167,7 +167,7 @@ def main():
         for mode in ("timing", "memory"):
             for auth in ("server-auth", "mutual-auth"):
                 output = root / f"{mode}-{auth}"
-                run(turtle, "run", "--client", client, "--server", server,
+                run(turtle, "--client", client, "--server", server,
                     "--adapter-dir", adapters, "--pki", pki, "--samples", "2", "--warmups", "1",
                     "--connections", str(connections),
                     "--mode", mode, f"--{auth}", "--no-affinity", "--no-perf", "--output", output)

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 
+from profiles import experiment_profile, flatten_experiment
 from pure_tls_netem import write_profile, check
 
 
@@ -14,15 +15,16 @@ with tempfile.TemporaryDirectory(prefix='turtle-shaping-') as temporary:
     root = Path(temporary)
     profile = root / 'profile.json'
     write_profile(profile, pki)
-    value = json.loads(profile.read_text())
+    value = flatten_experiment(json.loads(profile.read_text()))
     value['measurement'].update(mode='trace', tx_timestamps=True)
     value['tls'].update(client_application_bytes=65536, server_application_bytes=65536)
-    profile.write_text(json.dumps(value))
+    profile.write_text(json.dumps(experiment_profile(**value)))
     network = root / 'network.json'
     network.write_text(json.dumps({
-        'type': 'turtle-netem-profile', 'schema': 2, 'qdisc': 'netem', 'mtu': 1500,
+        'type': 'turtle-netem-profile', 'schema': 3, 'qdisc': 'netem', 'mtu': 1500,
         'offload': {'tso': False, 'gso': False, 'gro': False}, 'trace': True, 'loss_seed': None,
         'initial_cwnd': {'client': 4, 'server': 4},
+        'kernel_events': False, 'targeted_drop': {'tls_c2s': None, 'tls_s2c': None},
         'paths': {path: {'delay_ms': 5, 'loss_percent': 0, 'limit_packets': 10000, 'rate_bps': 1000000}
                   for path in ('tls_c2s', 'tls_s2c')}}))
     output = root / 'run'

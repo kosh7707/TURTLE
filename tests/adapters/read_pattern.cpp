@@ -168,15 +168,15 @@ void drive_handshake(Endpoint& client, Endpoint& server) {
     Step client_step = Step::WantRead;
     Step server_step = Step::WantRead;
     for (std::size_t iteration = 0; iteration < 10000; ++iteration) {
-        if (client_step != Step::Done)
+        if (client_step != Step::Complete)
             client_step = client.api.handshake_step(client.connection);
-        if (server_step != Step::Done)
+        if (server_step != Step::Complete)
             server_step = server.api.handshake_step(server.connection);
         check(client_step != Step::Failed,
               std::string("client handshake failed: ") + client.api.error(client.connection));
         check(server_step != Step::Failed,
               std::string("server handshake failed: ") + server.api.error(server.connection));
-        if (client_step == Step::Done && server_step == Step::Done)
+        if (client_step == Step::Complete && server_step == Step::Complete)
             return;
     }
     throw std::runtime_error("in-memory TLS handshake did not converge");

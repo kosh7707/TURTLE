@@ -2,39 +2,39 @@
 
 ## 제어는 프레임워크에, TLS는 어댑터에 둡니다
 
-Spring에서는 필요한 서비스를 명시적으로 전달하고 전체 실행 순서를 프레임워크가 관리하는 구조를 참고했습니다. Spring이나 전역 서비스 조회기는 사용하지 않습니다. SUPERCOP에서는 구현자가 공통 계약을 구현하고 같은 측정기를 사용하는 구조를 참고했습니다. SUPERCOP 코드를 복사하지 않았습니다.
+SUPERCOP의 작은 구현 계약과 준비 단계 지원 확인, Spring의 명시적 의존성 전달과 생명주기 순서를 참고했습니다. 관찰한 소스와 적용 범위는 [결정 기록](../project/DECISIONS.md)에 남깁니다. C++20의 지역 객체와 RAII로 구현하며 전역 컨테이너나 서비스 조회기는 없습니다.
 
+```mermaid
+flowchart TD
+  Local[선택적 로컬 실험 실행기] --> C[turtle-client]
+  Local --> S[turtle-server]
+  C <-->|별도 TCP 제어 연결| S
+  C <-->|시행마다 새 TLS TCP| S
+  C --> E[각 엔드포인트의 구성 지점]
+  S --> E
+  E --> Config[자기 설정 · 환경 · CPU]
+  E --> Services[기록 버퍼 · 계측기 · 소켓 · 제어 통로]
+  E --> Peer[PeerSession · 접속과 양쪽 준비 확인]
+  E --> Api[builtin 또는 module의 ABI 3 함수표]
+  Api --> Context[TLS 컨텍스트]
+  Context --> Connection[TLS 연결]
+  Services --> Raw[엔드포인트별 원자료]
+  Raw --> Analysis[오프라인 해독 · 실행 ID 결합 · 역할별 보고]
 ```
-명령행 / JSON 프로필
-         │
-         ▼
-      config ─── model (실행 설정, 표본·서비스 값, 빌드 정보)
-         │
-         ▼
- lifecycle/director ─┬─ role_runtime ─ 공개 함수표 → adapter → TLS 라이브러리
-                     ├─ endpoint_protocol (자식 제어 메시지)
-                     ├─ lookup_runtime (합성 조회·모의 CA)
-                     ├─ control / transport / capability / measure
-                     └─ record (고정 버퍼와 측정 뒤 파일 출력)
 
-   *.jsonl / *.bin / *.keys.log
-         ├─ turtle-interpret → 메시지와 레코드 범위
-         └─ turtle-report    → 역할별 분포와 구간 합계
-```
-
-`director.cpp`는 표본과 시도 원장, 자식 생성·회수, 네트워크 인계와 전체 실패 처리를 소유합니다. `role_runtime.cpp`는 한 TLS 엔드포인트의 셋업, 연결 반복, 호출·관측·캡처를 소유합니다. 공통 자식 제어 메시지는 `endpoint_protocol.cpp`, 실제 조회 캐시·전송 형식·원자료와 모의 CA는 `lookup_runtime.cpp`에 있습니다. 역할 런타임은 `ClientLookupRuntime` 객체를 항상 만들지만, 조회를 끈 정상 TLS에서는 비활성 상태로 두고 CA·조회 자원을 만들지 않습니다.
+`endpoint.cpp`는 자기 주소·실행 식별·입력 상태와 `PeerSession`을 구성합니다. `peer_session.cpp`는 TCP 접속·수신 소켓의 수명과 양쪽 시험 준비 확인을 맡습니다. `role_runtime.cpp`는 전달받은 세션에 계측기·버퍼·어댑터·호스트 서비스를 연결하고 TLS 컨텍스트와 시행 루프를 소유합니다. `endpoint_protocol.cpp`는 직접 TCP 제어 프로토콜을, `lookup_runtime.cpp`는 선택적 조회 클라이언트와 독립 조회 서비스를 구현합니다. `scripts/run-local.py`가 새 프로세스 반복·로컬 CPU 배치·시도 원장·관측 경계를 소유합니다. 기존 `director.cpp`와 `turtle run` 경로는 제거했습니다.
 
 `transport`는 계측기나 기록기에 직접 의존하지 않습니다. 역할 런타임이 비소유 관측 함수를 전달해 두 부품을 연결합니다. `measure`는 기록 형식을 모르며, `record`는 TLS 메시지를 해석하지 않습니다. 분석기는 측정 실행 파일에 링크하지 않습니다. 각 부품은 CMake 라이브러리 대상으로 나뉩니다.
 
 ## 수명과 상태
 
-지휘 프로세스는 표본마다 두 역할 프로세스를 만들고 결과를 기다립니다. TLS 모듈은 역할 프로세스에서만 `dlopen`합니다. 따라서 지휘 프로세스가 TLS의 전역 초기화나 할당기를 미리 건드리지 않습니다.
+각 엔드포인트는 `main → 설정 → 수신 대기/제어 연결 → 지원·버퍼·컨텍스트 준비 → 시행별 TCP·TLS → 기록·완료` 순서로 실행합니다. 별도 빌드·작업·출력 폴더와 툴체인을 사용할 수 있으며 상대의 파일이나 CPU를 소유하지 않습니다.
 
-역할 프로세스의 계측기, 기록 버퍼, 어댑터 모듈과 컨텍스트는 명시적인 지역 객체입니다. 컨텍스트는 서비스보다 먼저, 연결은 컨텍스트보다 먼저 파괴합니다. 소켓은 프레임워크 소유이며 어댑터는 빌려 씁니다. C 할당 API가 사용자 인자를 받지 않을 때만 어댑터 안에 비소유 `thread_local` 연결 포인터를 사용합니다. 이는 서비스의 소유권이나 단일 인스턴스 조회 수단이 아닙니다.
+소유 관계의 해제 순서는 `연결 → TLS 컨텍스트 → 호스트 서비스 → 어댑터 모듈 → 계측기·기록 버퍼 → 외부 소켓`입니다. 컨텍스트와 연결의 소멸 함수는 로드된 함수표가 살아 있는 동안 호출합니다. 소켓·관측 콜백·`HostServices`는 어댑터에 비소유로 전달합니다. 외부 C 할당 API가 사용자 인자를 받지 않을 때만 어댑터 안에 비소유 `thread_local` 연결 포인터를 두며, 그 제한과 이유는 각 구현 문서에 있습니다.
 
-컨텍스트 생성은 표본마다 새로 수행합니다. `--warmups N`은 같은 역할 프로세스와 컨텍스트에서 N개의 준비 연결을 먼저 실행한다는 뜻입니다. 그 뒤 `--connections M`개의 연결을 측정하며 기본값은 1입니다. 준비 연결도 기록에 남지만 주 분포에서 제외하고, 측정 연결은 순서별로 분리해 서로 다른 표본의 같은 위치끼리 요약합니다. CPU 캐시가 완전히 차갑다거나 프로세스 바깥 상태까지 초기화됐다는 뜻은 아닙니다.
+기본은 프로세스당 TLS 컨텍스트 하나와 측정 연결 하나입니다. `--warmups N --connections K`는 같은 컨텍스트의 준비 연결 N개와 측정 연결 K개이며 독립 표본 수는 늘리지 않습니다. 외부 실행기는 새 프로세스로 독립 반복을 수행하지만 호스트 캐시까지 초기화됐다는 뜻은 아닙니다. `builtin`은 선택한 어댑터 하나만 실행 파일에 연결하고 `module`은 명시한 공유 모듈을 엽니다. TLS 라이브러리 자체의 정적·동적 연결은 별도 출처 항목입니다.
 
-출력 파일·기록 버퍼·수신 대기 소켓을 먼저 마련하고, 시행 준비 동기화 뒤 새 TCP와 대기 객체를 만듭니다. TLS 역할은 `RLIMIT_NPROC`만 0으로 낮추며 새 연결을 위해 `RLIMIT_NOFILE`은 유지합니다. 이것은 측정 실행 조건이지 공격자를 막는 보안 격리 장치는 아닙니다. 지휘 통신은 별도 Unix 소켓으로 수행합니다.
+엔드포인트만 빌드할 때 분석 도구를 끌 수 있고 클라이언트만 구성할 때 서버가 필요하지 않습니다. 분석 전용 구성은 어댑터 의존성을 찾지 않습니다. 교차 컴파일의 configure는 대상 바이너리를 실행하지 않으며 지원 여부는 대상 장비의 준비 단계에서 확인합니다.
 
 ## 측정 경로
 
@@ -55,9 +55,9 @@ Spring에서는 필요한 서비스를 명시적으로 전달하고 전체 실�
 1. `include/turtle/adapter.hpp`: 코어와 TLS 구현체 사이의 공개 ABI와 소유권 계약
 2. `src/config/config.*`: 명령행·프로필을 검증해 실행 설정으로 만드는 경계
 3. `src/model/model.hpp`, `service.hpp`, `run_config.hpp`, `sample.hpp`: 이름, 실행 설정, 서비스와 표본 값
-4. `src/lifecycle/director.cpp`: 표본·시도·자식·네트워크 인계의 전체 순서
+4. `src/lifecycle/endpoint.cpp`, `scripts/run-local.py`: 독립 구성 지점과 외부 반복의 책임 구분
 5. `src/lifecycle/role_runtime.cpp`, `capture.hpp`: 한 TLS 역할의 연결 루프와 측정 캡처
-6. `src/lifecycle/endpoint_protocol.*`, `lookup_runtime.*`: 자식 제어 메시지와 선택적인 합성 조회·모의 CA
+6. `src/lifecycle/endpoint_protocol.*`, `lookup_runtime.*`: 직접 TCP 제어 메시지와 선택적인 합성 조회·모의 CA
 7. `src/transport/`, `src/measure/`, `src/record/`: 비차단 I/O, 계측, 고정 버퍼와 원자료 출력
 8. `src/interpret/`: 저장한 스트림과 키 로그의 오프라인 해독
 9. `src/report/window.*`, `report.*`, `lookup_report.cpp`: 측정 구간, 일반 요약과 조회 요약

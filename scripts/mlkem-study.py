@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
+from raw_record import read_tls_header
 import random
 import subprocess
 
@@ -28,7 +29,7 @@ def analyze(root, build):
             if not raw.exists():
                 failures.append({'source': str(raw.relative_to(root)), 'reason': 'endpoint_artifact_missing'})
                 continue
-            header = json.loads(raw.read_text().splitlines()[0])
+            header = read_tls_header(raw)
             if not header['valid']:
                 failures.append({'source': str(raw.relative_to(root)), 'reason': header['invalid_reason']})
                 continue
@@ -44,7 +45,7 @@ def analyze(root, build):
                 continue
             role = sample['role']
             raw = directory / 'sample-000001' / (role + '.jsonl')
-            header = json.loads(raw.read_text().splitlines()[0])
+            header = read_tls_header(raw)
             variant = CASES[entry['case']][0 if role == 'client' else 1]
             peer = CASES[entry['case']][1 if role == 'client' else 0]
             for connection in sample['connections']:
@@ -127,7 +128,7 @@ def main():
                     client, server = CASES[case]
                     destination = root / mode / f'sample-{sample:04d}' / case
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    argv = [build / 'turtle', 'run', '--client', client, '--server', server,
+                    argv = [build / 'turtle-local', '--client', client, '--server', server,
                             '--adapter-dir', build / 'adapters', '--pki', pki, '--mutual-auth',
                             '--group', 'ML_KEM_768', '--scenario', 'client-request', '--send-policy', 'native',
                             '--samples', 1, '--connections', 1, '--warmups', 0, '--mode', mode,

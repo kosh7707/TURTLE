@@ -30,6 +30,7 @@ AVX2 경로는 다항식 연산뿐 아니라 ML-KEM 내부 SHA3, 표현 변환�
 ```sh
 JOBS=4 scripts/build-mlkem.sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DTURTLE_ADAPTER_LINKAGE=module -DTURTLE_BUILD_MODULES=ON -DTURTLE_WITH_OPENSSL=ON \
   -DTURTLE_WITH_WOLFSSL=ON -DTURTLE_WITH_MBEDTLS=ON \
   -DTURTLE_WITH_BITHAC=ON -DTURTLE_WITH_MLKEM=ON
 cmake --build build --parallel 4

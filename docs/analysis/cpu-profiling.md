@@ -13,6 +13,8 @@ python3 scripts/cpu-profile.py analyze --perf /path/to/perf \
 
 `--perf`를 생략하면 PATH의 도구를 사용합니다. 바이너리 build ID 대조에는 binutils의 `readelf`도 필요합니다. 실행은 상호 인증·클라이언트 요청/서버 응답, 컨텍스트당 연결 1개·워밍업 0회입니다. 일반 시간 실행과 별도 프로세스 쌍을 사용합니다. `--cpu-profile`은 외부 수집을 나타내는 원자료 표지이며 이 플래그 자체가 수집기를 시작하지는 않습니다. 실제 수집 증거는 `perf.data`, 명령·종료 코드와 표본입니다. 일반 보고서와 반복 컨텍스트 보고서는 어느 한 엔드포인트라도 이 표지가 있으면 시간값을 진단 자료로 남기고 자동 성능 비교에서 제외합니다.
 
+기본 빌드의 내장 어댑터를 사용하면 `--client`·`--server`를 생략합니다. 두 옵션은 모듈 선택이며 서로 다른 내장 빌드는 `--client-bin`·`--server-bin`으로 지정합니다. 내장 연결의 전체 관측 구간은 `context-setup-to-teardown`, 모듈 연결은 `module-to-teardown`입니다. 시작 경계를 구별하며 프로그램 진입 전 로딩 비용까지 포함했다고 해석하지 않습니다.
+
 ## 범위와 산출물
 
 수집은 지휘자에서 상속한 task 이벤트를 사용합니다. 분석은 각 역할의 새 PID에서 PID와 같은 TID의 표본만 고릅니다. 다른 역할·지휘자·다른 스레드를 합산하지 않습니다. 스케줄러를 따라 이동하는 task 범위이며 코어별 귀속과 호출 스택은 제공하지 않습니다. 이벤트는 `cycles:u`, `cpu-clock:u`, `cycles`, `cpu-clock` 중 명시하고 실제 설정을 `perf.events.txt`에 보존합니다. 커널 포함 이벤트를 요청했을 때 권한이 없으면 다른 이벤트로 자동 변경하지 않습니다.
@@ -31,17 +33,13 @@ python3 scripts/cpu-profile.py analyze --perf /path/to/perf \
 
 ## 현재 확인과 한계
 
-현재 WSL에는 `perf` 명령이 없어 Ubuntu 패키지를 사용자 전용 `.deps/tools/perf/`에 풀었습니다. 시스템 패키지나 커널 설정은 바꾸지 않았습니다. 패키지 출처·SHA-256·실제 도구 판은 `.deps/manifests/perf-tools.json`에 기록합니다. 사용한 도구는 `perf version 7.0.14`, 커널은 `6.18.58.1-microsoft-standard-WSL2`입니다.
-
-`artifacts/cpu-mlkem-c-2/`과 `artifacts/cpu-mlkem-avx2-2/`는 서버를 C로 고정하고 클라이언트를 바꾼 각 3개 프로세스 쌍입니다. 원본 표본은 각각 116개·150개이며 역할당 모듈→해제와 연결 구간을 나누어 총 12개 구간을 보고합니다. 짧은 주 구간의 표본 수는 4~8개여서 함수 비중의 안정성이나 최적화율을 주장하지 않습니다.
-
-이 도구·커널 조합에서 header 전용 조회는 `Invalid HEADER_EVENT_DESC: nre=1 sz=144 (min 64)` 경고를 냈습니다. 실제 `perf script`와 `evlist -v`는 성공했고 이벤트의 사용자/커널 범위·inherit·clockid와 표본을 확인했습니다. header 경고와 `/proc/schedstat` 조회 경고는 원본 stderr 및 요약의 `tool_warnings`에 남겨 메타데이터 제한을 드러냅니다. 네이티브 Linux에서는 도구·커널 조합과 관측 부담을 다시 검증해야 합니다. 이 실행을 일반 시간 성능 실험으로 사용하지 않습니다.
+현재 빌드·실제 수집·재분석 근거는 [검증 기록](../project/validation.md)에 모읍니다. WSL의 소프트웨어 CPU 표본을 PMU 계수나 네이티브 Linux 성능 결과로 바꾸지 않습니다. 도구·커널 조합의 경고는 수집 로그와 `tool_warnings`에 남깁니다. 짧은 구간은 표본이 없거나 적을 수 있으므로 함수 비중의 안정성을 주장하지 않습니다.
 
 ## 가상 객체와 관측 부담 예비실행
 
 perf는 vDSO를 `/tmp/perf-vdso.so-*`에 잠시 내보냈다가 지울 수 있습니다. build ID 없는 이 항목은 저장된 사용자 라이브러리와 구별하며 해당 함수 이름을 unknown으로 유지합니다. 표본과 period 분모는 삭제하지 않습니다. 일반 파일의 build ID 부재·불일치나 저장본 변경은 계속 missing입니다. [perf의 vDSO 처리](https://github.com/torvalds/linux/blob/v6.18/tools/perf/util/vdso.c)
 
-`scripts/observation-study.py`는 OpenSSL 상호 인증·32바이트 양방향·컨텍스트당 새 연결 하나·워밍업 0을 고정하고 시간, 상세 추적, 추적+TX 시각, CPU 프로파일링을 별도 실행합니다. 블록 안 순서를 seed로 섞고 원래 실행 결과와 재분석 상태를 따로 보존합니다. `artifacts/observation-pilot-final/`은 4블록×3표본으로 조건별 12개 프로세스 쌍입니다.
+`scripts/observation-study.py`는 OpenSSL 상호 인증·32바이트 양방향·컨텍스트당 새 연결 하나·워밍업 0을 고정하고 시간, 상세 추적, 추적+TX 시각, CPU 프로파일링을 별도 실행합니다. 블록 안 순서를 seed로 섞고 원래 실행 결과와 재분석 상태를 따로 보존합니다.
 
 ```sh
 python3 scripts/observation-study.py run --build build --pki pki/default \

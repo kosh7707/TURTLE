@@ -17,16 +17,8 @@ struct Endpoint {
     std::uint16_t port = 0;
 };
 
-// All sockets are on the loopback interface for now.
-Listener listen_loopback();
-int accept_one(int listen_fd);
-int connect_loopback(std::uint16_t port);
-
-// Namespace-aware paths. The caller enters the supplied namespace before
-// calling these functions. address is an IPv4 numeric address; port 0 requests
-// a dynamic listener port. connect_ipv4 binds source_address explicitly.
+// Numeric IPv4 in the caller's network namespace; port 0 requests a dynamic port.
 Listener listen_ipv4(const std::string& address, std::uint16_t port = 0);
-int connect_ipv4(const std::string& source_address, const Endpoint& destination);
 Endpoint local_endpoint(int fd);
 Endpoint peer_endpoint(int fd);
 

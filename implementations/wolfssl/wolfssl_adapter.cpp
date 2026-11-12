@@ -269,6 +269,9 @@ Declaration declaration(const Context* base) {
         "key log is sink-only (no file); "
         "version/cipher/group/signature/resumption are queried from wolfSSL; "
         "hello_retry_request=false is inferred from the forced single key-share group";
+#ifdef TURTLE_LIBRARY_LINKAGE
+    value.build_options += ";tls_linkage=" TURTLE_LIBRARY_LINKAGE;
+#endif
     value.context_description =
         "full handshake only; session tickets disabled; HRR has no wolfSSL observation hook";
 #ifdef TURTLE_MLKEM
@@ -476,7 +479,7 @@ Step translate_operation(WolfConnection& connection, int result, const char* ope
     if (connection.trace.failed)
         return Step::Failed;
     if (result == WOLFSSL_SUCCESS) {
-        return Step::Done;
+        return Step::Complete;
     }
     const int error = wolfSSL_get_error(connection.ssl, result);
     if (error == WOLFSSL_ERROR_WANT_READ) {
@@ -495,7 +498,7 @@ Step handshake_step(Connection* base) {
         return Step::Failed;
     }
     if (connection->handshake_done) {
-        return Step::Done;
+        return Step::Complete;
     }
     const int result = connection->context->role == Role::Client ? wolfSSL_connect(connection->ssl)
                                                                  : wolfSSL_accept(connection->ssl);
@@ -510,7 +513,7 @@ Step handshake_step(Connection* base) {
     }
 #endif
     const Step step = translate_operation(*connection, result, "TLS handshake");
-    if (step == Step::Done) {
+    if (step == Step::Complete) {
         connection->handshake_done = true;
     }
     return step;
@@ -592,7 +595,7 @@ AppResult app_send(Connection* base, const std::uint8_t* data, std::size_t size)
     }
     const int result = wolfSSL_write(connection->ssl, data, static_cast<int>(size));
     if (result > 0) {
-        return {Step::Done, static_cast<std::size_t>(result)};
+        return {Step::Complete, static_cast<std::size_t>(result)};
     }
     return {translate_operation(*connection, result, "wolfSSL_write"), 0};
 }
@@ -605,7 +608,7 @@ AppResult app_recv(Connection* base, std::uint8_t* data, std::size_t size) {
     }
     const int result = wolfSSL_read(connection->ssl, data, static_cast<int>(size));
     if (result > 0) {
-        return {Step::Done, static_cast<std::size_t>(result)};
+        return {Step::Complete, static_cast<std::size_t>(result)};
     }
     return {translate_operation(*connection, result, "wolfSSL_read"), 0};
 }

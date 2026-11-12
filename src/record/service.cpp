@@ -57,26 +57,6 @@ void write_bytes(std::ofstream& file, std::span<const std::uint8_t> data) {
     file.flush();
 }
 
-void write_durable(int fd, const Json& row, const std::string& path) {
-    std::string text = row.dump();
-    text.push_back('\n');
-    std::size_t offset = 0;
-    while (offset != text.size()) {
-        const ssize_t written = ::write(fd, text.data() + offset, text.size() - offset);
-        if (written > 0) {
-            offset += static_cast<std::size_t>(written);
-            continue;
-        }
-        if (written < 0 && errno == EINTR)
-            continue;
-        throw std::runtime_error("cannot write ledger: " + path + ": " +
-                                 std::to_string(errno));
-    }
-    if (::fsync(fd) != 0)
-        throw std::runtime_error("cannot make ledger durable: " + path + ": " +
-                                 std::to_string(errno));
-}
-
 const char* service_type(ServiceArtifact artifact) noexcept {
     return artifact == ServiceArtifact::CertificateLookup ? lookup_record_type : ca_record_type;
 }
@@ -103,12 +83,12 @@ Json capabilities_json(const model::Capabilities& value) {
             {"perf", value.perf},
             {"perf_requested_scope", model::name(value.perf_requested_scope)},
             {"perf_status", model::name(value.perf_status)},
-            {"perf_effective_scope",
-             value.perf_effective_scope ? Json(model::name(*value.perf_effective_scope))
-                                        : Json(nullptr)},
-            {"perf_failure_stage",
-             value.perf_failure_stage ? Json(model::name(*value.perf_failure_stage))
-                                      : Json(nullptr)},
+            {"perf_effective_scope", value.perf_effective_scope
+                                         ? Json(model::name(*value.perf_effective_scope))
+                                         : Json(nullptr)},
+            {"perf_failure_stage", value.perf_failure_stage
+                                       ? Json(model::name(*value.perf_failure_stage))
+                                       : Json(nullptr)},
             {"perf_error_number", nullable(value.perf_error_number)},
             {"heap_tracking", value.heap_tracking},
             {"stack_tracking", value.stack_tracking},
@@ -160,37 +140,6 @@ Json event_json(ServiceArtifact artifact, const ServiceEvent& event) {
             {"system_error", event.system_error}};
 }
 
-Json attempt_json(std::string_view kind, const AttemptEntry& entry) {
-    if (!entry.artifact_names.empty() &&
-        entry.artifact_names.size() != entry.artifact_status.size())
-        throw std::invalid_argument("attempt artifact names and statuses differ in length");
-    Json participants = Json::array();
-    for (const auto participant : entry.participants)
-        participants.push_back(model::name(participant));
-    Json artifacts = Json::array();
-    for (const auto status : entry.artifact_status)
-        artifacts.push_back(model::name(status));
-    Json named_artifacts = Json::object();
-    for (std::size_t i = 0; i < entry.artifact_names.size(); ++i)
-        named_artifacts[entry.artifact_names[i]] = model::name(entry.artifact_status[i]);
-    return {{"type", attempt_ledger_type},
-            {"schema", model::attempt_ledger_schema},
-            {"record_kind", kind},
-            {"attempt_id", entry.attempt_id},
-            {"requested_count", entry.requested_count},
-            {"started", entry.started},
-            {"final_status", model::name(entry.final_status)},
-            {"failure_phase", model::name(entry.failure_phase)},
-            {"reason", entry.reason},
-            {"secondary_reasons", entry.secondary_reasons},
-            {"measurement_deadline_monotonic_ns", entry.measurement_deadline_monotonic_ns},
-            {"flush_grace_ms", entry.flush_grace_ms},
-            {"participants", participants},
-            {"artifact_status", artifacts},
-            {"artifacts", named_artifacts},
-            {"connections", entry.connections},
-            {"network_observation_ids", entry.network_observation_ids}};
-}
 } // namespace
 
 struct ServiceBuffer::State {
@@ -199,8 +148,7 @@ struct ServiceBuffer::State {
             throw std::length_error("too many service capture connections");
         const std::size_t stream_count = limits.connections * 2;
         if (limits.bytes_per_direction != 0 &&
-            stream_count >
-                std::numeric_limits<std::size_t>::max() / limits.bytes_per_direction)
+            stream_count > std::numeric_limits<std::size_t>::max() / limits.bytes_per_direction)
             throw std::length_error("service byte capacity overflow");
         const std::size_t stream_bytes = stream_count * limits.bytes_per_direction;
         if (event_storage.size() >
@@ -269,9 +217,9 @@ struct ServiceWriter::State {
     State(const std::string& directory, ServiceArtifact value, std::size_t connections,
           ServiceMetadata value_metadata)
         : artifact(value), metadata(std::move(value_metadata)),
-          records(open_file(directory + "/" + (value == ServiceArtifact::CertificateLookup
-                                                   ? lookup_filename
-                                                   : ca_filename))) {
+          records(open_file(
+              directory + "/" +
+              (value == ServiceArtifact::CertificateLookup ? lookup_filename : ca_filename))) {
         const std::string prefix = artifact == ServiceArtifact::CertificateLookup ? "lookup" : "ca";
         streams.reserve(connections * 2);
         for (std::size_t i = 0; i < connections; ++i) {
@@ -306,6 +254,9 @@ void ServiceWriter::write(std::span<const ServiceConnectionInfo> connections,
                            {"schema", model::lookup_record_schema},
                            {"record_kind", "header"},
                            {"sample", metadata.sample},
+                           {"run_id", metadata.run_id},
+                           {"context_id", metadata.context_id},
+                           {"clock_domain", metadata.clock_domain},
                            {"scenario_name", metadata.scenario_name},
                            {"cache_mode", model::name(metadata.cache_mode)},
                            {"cache_state_id", metadata.cache_state_id},
@@ -328,33 +279,33 @@ void ServiceWriter::write(std::span<const ServiceConnectionInfo> connections,
         state.records << event_json(state.artifact, event).dump() << '\n';
 
     for (const auto& connection : connections) {
-        state.records
-            << Json({{"type", service_type(state.artifact)},
-                     {"schema", model::lookup_record_schema},
-                     {"record_kind", "connection_summary"},
-                     {"sample", connection.sample},
-                     {"connection", connection.connection},
-                     {"warmup", connection.warmup},
-                     {"request_id", connection.request_id},
-                     {"participant", model::name(connection.participant)},
-                     {"stream_id", connection.stream_id},
-                     {"object_id", object_id_string(connection.object_id)},
-                     {"object_size", connection.object_size},
-                     {"cache_hit", connection.cache_hit},
-                     {"request_count", connection.request_count},
-                     {"heap_domain", model::name(connection.memory.domain)},
-                     {"heap", connection.memory.heap ? heap_json(*connection.memory.heap)
-                                                       : Json(nullptr)},
-                     {"logical_cache_bytes", connection.memory.logical_cache_bytes},
-                     {"cache_capacity", connection.memory.cache_capacity},
-                     {"reference_bytes", connection.memory.reference_bytes},
-                     {"framework_reserved_bytes", connection.memory.framework_reserved_bytes},
-                     {"tcp_start", detail::tcp_json(connection.tcp_start)},
-                     {"tcp_end", detail::tcp_json(connection.tcp_end)},
-                     {"artifact_status", model::name(connection.artifact_status)},
-                     {"incomplete_reason", connection.incomplete_reason}})
-                   .dump()
-            << '\n';
+        state.records << Json({{"type", service_type(state.artifact)},
+                               {"schema", model::lookup_record_schema},
+                               {"record_kind", "connection_summary"},
+                               {"sample", connection.sample},
+                               {"connection", connection.connection},
+                               {"warmup", connection.warmup},
+                               {"request_id", connection.request_id},
+                               {"participant", model::name(connection.participant)},
+                               {"stream_id", connection.stream_id},
+                               {"object_id", object_id_string(connection.object_id)},
+                               {"object_size", connection.object_size},
+                               {"cache_hit", connection.cache_hit},
+                               {"request_count", connection.request_count},
+                               {"heap_domain", model::name(connection.memory.domain)},
+                               {"heap", connection.memory.heap ? heap_json(*connection.memory.heap)
+                                                               : Json(nullptr)},
+                               {"logical_cache_bytes", connection.memory.logical_cache_bytes},
+                               {"cache_capacity", connection.memory.cache_capacity},
+                               {"reference_bytes", connection.memory.reference_bytes},
+                               {"framework_reserved_bytes",
+                                connection.memory.framework_reserved_bytes},
+                               {"tcp_start", detail::tcp_json(connection.tcp_start)},
+                               {"tcp_end", detail::tcp_json(connection.tcp_end)},
+                               {"artifact_status", model::name(connection.artifact_status)},
+                               {"incomplete_reason", connection.incomplete_reason}})
+                             .dump()
+                      << '\n';
     }
 
     std::string reason(incomplete_reason);
@@ -381,6 +332,9 @@ void ServiceWriter::write(std::span<const ServiceConnectionInfo> connections,
                            {"schema", model::lookup_record_schema},
                            {"record_kind", "footer"},
                            {"sample", metadata.sample},
+                           {"run_id", metadata.run_id},
+                           {"context_id", metadata.context_id},
+                           {"clock_domain", metadata.clock_domain},
                            {"artifact_status", model::name(footer_status)},
                            {"incomplete_reason", reason},
                            {"capture_dropped", buffer.dropped()}})
@@ -389,115 +343,4 @@ void ServiceWriter::write(std::span<const ServiceConnectionInfo> connections,
     state.records.flush();
 }
 
-struct AttemptWriter::State {
-    State(const std::string& directory, std::size_t count, model::FailurePolicy value_policy)
-        : path(directory + "/" + attempts_filename), requested_count(count), policy(value_policy) {
-        fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-        if (fd < 0)
-            throw std::runtime_error("cannot exclusively create attempt ledger: " + path + ": " +
-                                     std::to_string(errno));
-        try {
-            write_durable(fd,
-                          Json({{"type", attempt_ledger_type},
-                                {"schema", model::attempt_ledger_schema},
-                                {"record_kind", "run_config"},
-                                {"requested_count", requested_count},
-                                {"failure_policy", model::name(policy)}}),
-                          path);
-        } catch (...) {
-            ::close(fd);
-            fd = -1;
-            throw;
-        }
-    }
-    ~State() {
-        if (fd >= 0)
-            ::close(fd);
-    }
-    std::string path;
-    std::size_t requested_count;
-    model::FailurePolicy policy;
-    int fd = -1;
-    bool summarized = false;
-};
-
-AttemptWriter::AttemptWriter(const std::string& directory, std::size_t requested_count,
-                             model::FailurePolicy policy)
-    : state_(std::make_unique<State>(directory, requested_count, policy)) {}
-AttemptWriter::~AttemptWriter() = default;
-void AttemptWriter::started(const AttemptEntry& entry) {
-    if (state_->summarized)
-        throw std::logic_error("attempt ledger already summarized");
-    if (!entry.started)
-        throw std::invalid_argument("attempt_started row requires started=true");
-    write_durable(state_->fd, attempt_json("attempt_started", entry), state_->path);
-}
-void AttemptWriter::finished(const AttemptEntry& entry) {
-    if (state_->summarized)
-        throw std::logic_error("attempt ledger already summarized");
-    if (!entry.started || entry.final_status == model::AttemptStatus::NotAttempted)
-        throw std::invalid_argument("attempt_final row requires a started final status");
-    write_durable(state_->fd, attempt_json("attempt_final", entry), state_->path);
-}
-void AttemptWriter::summary(std::span<const AttemptEntry> entries) {
-    auto& state = *state_;
-    if (state.summarized)
-        throw std::logic_error("attempt ledger already summarized");
-
-    std::size_t started_count = 0;
-    std::size_t success = 0, timeout = 0, error = 0, incomplete = 0;
-    std::size_t missing_artifacts = 0;
-    Json missing = Json::array();
-    for (const auto& entry : entries) {
-        if (!entry.artifact_names.empty() &&
-            entry.artifact_names.size() != entry.artifact_status.size())
-            throw std::invalid_argument("attempt artifact names and statuses differ in length");
-        if (entry.started)
-            ++started_count;
-        switch (entry.final_status) {
-        case model::AttemptStatus::Success:
-            ++success;
-            break;
-        case model::AttemptStatus::Timeout:
-            ++timeout;
-            break;
-        case model::AttemptStatus::Error:
-            ++error;
-            break;
-        case model::AttemptStatus::Incomplete:
-            ++incomplete;
-            break;
-        case model::AttemptStatus::NotAttempted:
-            break;
-        }
-        for (std::size_t i = 0; i < entry.artifact_status.size(); ++i) {
-            if (entry.artifact_status[i] != model::ArtifactStatus::Missing)
-                continue;
-            ++missing_artifacts;
-            Json item = {{"attempt_id", entry.attempt_id}, {"artifact_index", i}};
-            if (!entry.artifact_names.empty())
-                item["artifact_name"] = entry.artifact_names[i];
-            missing.push_back(std::move(item));
-        }
-    }
-    if (started_count > state.requested_count ||
-        success + timeout + error + incomplete != started_count)
-        throw std::invalid_argument("attempt summary violates denominator identities");
-    const std::size_t not_attempted = state.requested_count - started_count;
-    write_durable(state.fd,
-                  Json({{"type", attempt_ledger_type},
-                        {"schema", model::attempt_ledger_schema},
-                        {"record_kind", "run_summary"},
-                        {"requested", state.requested_count},
-                        {"started", started_count},
-                        {"success", success},
-                        {"timeout", timeout},
-                        {"error", error},
-                        {"incomplete", incomplete},
-                        {"not_attempted", not_attempted},
-                        {"missing_artifacts", missing_artifacts},
-                        {"missing_artifact_rows", missing}}),
-                  state.path);
-    state.summarized = true;
-}
 } // namespace turtle::record

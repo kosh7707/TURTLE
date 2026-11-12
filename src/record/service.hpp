@@ -1,6 +1,6 @@
 #pragma once
 
-// Certificate lookup, Mock CA, and attempt-ledger recording declarations.
+// Certificate lookup and Mock CA recording declarations.
 #include "model/service.hpp"
 
 #include <cstddef>
@@ -16,10 +16,8 @@ namespace turtle::record {
 
 enum class ServiceArtifact { CertificateLookup, MockCa };
 
-inline constexpr const char* attempt_ledger_type = "turtle-attempt-ledger";
 inline constexpr const char* lookup_record_type = "certificate-lookup";
 inline constexpr const char* ca_record_type = "mock-ca";
-inline constexpr const char* attempts_filename = "attempts.jsonl";
 inline constexpr const char* lookup_filename = "lookup.jsonl";
 inline constexpr const char* ca_filename = "ca.jsonl";
 
@@ -61,6 +59,7 @@ struct ServiceConnectionInfo {
 // includes ServiceBuffer::reserved_bytes() supplied by lifecycle. None of these
 // values are added to the domain heap counters.
 struct ServiceMetadata {
+    std::string run_id, context_id, clock_domain;
     std::uint64_t sample = 0;
     std::string scenario_name = model::lookup_scenario_name;
     model::CacheMode cache_mode = model::CacheMode::Empty;
@@ -78,28 +77,6 @@ struct ServiceMetadata {
     model::Calibration calibration;
     std::optional<int> pinned_cpu;
     std::string observation_level = "L0";
-};
-
-// Parent-owned ledger values exist independently of child artifacts. Deadline
-// and grace values use the parent's monotonic clock domain and must not be
-// synthesized from child files.
-struct AttemptEntry {
-    std::uint64_t attempt_id = 0;
-    std::size_t requested_count = 0;
-    bool started = false;
-    model::AttemptStatus final_status = model::AttemptStatus::NotAttempted;
-    model::FailurePhase failure_phase = model::FailurePhase::None;
-    std::string reason;
-    std::vector<std::string> secondary_reasons;
-    std::uint64_t measurement_deadline_monotonic_ns = 0;
-    unsigned flush_grace_ms = 500;
-    std::vector<model::ParticipantKind> participants;
-    // Parallel to artifact_status when present. Participants describe the
-    // three processes and must not be used to infer the four raw artifacts.
-    std::vector<std::string> artifact_names;
-    std::vector<model::ArtifactStatus> artifact_status;
-    std::vector<std::size_t> connections;
-    std::vector<std::string> network_observation_ids;
 };
 
 struct ServiceLimits {
@@ -141,28 +118,8 @@ class ServiceWriter {
     ~ServiceWriter();
     ServiceWriter(const ServiceWriter&) = delete;
     ServiceWriter& operator=(const ServiceWriter&) = delete;
-    void write(std::span<const ServiceConnectionInfo> connections,
-               const ServiceBuffer& buffer, model::ArtifactStatus footer_status,
-               std::string_view incomplete_reason);
-
-  private:
-    struct State;
-    std::unique_ptr<State> state_;
-};
-
-// Parent writer for attempts.jsonl. It is opened and the started row is made
-// durable before child execution, so a hard-killed child cannot erase the
-// requested/started denominator.
-class AttemptWriter {
-  public:
-    AttemptWriter(const std::string& run_directory, std::size_t requested_count,
-                  model::FailurePolicy policy);
-    ~AttemptWriter();
-    AttemptWriter(const AttemptWriter&) = delete;
-    AttemptWriter& operator=(const AttemptWriter&) = delete;
-    void started(const AttemptEntry& entry);
-    void finished(const AttemptEntry& entry);
-    void summary(std::span<const AttemptEntry> entries);
+    void write(std::span<const ServiceConnectionInfo> connections, const ServiceBuffer& buffer,
+               model::ArtifactStatus footer_status, std::string_view incomplete_reason);
 
   private:
     struct State;

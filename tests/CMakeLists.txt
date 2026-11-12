@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # The production build does not depend on the tests.
+set(TURTLE_ADAPTER_LINKAGE module CACHE STRING "" FORCE)
+set(TURTLE_BUILD_LOOKUP ON CACHE BOOL "" FORCE)
+set(TURTLE_BUILD_MODULES ON CACHE BOOL "" FORCE)
+set(TURTLE_WITH_OPENSSL ON CACHE BOOL "" FORCE)
 add_subdirectory(.. framework)
 enable_testing()
 # Several small native tests use assert, including expressions that exercise

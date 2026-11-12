@@ -8,6 +8,12 @@ add_executable(turtle_window_test window_test.cpp)
 target_link_libraries(turtle_window_test PRIVATE turtle_report)
 add_test(NAME report_window COMMAND turtle_window_test)
 
+add_executable(turtle_evidence_test evidence_test.cpp)
+target_link_libraries(turtle_evidence_test PRIVATE turtle_report)
+foreach(case partition scenario_end heap_missing heap_equal_time heap_shared_rx_snapshot io_missing span_cpu_missing span_order)
+  add_test(NAME measurement_evidence_${case} COMMAND turtle_evidence_test ${case})
+endforeach()
+
 add_executable(turtle_repeated_context_test repeated_context_test.cpp)
 target_link_libraries(turtle_repeated_context_test PRIVATE turtle_report)
 add_test(NAME report_repeated_context COMMAND turtle_repeated_context_test

@@ -9,6 +9,35 @@
 #include <numeric>
 #include <sstream>
 #include <unistd.h>
+
+// Candidate cases assert client statistics. Their peers now carry complete raw
+// boundaries too, so select the client view explicitly instead of relying on
+// header-only peers being discarded as invalid local measurements.
+nlohmann::json client_report(const std::filesystem::path& input,
+                            const std::filesystem::path& output, bool repeated = false) {
+    auto report = turtle::report::summarize(input, output, repeated);
+    using J = nlohmann::json;
+    J groups = J::array(), comparisons = J::array();
+    std::map<std::size_t, std::size_t> indices;
+    for (std::size_t i = 0; i < report["groups"].size(); ++i)
+        if (report["groups"][i]["dimensions"]["role"] == "client") {
+            indices.emplace(i, groups.size());
+            groups.push_back(report["groups"][i]);
+        }
+    for (auto comparison : report["comparisons"]) {
+        const auto a = comparison["group_a"].get<std::size_t>();
+        const auto b = comparison["group_b"].get<std::size_t>();
+        if (indices.contains(a) && indices.contains(b)) {
+            comparison["group_a"] = indices.at(a);
+            comparison["group_b"] = indices.at(b);
+            comparisons.push_back(comparison);
+        }
+    }
+    report["groups"] = std::move(groups);
+    report["comparisons"] = std::move(comparisons);
+    return report;
+}
+
 int main() {
     using namespace turtle::report;
     for (std::size_t n = 1; n < 40; ++n) {
@@ -36,6 +65,7 @@ int main() {
     assert(!compare(a, a, 7, 100).distinguishable);
     using J = nlohmann::json;
     J unobserved = {{"measurement_contract_revision", 3},
+                    {"adapter_connection", {{"mode", "module"}}},
                     {"role", "client"},
                     {"mode", "timing"},
                     {"config", {{"tls", {{"framework_io", false}}}}},
@@ -53,11 +83,15 @@ int main() {
                nullptr)["windows"]["first_tls_receive_to_client_finished_processed"]["status"] ==
            "unsupported");
     J header = {{"role", "client"},
-                {"connections",
-                 J::array({{{"index", 0}, {"warmup", false}, {"application_verified", true}}})}};
+                {"connections", J::array({{{"index", 0},
+                                           {"warmup", false},
+                                           {"application_verified", true},
+                                           {"scenario_completed", true},
+                                           {"end_sequence", 8}}})}};
     std::vector<J> events;
     auto add = [&](const char* kind, int time, const char* call = "handshake", int result = 0) {
-        events.push_back({{"kind", kind},
+        events.push_back({{"sequence", events.size() + 1},
+                          {"kind", kind},
                           {"monotonic_ns", time},
                           {"call", call},
                           {"result", result},
@@ -105,6 +139,7 @@ int main() {
     assert(callback_partial_part["io_breakdown"]["reason"] == "measurement_boundaries_incomplete");
     auto unverified_application = header;
     unverified_application["connections"][0]["application_verified"] = false;
+    unverified_application["connections"][0]["scenario_completed"] = false;
     const auto unverified_part = partition(unverified_application, events)[0];
     assert(unverified_part["primary_window"]["available"] == true);
     assert(unverified_part["elapsed_ns"] == 30);
@@ -113,6 +148,7 @@ int main() {
     assert(partition(unverified_application, events)[0]["valid"] == false);
 
     auto common_header = header;
+    common_header["connections"][0]["end_sequence"] = 6;
     common_header["config"] = {{"tls", {{"application_bytes", 4}}}, {"channel_observer", true}};
     auto common_events = [](std::string role, bool observer) {
         J rows = J::array({
@@ -315,6 +351,8 @@ int main() {
            measured["instructions"] == 90);
     header["perf_complete"] = false;
     assert(partition(header, events)[0]["cycles"].is_null());
+    for (auto& event : events)
+        event["heap"] = {{"live", 10}, {"interval_peak", 10}};
     events.front()["heap"] = {{"live", 10}, {"interval_peak", 1000}};
     events.back()["heap"] = {{"live", 10}, {"interval_peak", 20}};
     assert(partition(header, events)[0]["heap_peak_bytes"] == 20);
@@ -322,9 +360,16 @@ int main() {
     kernel["location"] = "kernel";
     kernel["monotonic_ns"] = 999999;
     events.insert(events.begin() + 2, kernel);
+    for (std::size_t i = 0; i < events.size(); ++i)
+        events[i]["sequence"] = i + 1;
+    header["connections"][0]["end_sequence"] = events.size();
     assert(partition(header, events)[0]["elapsed_ns"] == 30);
-    header.update({{"schema", 1},
-                   {"measurement_contract_revision", 1},
+    header.update({{"schema", 3},
+                   {"measurement_contract_revision", 3},
+                   {"run_id", "report-fixture"},
+                   {"context_id", "context"},
+                   {"scenario", J::object()},
+                   {"adapter_connection", {{"mode", "module"}, {"tls_linkage", "fixture"}}},
                    {"type", "sample"},
                    {"sample", 1},
                    {"batch", 1},
@@ -332,7 +377,7 @@ int main() {
                    {"profile_hash", "test"},
                    {"environment_hash", "env"},
                    {"mode", "timing"},
-                   {"config", J::object()},
+                   {"config", {{"tls", J::object()}}},
                    {"declaration", {{"library", "fixture"}, {"is_mock", true}}}});
     const auto dir =
         std::filesystem::temp_directory_path() / ("turtle-report-" + std::to_string(getpid()));
@@ -345,7 +390,8 @@ int main() {
         unavailable["config"]["tls"] = {{"framework_io", false}};
         unavailable["config"]["tls"]["application_bytes"] = 4;
         unavailable["config"]["channel_observer"] = false;
-        unavailable["config"]["server_adapter"] = adapter;
+        unavailable["run_id"] = adapter;
+        unavailable["config"]["implementation"] = adapter;
         unavailable["declaration"]["library"] = adapter;
         unavailable["connections"][0]["application_verified"] = true;
         unavailable["connections"][0]["primary_window"] = {
@@ -385,24 +431,6 @@ int main() {
         assert(group["automatic_comparison_eligible"] == false);
         assert(group["dimensions"]["run_controls"]["channel_observer"] == false);
     }
-    const auto legacy_marker_dir = dir / "legacy-marker-native";
-    std::filesystem::create_directories(legacy_marker_dir);
-    auto legacy_marker = header;
-    legacy_marker["observation_level"] = "library-only";
-    legacy_marker["config"].erase("tls");
-    {
-        std::ofstream raw(legacy_marker_dir / "client.jsonl");
-        raw << legacy_marker.dump() << '\n';
-        for (const auto& event : events)
-            raw << event.dump() << '\n';
-    }
-    const auto legacy_marker_report = summarize(legacy_marker_dir, dir / "legacy-marker-report");
-    assert(legacy_marker_report["groups"].size() == 1);
-    assert(legacy_marker_report["groups"][0]["metrics"]["elapsed_ns"]["count"] == 1);
-    assert(!legacy_marker_report["groups"][0]["metrics"].contains("io_ns"));
-    assert(legacy_marker_report["groups"][0]["automatic_comparison_eligible"] == false);
-    assert(legacy_marker_report["groups"][0]["dimensions"]["run_controls"]["channel_observer"] ==
-           true);
     {
         std::ofstream raw(dir / "client.jsonl");
         raw << header.dump() << '\n';
@@ -494,24 +522,27 @@ int main() {
     assert(malformed["samples"][0]["decoded_sidecar_reason"] == "malformed_json");
     assert(malformed["samples"][0]["connections"][0]["record_computation_attribution"]["reason"] ==
            "decoded_sidecar_malformed_json");
-    for (int i = 0; i < 4; ++i) {
+    const auto separated_dir = dir / "separate-conditions";
+    std::filesystem::create_directory(separated_dir);
+    for (int i = -1; i < 4; ++i) {
         auto alternate = header;
+        alternate["run_id"] = "separated-" + std::to_string(i);
         if (i == 0)
-            alternate["config"]["server_adapter"] = "different_peer";
+            alternate["config"]["implementation"] = "different_implementation";
         if (i == 1)
             alternate["pinned_cpu"] = 3;
         if (i == 2)
             alternate["config"]["perf"] = true;
         if (i == 3)
             alternate["declaration"]["build_options"] = "different_build";
-        auto folder = dir / std::to_string(i);
+        auto folder = separated_dir / std::to_string(i);
         std::filesystem::create_directory(folder);
         std::ofstream raw(folder / "client.jsonl");
         raw << alternate.dump() << '\n';
         for (const auto& e : events)
             raw << e.dump() << '\n';
     }
-    const auto separated = summarize(dir, dir / "grouped");
+    const auto separated = summarize(separated_dir, dir / "grouped");
     assert(separated["groups"].size() >= 5);
 
     const auto candidates_dir = dir / "comparison-candidates";
@@ -526,16 +557,16 @@ int main() {
                                const std::string& profile, const std::string& library,
                                std::uint64_t batch = 1, int peer_cpu = 8,
                                const std::string& peer_version = "peer-version",
-                               bool include_peer = true, int own_contract_revision = 2,
-                               int peer_contract_revision = 2) {
+                               bool include_peer = true, int own_contract_revision = 3,
+                               int peer_contract_revision = 3) {
         auto candidate = header;
         if (own_contract_revision > 0)
             candidate["measurement_contract_revision"] = own_contract_revision;
         else
             candidate.erase("measurement_contract_revision");
         candidate["batch"] = batch;
-        candidate["config"]["client_adapter"] = own_adapter;
-        candidate["config"]["server_adapter"] = peer_adapter;
+        candidate["run_id"] = (root / folder_name).string();
+        candidate["config"]["implementation"] = own_adapter;
         candidate["profile_hash"] = profile;
         candidate["pinned_cpu"] = 6;
         candidate["config"]["perf"] = false;
@@ -571,6 +602,7 @@ int main() {
         if (include_peer) {
             auto peer = candidate;
             peer["role"] = "server";
+            peer["config"]["implementation"] = peer_adapter;
             peer["pinned_cpu"] = peer_cpu;
             peer["declaration"]["library"] = "peer-library";
             peer["declaration"]["version"] = peer_version;
@@ -579,7 +611,19 @@ int main() {
                 peer["measurement_contract_revision"] = peer_contract_revision;
             else
                 peer.erase("measurement_contract_revision");
-            std::ofstream(folder / "server.jsonl") << peer.dump() << '\n';
+            std::ofstream peer_file(folder / "server.jsonl");
+            peer_file << peer.dump() << '\n';
+            for (auto event : events) {
+                if (event["kind"] == "IO_SEND_ENTER")
+                    event["kind"] = "IO_RECV_ENTER";
+                else if (event["kind"] == "IO_SEND_RETURN") {
+                    event["kind"] = "IO_RECV_RETURN";
+                    event["transferred"] = 1;
+                }
+                if (event["call"] == "app_recv")
+                    event["call"] = "app_send";
+                peer_file << event.dump() << '\n';
+            }
         }
     };
     write_candidate(candidates_dir, "a", "adapter-a", "fixed-peer", "same-profile", "library-a");
@@ -596,7 +640,7 @@ int main() {
                     "library-g", 1, 8, "peer-version", false);
     write_candidate(candidates_dir, "missing-peer-two", "adapter-h", "fixed-peer", "same-profile",
                     "library-h", 1, 8, "peer-version", false);
-    const auto candidates = summarize(candidates_dir, dir / "candidate-report");
+    const auto candidates = client_report(candidates_dir, dir / "candidate-report");
     assert(candidates["groups"].size() == 8);
     std::map<std::string, J> candidate_dimensions;
     for (const auto& group : candidates["groups"]) {
@@ -631,15 +675,6 @@ int main() {
                     "current-a");
     write_candidate(contract_dir, "current-b", "current-b", "fixed-peer", "same-profile",
                     "current-b");
-    write_candidate(contract_dir, "revision-two", "revision-two", "fixed-peer", "same-profile",
-                    "revision-two", 1, 8, "peer-version", true, 3, 2);
-    write_candidate(contract_dir, "peer-revision-two", "peer-revision-two", "fixed-peer",
-                    "same-profile", "peer-revision-two", 1, 8, "peer-version", true, 2, 3);
-    write_candidate(contract_dir, "legacy-own", "legacy-own", "fixed-peer", "same-profile",
-                    "legacy-own", 1, 8, "peer-version", true, 0, 2);
-    write_candidate(contract_dir, "legacy-peer", "legacy-peer", "fixed-peer", "same-profile",
-                    "legacy-peer", 1, 8, "peer-version", true, 2, 0);
-
     auto rewrite_first_header = [](const std::filesystem::path& path, auto change) {
         std::ifstream input(path);
         std::string first;
@@ -650,6 +685,19 @@ int main() {
         change(metadata);
         std::ofstream(path) << metadata.dump() << '\n' << rest;
     };
+    for (int schema : {1, 2}) {
+        const auto obsolete = dir / ("unsupported-schema-" + std::to_string(schema));
+        std::filesystem::create_directory(obsolete);
+        write_candidate(obsolete, "sample", "own", "peer", "profile", "library");
+        rewrite_first_header(obsolete / "sample/client.jsonl", [=](J& h) { h["schema"] = schema; });
+        bool rejected = false;
+        try {
+            client_report(obsolete, obsolete / "report");
+        } catch (const std::runtime_error& e) {
+            rejected = std::string(e.what()).find("requires schema 3") != std::string::npos;
+        }
+        assert(rejected);
+    }
     // External sampling changes timing even when the raw event mode is timing.
     // The peer can perturb completion time too; either endpoint excludes the pair.
     for (const auto* profiled_role : {"client", "server"}) {
@@ -660,7 +708,7 @@ int main() {
             rewrite_first_header(profiled_dir / name / (std::string(profiled_role) + ".jsonl"),
                                  [](J& metadata) { metadata["config"]["cpu_profile"] = true; });
         }
-        const auto profiled = summarize(profiled_dir, profiled_dir / "report", true);
+        const auto profiled = client_report(profiled_dir, profiled_dir / "report", true);
         assert(profiled["groups"].size() == 2);
         assert(profiled["comparisons"].empty());
         for (const auto& group : profiled["groups"]) {
@@ -676,9 +724,9 @@ int main() {
         const auto repeated = J::parse(repeated_file);
         assert(repeated["comparisons"].empty());
     }
-    write_candidate(contract_dir, "legacy-perf", "legacy-perf", "fixed-peer", "same-profile",
-                    "legacy-perf");
-    rewrite_first_header(contract_dir / "legacy-perf" / "client.jsonl", [](J& metadata) {
+    write_candidate(contract_dir, "missing-perf", "missing-perf", "fixed-peer", "same-profile",
+                    "missing-perf");
+    rewrite_first_header(contract_dir / "missing-perf" / "client.jsonl", [](J& metadata) {
         metadata["config"].erase("perf_scope");
         metadata["capabilities"].erase("perf_requested_scope");
         metadata["capabilities"].erase("perf_status");
@@ -704,7 +752,7 @@ int main() {
         for (const auto* role : {"client", "server"}) {
             rewrite_first_header(
                 provenance_dir / name / (std::string(role) + ".jsonl"), [&](J& metadata) {
-                    metadata["schema"] = 2;
+                    metadata["schema"] = 3;
                     metadata["config"]["tls"] = {{"scenario", "client-request"},
                                                  {"application_bytes", 4}};
                     const bool measured = std::string(role) == "client";
@@ -718,30 +766,16 @@ int main() {
                 });
         }
     }
-    const auto provenance = summarize(provenance_dir, dir / "provenance-report");
+    const auto provenance = client_report(provenance_dir, dir / "provenance-report");
     assert(provenance["groups"].size() == 3);
     assert(provenance["comparisons"].size() == 1);
-    const auto contracts = summarize(contract_dir, dir / "measurement-contract-report");
-    assert(contracts["groups"].size() == 9);
+    const auto contracts = client_report(contract_dir, dir / "measurement-contract-report");
+    assert(contracts["groups"].size() == 5);
     assert(contracts["comparisons"].size() == 1);
     for (const auto& group : contracts["groups"]) {
         const auto adapter = group["dimensions"]["client_adapter"].get<std::string>();
         assert(group["metrics"]["elapsed_ns"]["count"] == 1);
-        if (adapter == "legacy-own") {
-            assert(group["dimensions"]["measurement_contract_revision"].is_null());
-            assert(group["automatic_comparison_eligible"] == false);
-            assert(std::find(group["comparison_exclusion_reasons"].begin(),
-                             group["comparison_exclusion_reasons"].end(),
-                             "measurement_contract_revision_unknown") !=
-                   group["comparison_exclusion_reasons"].end());
-        } else if (adapter == "legacy-peer") {
-            assert(group["dimensions"]["peer_measurement_contract_revision"].is_null());
-            assert(group["automatic_comparison_eligible"] == false);
-            assert(std::find(group["comparison_exclusion_reasons"].begin(),
-                             group["comparison_exclusion_reasons"].end(),
-                             "peer_measurement_contract_revision_unknown") !=
-                   group["comparison_exclusion_reasons"].end());
-        } else if (adapter == "legacy-perf") {
+        if (adapter == "missing-perf") {
             assert(group["metrics"]["elapsed_ns"]["count"] == 1);
             assert(group["automatic_comparison_eligible"] == false);
             assert(std::find(group["comparison_exclusion_reasons"].begin(),
@@ -782,13 +816,13 @@ int main() {
                         std::string(name) == "first" ? 1 : 13;
                 });
     }
-    const auto unsupported = summarize(unsupported_dir, dir / "unsupported-perf-report");
+    const auto unsupported = client_report(unsupported_dir, dir / "unsupported-perf-report");
     assert(unsupported["comparisons"].size() == 1);
     rewrite_first_header(unsupported_dir / "first" / "client.jsonl", [](J& metadata) {
         metadata["capabilities"].erase("perf_effective_scope");
     });
     const auto unsupported_missing_own =
-        summarize(unsupported_dir, dir / "unsupported-missing-own-report");
+        client_report(unsupported_dir, dir / "unsupported-missing-own-report");
     assert(unsupported_missing_own["comparisons"].empty());
     for (const auto& group : unsupported_missing_own["groups"])
         if (group["dimensions"]["client_adapter"] == "adapter-first") {
@@ -803,7 +837,7 @@ int main() {
         metadata["capabilities"].erase("perf_effective_scope");
     });
     const auto unsupported_missing_peer =
-        summarize(unsupported_dir, dir / "unsupported-missing-peer-report");
+        client_report(unsupported_dir, dir / "unsupported-missing-peer-report");
     assert(unsupported_missing_peer["comparisons"].empty());
     for (const auto& group : unsupported_missing_peer["groups"])
         if (group["dimensions"]["client_adapter"] == "adapter-second") {
@@ -833,7 +867,7 @@ int main() {
                     (std::string(missing_side) == "own" ? "client.jsonl" : "server.jsonl"),
                 [](J& metadata) { metadata["capabilities"].erase("perf_effective_scope"); });
             const auto pair_report =
-                summarize(pair_dir, dir / (std::string("perf-presence-report-") + status + "-" +
+                client_report(pair_dir, dir / (std::string("perf-presence-report-") + status + "-" +
                                            missing_side));
             assert(pair_report["groups"].size() == 2);
             assert(pair_report["comparisons"].empty());
@@ -877,7 +911,7 @@ int main() {
                                  metadata["capabilities"]["perf_effective_scope"] = "user+kernel";
                              });
     }
-    const auto scopes = summarize(scope_dir, dir / "perf-scope-report");
+    const auto scopes = client_report(scope_dir, dir / "perf-scope-report");
     assert(scopes["groups"].size() == 2 && scopes["comparisons"].empty());
 
     const auto peer_perf_dir = dir / "peer-perf-candidates";
@@ -890,7 +924,7 @@ int main() {
         metadata["config"]["perf"] = true;
         metadata["capabilities"]["perf_status"] = "unsupported";
     });
-    const auto peer_perf = summarize(peer_perf_dir, dir / "peer-perf-report");
+    const auto peer_perf = client_report(peer_perf_dir, dir / "peer-perf-report");
     assert(peer_perf["groups"].size() == 2 && peer_perf["comparisons"].empty());
 
     const auto disjoint_dir = dir / "disjoint-batches";
@@ -899,7 +933,7 @@ int main() {
                     "library-one", 1);
     write_candidate(disjoint_dir, "batch-two", "adapter-two", "fixed-peer", "same-profile",
                     "library-two", 2);
-    const auto disjoint = summarize(disjoint_dir, dir / "disjoint-report");
+    const auto disjoint = client_report(disjoint_dir, dir / "disjoint-report");
     assert(disjoint["comparisons"].empty());
 
     auto update_header = [&](const std::filesystem::path& path, auto change) {
@@ -925,13 +959,13 @@ int main() {
     update_header(sockets_dir / "second/client.jsonl", [](J& metadata) {
         metadata["connections"][0]["socket"]["send_buffer"] = 262144;
     });
-    assert(summarize(sockets_dir, dir / "socket-report")["groups"].size() == 2);
+    assert(client_report(sockets_dir, dir / "socket-report")["groups"].size() == 2);
     update_header(sockets_dir / "second/client.jsonl",
                   [&](J& metadata) { metadata["connections"][0]["socket"] = socket; });
     update_header(sockets_dir / "second/server.jsonl", [](J& metadata) {
         metadata["connections"][0]["socket"]["receive_buffer"] = 262144;
     });
-    assert(summarize(sockets_dir, dir / "peer-socket-report")["groups"].size() == 2);
+    assert(client_report(sockets_dir, dir / "peer-socket-report")["groups"].size() == 2);
 
     const auto warmup_sockets_dir = dir / "warmup-socket-settings";
     std::filesystem::create_directory(warmup_sockets_dir);
@@ -949,7 +983,7 @@ int main() {
     update_header(warmup_sockets_dir / "second/client.jsonl", [](J& metadata) {
         metadata["connections"][1]["socket"]["send_buffer"] = 262144;
     });
-    const auto warmup_sockets = summarize(warmup_sockets_dir, dir / "warmup-socket-report");
+    const auto warmup_sockets = client_report(warmup_sockets_dir, dir / "warmup-socket-report");
     assert(warmup_sockets["groups"].size() == 2);
     assert(warmup_sockets["comparisons"].empty());
     for (const auto& group : warmup_sockets["groups"]) {
@@ -974,7 +1008,7 @@ int main() {
     update_header(missing_warmup_socket_dir / "missing/client.jsonl",
                   [](J& metadata) { metadata["connections"][1].erase("socket"); });
     const auto missing_warmup_socket =
-        summarize(missing_warmup_socket_dir, dir / "missing-warmup-socket-report");
+        client_report(missing_warmup_socket_dir, dir / "missing-warmup-socket-report");
     assert(missing_warmup_socket["groups"].size() == 2);
     assert(missing_warmup_socket["comparisons"].empty());
     bool missing_identity_observed = false;
@@ -1064,9 +1098,9 @@ int main() {
              {{"interface", "rctls"}, {"requested", paths.at("tls_s2c")}, {"root_kind", "netem"}}}};
         std::ofstream(run / "network-provenance.json")
             << J({{"type", "turtle-network-provenance"},
-                  {"schema", 1},
+                  {"schema", 2},
                   {"status", "complete"},
-                  {"director", {{"returncode", 0}}},
+                  {"runner", {{"returncode", 0}}},
                   {"host_network_identity",
                    {{"unchanged", true},
                     {"before", {{"supported", true}}},
@@ -1112,7 +1146,7 @@ int main() {
     };
     write_network_run("zero", 0);
     write_network_run("twenty", 20);
-    const auto pure_netem = summarize(pure_netem_dir, dir / "pure-netem-report");
+    const auto pure_netem = client_report(pure_netem_dir, dir / "pure-netem-report");
     assert(pure_netem["groups"].size() == 2);
     assert(pure_netem["comparisons"].empty());
     assert(!pure_netem.contains("lookup_summary"));
@@ -1142,7 +1176,7 @@ int main() {
         }
     };
     auto require_network_payload_failure = [&](const char* output_name) {
-        const auto failed = summarize(pure_netem_dir / "zero", dir / output_name);
+        const auto failed = client_report(pure_netem_dir / "zero", dir / output_name);
         assert(failed["groups"].size() == 1);
         assert(failed["groups"][0]["dimensions"] == zero_dimensions);
         assert(failed["groups"][0]["automatic_comparison_eligible"] == false);
@@ -1163,18 +1197,18 @@ int main() {
     trace_provenance["cleanup"].push_back({{"observer", "reaped"}});
     std::ofstream(zero_provenance_path) << trace_provenance.dump(2) << '\n';
     rewrite_observations([](J& row) { row["packet_trace"] = "packets.jsonl"; });
-    const auto trace_complete = summarize(pure_netem_dir / "zero", dir / "trace-complete-report");
+    const auto trace_complete = client_report(pure_netem_dir / "zero", dir / "trace-complete-report");
     assert(trace_complete["groups"][0]["automatic_comparison_eligible"] == true);
     const auto trace_dimensions = trace_complete["groups"][0]["dimensions"];
     rewrite_observations([](J& row) { row.erase("packet_trace"); });
-    const auto trace_missing = summarize(pure_netem_dir / "zero", dir / "trace-missing-report");
+    const auto trace_missing = client_report(pure_netem_dir / "zero", dir / "trace-missing-report");
     assert(trace_missing["groups"][0]["dimensions"] == trace_dimensions);
     assert(trace_missing["groups"][0]["automatic_comparison_eligible"] == false);
     assert(trace_missing["groups"][0]["metrics"].empty());
     assert(trace_missing["comparisons"].empty());
     assert(trace_missing["samples"][0]["network_integrity"]["eligible"] == false);
     rewrite_observations([](J& row) { row["packet_trace"] = nullptr; });
-    const auto trace_null = summarize(pure_netem_dir / "zero", dir / "trace-null-report");
+    const auto trace_null = client_report(pure_netem_dir / "zero", dir / "trace-null-report");
     assert(trace_null["groups"][0]["dimensions"] == trace_dimensions);
     assert(trace_null["groups"][0]["automatic_comparison_eligible"] == false);
     assert(trace_null["groups"][0]["metrics"].empty());
@@ -1193,7 +1227,7 @@ int main() {
         none_provenance["applied_qdisc_readback"][path]["root_kind"] = "noqueue";
     }
     std::ofstream(zero_provenance_path) << none_provenance.dump(2) << '\n';
-    const auto none_qdisc = summarize(pure_netem_dir / "zero", dir / "none-qdisc-report");
+    const auto none_qdisc = client_report(pure_netem_dir / "zero", dir / "none-qdisc-report");
     assert(none_qdisc["groups"][0]["automatic_comparison_eligible"] == true);
     assert(!none_qdisc["groups"][0]["metrics"].empty());
     assert(none_qdisc["groups"][0]["dimensions"]["network_actual_identity"]["actual"]["paths"]
@@ -1204,7 +1238,7 @@ int main() {
     missing_limit["condition_identity"]["actual"]["paths"]["tls_c2s"].erase("limit_packets");
     std::ofstream(zero_provenance_path) << missing_limit.dump(2) << '\n';
     const auto missing_limit_report =
-        summarize(pure_netem_dir / "zero", dir / "none-qdisc-missing-limit-report");
+        client_report(pure_netem_dir / "zero", dir / "none-qdisc-missing-limit-report");
     assert(missing_limit_report["groups"][0]["automatic_comparison_eligible"] == false);
     assert(missing_limit_report["groups"][0]["metrics"].empty());
 
@@ -1212,7 +1246,7 @@ int main() {
     netem_null_limit["condition_identity"]["actual"]["paths"]["tls_c2s"]["limit_packets"] = nullptr;
     std::ofstream(zero_provenance_path) << netem_null_limit.dump(2) << '\n';
     const auto netem_null_limit_report =
-        summarize(pure_netem_dir / "zero", dir / "netem-null-limit-report");
+        client_report(pure_netem_dir / "zero", dir / "netem-null-limit-report");
     assert(netem_null_limit_report["groups"][0]["automatic_comparison_eligible"] == false);
     assert(netem_null_limit_report["groups"][0]["metrics"].empty());
     std::ofstream(zero_provenance_path) << zero_provenance.dump(2) << '\n';
@@ -1221,7 +1255,7 @@ int main() {
     host_changed_provenance["host_network_identity"]["unchanged"] = false;
     std::ofstream(zero_provenance_path) << host_changed_provenance.dump(2) << '\n';
     const auto host_changed_report =
-        summarize(pure_netem_dir / "zero", dir / "host-changed-network-report");
+        client_report(pure_netem_dir / "zero", dir / "host-changed-network-report");
     assert(host_changed_report["groups"].size() == 1);
     assert(host_changed_report["groups"][0]["dimensions"] == zero_dimensions);
     assert(host_changed_report["groups"][0]["automatic_comparison_eligible"] == false);
@@ -1241,12 +1275,12 @@ int main() {
     }
     update_header(contexts_dir / "second/client.jsonl",
                   [](J& metadata) { metadata["loaded_context_hash"] = "baseline-b"; });
-    assert(summarize(contexts_dir, dir / "context-report")["groups"].size() == 2);
+    assert(client_report(contexts_dir, dir / "context-report")["groups"].size() == 2);
     update_header(contexts_dir / "second/client.jsonl",
                   [](J& metadata) { metadata["loaded_context_hash"] = "baseline-a"; });
     update_header(contexts_dir / "second/server.jsonl",
                   [](J& metadata) { metadata["loaded_context_hash"] = "baseline-b"; });
-    assert(summarize(contexts_dir, dir / "peer-context-report")["groups"].size() == 2);
+    assert(client_report(contexts_dir, dir / "peer-context-report")["groups"].size() == 2);
 
     const auto unknown_context_dir = dir / "unknown-context";
     std::filesystem::create_directory(unknown_context_dir);
@@ -1256,7 +1290,7 @@ int main() {
         update_header(unknown_context_dir / adapter / "client.jsonl",
                       [](J& metadata) { metadata["loaded_context_size"] = 8; });
     }
-    const auto unknown_context = summarize(unknown_context_dir, dir / "unknown-context-report");
+    const auto unknown_context = client_report(unknown_context_dir, dir / "unknown-context-report");
     assert(unknown_context["groups"].size() == 2);
     assert(unknown_context["comparisons"].empty());
 
@@ -1273,7 +1307,7 @@ int main() {
                           metadata.erase("loaded_context_hash");
                       });
     const auto missing_context_size =
-        summarize(missing_context_size_dir, dir / "missing-context-size-report");
+        client_report(missing_context_size_dir, dir / "missing-context-size-report");
     assert(missing_context_size["groups"].size() == 2);
     assert(missing_context_size["comparisons"].empty());
 
@@ -1286,23 +1320,29 @@ int main() {
             update_header(unknown_socket_dir / adapter / (std::string(role) + ".jsonl"),
                           [](J& metadata) { metadata["connections"][0].erase("socket"); });
     }
-    const auto unknown_socket = summarize(unknown_socket_dir, dir / "unknown-socket-report");
+    const auto unknown_socket = client_report(unknown_socket_dir, dir / "unknown-socket-report");
     assert(unknown_socket["groups"].size() == 2);
     assert(unknown_socket["comparisons"].empty());
 
-    const auto director_dir = dir / "director-invalid";
-    std::filesystem::create_directory(director_dir);
-    write_candidate(director_dir, "sample", "adapter-a", "fixed-peer", "same-profile", "library-a");
-    std::ofstream(director_dir / "sample" / "director.txt") << "invalid: endpoint failed\n";
-    const auto director_invalid = summarize(director_dir, dir / "director-report");
-    assert(director_invalid["groups"].empty());
-    assert(director_invalid["invalid_samples"] == 2);
+    const auto runner_dir = dir / "runner-invalid";
+    std::filesystem::create_directory(runner_dir);
+    write_candidate(runner_dir, "sample", "adapter-a", "fixed-peer", "same-profile", "library-a");
+    std::ofstream(runner_dir / "sample" / "client.failure.json")
+        << J({{"run_id", (runner_dir / "sample").string()},
+              {"context_id", "context"},
+              {"reason", "endpoint failed during cleanup"}})
+               .dump()
+        << '\n';
+    const auto runner_invalid = client_report(runner_dir, dir / "runner-report");
+    assert(runner_invalid["groups"].empty());
+    assert(runner_invalid["invalid_samples"] == 2);
 
     auto write_common_admission_sample = [&](const std::filesystem::path& root, bool header_valid,
                                              bool network_required) {
         std::filesystem::create_directories(root);
         auto metadata = header;
         metadata["valid"] = header_valid;
+        metadata["connections"][0]["end_sequence"] = 6;
         metadata["config"]["tls"] = {{"application_bytes", 4}, {"framework_io", true}};
         metadata["config"]["channel_observer"] = false;
         if (network_required)
@@ -1326,14 +1366,14 @@ int main() {
 
     const auto invalid_tls_dir = dir / "common-valid-boundary-invalid-tls";
     write_common_admission_sample(invalid_tls_dir, false, false);
-    const auto invalid_tls = summarize(invalid_tls_dir, dir / "common-invalid-tls-report");
+    const auto invalid_tls = client_report(invalid_tls_dir, dir / "common-invalid-tls-report");
     assert(common_available(invalid_tls));
     assert(invalid_tls["groups"].empty() && common_metric_absent(invalid_tls));
 
     const auto invalid_network_dir = dir / "common-valid-boundary-invalid-network";
     write_common_admission_sample(invalid_network_dir, true, true);
     const auto invalid_network =
-        summarize(invalid_network_dir, dir / "common-invalid-network-report");
+        client_report(invalid_network_dir, dir / "common-invalid-network-report");
     assert(common_available(invalid_network));
     assert(!invalid_network["groups"].empty() && common_metric_absent(invalid_network));
 
@@ -1378,7 +1418,7 @@ int main() {
                       .dump()
                << '\n';
     }
-    const auto invalid_parent = summarize(invalid_parent_dir, dir / "common-invalid-parent-report");
+    const auto invalid_parent = client_report(invalid_parent_dir, dir / "common-invalid-parent-report");
     assert(common_available(invalid_parent));
     assert(invalid_parent["groups"].empty() && common_metric_absent(invalid_parent));
 
@@ -1389,7 +1429,7 @@ int main() {
         std::ofstream(bad / "attempts.jsonl") << contents;
         bool rejected = false;
         try {
-            (void)summarize(bad, dir / (std::string(name) + "-report"));
+            (void)client_report(bad, dir / (std::string(name) + "-report"));
         } catch (const std::runtime_error&) {
             rejected = true;
         }
@@ -1418,7 +1458,7 @@ int main() {
         ledger << "{\"type\":\"turtle-attempt-ledger\",\"schema\":1,"
                   "\"record_kind\":\"attempt_final\",\"attempt_id\":";
     }
-    const auto truncated_ledger = summarize(truncated_ledger_dir, dir / "truncated-final-report");
+    const auto truncated_ledger = client_report(truncated_ledger_dir, dir / "truncated-final-report");
     assert(truncated_ledger["groups"].empty());
     assert(truncated_ledger["invalid_samples"] == 2);
     for (const auto& sample : truncated_ledger["samples"])

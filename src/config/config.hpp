@@ -12,7 +12,7 @@ struct Command {
     model::RunConfig run;
 };
 
-Command parse(int argc, char** argv);
+Command parse(int argc, char** argv, Role role = Role::Client);
 std::string usage();
 
 } // namespace turtle::config

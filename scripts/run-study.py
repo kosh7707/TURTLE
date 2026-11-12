@@ -90,7 +90,7 @@ def main():
         rng.shuffle(order)
         for position, ((client, server), mode, auth_type) in enumerate(order, start=1):
             path = output / f"batch-{batch:03d}" / f"{position:03d}-{client}-{server}-{auth_type}-{mode}"
-            command = [str(build / "turtle"), "run", "--client", client, "--server", server,
+            command = [str(build / "turtle-local"), "--client", client, "--server", server,
                        "--pki", str(pki), "--output", str(path), "--samples", str(args.samples),
                        "--warmups", str(args.warmups), "--mode", mode, "--batch", str(batch),
                        "--seed", str(args.seed), f"--{auth_type}-auth"]

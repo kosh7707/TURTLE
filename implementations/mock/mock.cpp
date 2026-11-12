@@ -20,7 +20,7 @@ struct MockConnection : Connection {
 Step status(const IoResult& r) {
     switch (r.status) {
     case IoStatus::Ok:
-        return Step::Done;
+        return Step::Complete;
     case IoStatus::WantRead:
         return Step::WantRead;
     case IoStatus::WantWrite:
@@ -69,7 +69,7 @@ Step handshake(Connection* base) {
         ++c.context->completed;
         c.counted = true;
     }
-    return Step::Done;
+    return Step::Complete;
 }
 Verification verify(Connection* base) {
     const auto& c = *static_cast<MockConnection*>(base);

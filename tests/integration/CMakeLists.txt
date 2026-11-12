@@ -5,7 +5,7 @@ add_test(NAME kernel_event_byte_ranges COMMAND ${Python3_EXECUTABLE} -B
   "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/kernel_observer.py")
 add_test(NAME cpu_sample_analysis COMMAND ${Python3_EXECUTABLE} -B
   "${CMAKE_CURRENT_SOURCE_DIR}/cpu_profile.py"
-  "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/cpu-profile.py" "$<TARGET_FILE:turtle>")
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/cpu-profile.py" "$<TARGET_FILE:turtle-client>")
 add_test(NAME tcp_byte_correlation COMMAND ${Python3_EXECUTABLE} -B
   "${CMAKE_CURRENT_SOURCE_DIR}/tcp_correlate.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/tcp-correlate.py")
@@ -27,7 +27,7 @@ add_test(NAME local_pki_matrix COMMAND ${Python3_EXECUTABLE}
   "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/make-pki.sh" "${TURTLE_OPENSSL_PROGRAM}")
 set_tests_properties(local_pki_matrix PROPERTIES TIMEOUT 60 LABELS integration)
 
-# Contract-only coordinator coverage with a fake director.  The privileged
+# Contract-only coordinator coverage with a fake local runner. The privileged
 # fixed N05 loss gate is an explicit one-shot verification and is never a
 # repeated CTest.
 add_test(NAME netem_runner_contracts COMMAND ${Python3_EXECUTABLE}
@@ -61,9 +61,19 @@ foreach(adapter IN LISTS adapters)
   endforeach()
 endforeach()
 if(TARGET turtle_adapter_openssl AND TARGET turtle-report AND TARGET turtle-interpret)
+  add_test(NAME measurement_actual_tls_oracles COMMAND ${Python3_EXECUTABLE} -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/measurement_audit.py"
+    --build "${CMAKE_BINARY_DIR}" --pki "${test_pki}" --quick)
+  set_tests_properties(measurement_actual_tls_oracles PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 180 LABELS integration)
+  add_test(NAME measurement_raw_evidence COMMAND ${Python3_EXECUTABLE} -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/report_evidence.py"
+    --build "${CMAKE_BINARY_DIR}" --pki "${test_pki}")
+  set_tests_properties(measurement_raw_evidence PROPERTIES
+    FIXTURES_REQUIRED local_pki TIMEOUT 60 LABELS integration)
   add_test(NAME observer_impact_normal COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/observer_impact.py"
-    --turtle "$<TARGET_FILE:turtle>"
+    --turtle "${CMAKE_BINARY_DIR}/turtle-local"
     --report "$<TARGET_FILE:turtle-report>"
     --interpret "$<TARGET_FILE:turtle-interpret>"
     --adapters "${CMAKE_BINARY_DIR}/adapters"
@@ -74,7 +84,7 @@ if(TARGET turtle_adapter_openssl AND TARGET turtle-report AND TARGET turtle-inte
   set(io_path_evidence_root "${CMAKE_BINARY_DIR}/test-results/io-path")
   add_test(NAME io_path_normal COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/io_path.py" normal
-    --turtle "$<TARGET_FILE:turtle>"
+    --turtle "${CMAKE_BINARY_DIR}/turtle-local"
     --report "$<TARGET_FILE:turtle-report>"
     --interpret "$<TARGET_FILE:turtle-interpret>"
     --adapters "${CMAKE_BINARY_DIR}/adapters"
@@ -85,7 +95,7 @@ if(TARGET turtle_adapter_openssl AND TARGET turtle-report AND TARGET turtle-inte
     FIXTURES_REQUIRED local_pki TIMEOUT 60 LABELS integration)
   add_test(NAME io_path_external_metadata COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/io_path.py" external
-    --turtle "$<TARGET_FILE:turtle>"
+    --turtle "${CMAKE_BINARY_DIR}/turtle-local"
     --report "$<TARGET_FILE:turtle-report>"
     --interpret "$<TARGET_FILE:turtle-interpret>"
     --adapters "${CMAKE_BINARY_DIR}/adapters"
@@ -97,26 +107,26 @@ if(TARGET turtle_adapter_openssl AND TARGET turtle-report AND TARGET turtle-inte
   add_test(NAME pure_tls_netem_actual COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/pure_tls_netem.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/netem-study.py"
-    "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>"
+    "${CMAKE_BINARY_DIR}/turtle-local" "$<TARGET_FILE:turtle-report>"
     "$<TARGET_FILE:turtle-interpret>" "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
   set_tests_properties(pure_tls_netem_actual PROPERTIES
     FIXTURES_REQUIRED local_pki TIMEOUT 240 LABELS integration)
   add_test(NAME network_rate_cwnd_actual_tls COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/network_shaping.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/netem-study.py"
-    "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>"
+    "${CMAKE_BINARY_DIR}/turtle-local" "$<TARGET_FILE:turtle-report>"
     "$<TARGET_FILE:turtle-interpret>" "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
   set_tests_properties(network_rate_cwnd_actual_tls PROPERTIES
     FIXTURES_REQUIRED local_pki TIMEOUT 90 LABELS integration)
   add_test(NAME pipeline_multiple_connections COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/pipeline.py"
-    "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
+    "${CMAKE_BINARY_DIR}/turtle-local" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
     "${CMAKE_BINARY_DIR}/adapters" "${test_pki}" openssl openssl 2)
   set_tests_properties(pipeline_multiple_connections PROPERTIES
     FIXTURES_REQUIRED local_pki TIMEOUT 60 LABELS integration)
   add_test(NAME openssl_tickets_and_message_oracle COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/tickets.py"
-    "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
+    "${CMAKE_BINARY_DIR}/turtle-local" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
     "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
   set_tests_properties(openssl_tickets_and_message_oracle PROPERTIES
     FIXTURES_REQUIRED local_pki TIMEOUT 30 LABELS integration)
@@ -134,7 +144,7 @@ foreach(client IN LISTS adapters)
       set(test_name pipeline_${client}_${server})
       add_test(NAME ${test_name} COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_CURRENT_SOURCE_DIR}/pipeline.py"
-        "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
+        "${CMAKE_BINARY_DIR}/turtle-local" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
         "${CMAKE_BINARY_DIR}/adapters" "${test_pki}" "${client}" "${server}")
       set_tests_properties(${test_name} PROPERTIES FIXTURES_REQUIRED local_pki TIMEOUT 60 LABELS integration)
     endif()
@@ -147,7 +157,7 @@ foreach(name IN LISTS adapters)
   if(TARGET turtle-report AND TARGET turtle-interpret)
     add_test(NAME lookup_${name}_same_library COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/lookup.py"
-      "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
+      "${CMAKE_BINARY_DIR}/turtle-local" "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
       "${CMAKE_BINARY_DIR}/adapters" "${test_pki}" "${name}")
     set_tests_properties(lookup_${name}_same_library PROPERTIES
       FIXTURES_REQUIRED local_pki TIMEOUT 240 LABELS integration)
@@ -158,13 +168,13 @@ if(TARGET turtle_adapter_openssl AND TARGET turtle-interpret)
   get_target_property(prototype_trace turtle_adapter_openssl TURTLE_INTERNAL_TRACE)
   if(prototype_trace)
   add_test(NAME kernel_tx_timestamps_actual_tls COMMAND ${Python3_EXECUTABLE}
-    "${CMAKE_CURRENT_SOURCE_DIR}/tx_timestamps.py" "$<TARGET_FILE:turtle>"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tx_timestamps.py" "${CMAKE_BINARY_DIR}/turtle-local"
     "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
     "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
   set_tests_properties(kernel_tx_timestamps_actual_tls PROPERTIES
     FIXTURES_REQUIRED local_pki TIMEOUT 180 LABELS integration SKIP_RETURN_CODE 77)
   add_test(NAME prototype_scenarios_actual_tls COMMAND ${Python3_EXECUTABLE}
-    "${CMAKE_CURRENT_SOURCE_DIR}/prototype.py" "$<TARGET_FILE:turtle>"
+    "${CMAKE_CURRENT_SOURCE_DIR}/prototype.py" "${CMAKE_BINARY_DIR}/turtle-local"
     "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
     "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
   set_tests_properties(prototype_scenarios_actual_tls PROPERTIES
@@ -173,7 +183,7 @@ if(TARGET turtle_adapter_openssl AND TARGET turtle-interpret)
 endif()
 if(TARGET turtle_adapter_bithac_cached AND TARGET turtle-interpret)
   add_test(NAME bithac_actual_cached_certificates COMMAND ${Python3_EXECUTABLE}
-    "${CMAKE_CURRENT_SOURCE_DIR}/bithac.py" "$<TARGET_FILE:turtle>"
+    "${CMAKE_CURRENT_SOURCE_DIR}/bithac.py" "${CMAKE_BINARY_DIR}/turtle-local"
     "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
     "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
   set_tests_properties(bithac_actual_cached_certificates PROPERTIES
@@ -181,7 +191,7 @@ if(TARGET turtle_adapter_bithac_cached AND TARGET turtle-interpret)
 endif()
 if(TARGET turtle_adapter_mlkem_avx2 AND TARGET turtle-interpret)
   add_test(NAME mlkem_actual_dispatch_tls COMMAND ${Python3_EXECUTABLE}
-    "${CMAKE_CURRENT_SOURCE_DIR}/mlkem.py" "$<TARGET_FILE:turtle>"
+    "${CMAKE_CURRENT_SOURCE_DIR}/mlkem.py" "${CMAKE_BINARY_DIR}/turtle-local"
     "$<TARGET_FILE:turtle-report>" "$<TARGET_FILE:turtle-interpret>"
     "${CMAKE_BINARY_DIR}/adapters" "${test_pki}")
   set_tests_properties(mlkem_actual_dispatch_tls PROPERTIES
@@ -196,4 +206,13 @@ if(TARGET turtle_adapter_mlkem_avx2 AND TARGET turtle-interpret)
     "${CMAKE_CURRENT_SOURCE_DIR}/mlkem_vectors.py"
     "$<TARGET_FILE:turtle_mlkem_vectors_c>" "$<TARGET_FILE:turtle_mlkem_vectors_avx2>"
     "${CMAKE_CURRENT_SOURCE_DIR}/../adapters/mlkem-vectors.json")
+endif()
+
+add_test(NAME independent_endpoint_actual_tls COMMAND ${Python3_EXECUTABLE}
+  "${CMAKE_CURRENT_SOURCE_DIR}/independent.py" "${CMAKE_BINARY_DIR}" "${test_pki}")
+set_tests_properties(independent_endpoint_actual_tls PROPERTIES FIXTURES_REQUIRED local_pki TIMEOUT 120 LABELS integration)
+if(TARGET turtle_adapter_openssl)
+  add_test(NAME endpoint_readiness COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/readiness.py" "${CMAKE_BINARY_DIR}" "${test_pki}")
+  set_tests_properties(endpoint_readiness PROPERTIES FIXTURES_REQUIRED local_pki TIMEOUT 40 LABELS integration)
 endif()

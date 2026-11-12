@@ -1,6 +1,6 @@
 {
   "type": "turtle-netem-profile",
-  "schema": 2,
+  "schema": 3,
   "qdisc": "netem",
   "mtu": 1500,
   "offload": {
@@ -27,5 +27,10 @@
       "limit_packets": 10000,
       "rate_bps": 1000000
     }
+  },
+  "kernel_events": false,
+  "targeted_drop": {
+    "tls_c2s": null,
+    "tls_s2c": null
   }
 }

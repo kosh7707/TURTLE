@@ -58,9 +58,15 @@ int main() {
         const auto listener_endpoint = turtle::tcp::local_endpoint(listener.fd);
         require(listener_endpoint.address == "127.0.0.1");
         require(listener_endpoint.port == listener.port && listener.port != 0);
-        auto client = turtle::tcp::connect_ipv4(
-            "127.0.0.1", {listener_endpoint.address, listener_endpoint.port});
-        auto server = turtle::tcp::accept_one(listener.fd);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        turtle::tcp::nonblocking_listener(listener.fd);
+        auto client = turtle::tcp::begin_connect(turtle::tcp::prepare_dial(
+            "127.0.0.1", {listener_endpoint.address, listener_endpoint.port}));
+        turtle::control::wait(client, true, deadline);
+        turtle::tcp::finish_connect(client);
+        int server = -1;
+        while ((server = turtle::tcp::try_accept(listener.fd)) < 0)
+            turtle::control::wait(listener.fd, false, deadline);
         ::close(listener.fd);
         const auto client_local = turtle::tcp::local_endpoint(client);
         const auto client_peer = turtle::tcp::peer_endpoint(client);
@@ -159,16 +165,6 @@ int main() {
         ::close(client);
         ::close(server);
 
-        // Preserve the original loopback convenience path alongside the
-        // namespace-aware numeric-address path.
-        auto loopback_listener = turtle::tcp::listen_loopback();
-        auto loopback_client = turtle::tcp::connect_loopback(loopback_listener.port);
-        auto loopback_server = turtle::tcp::accept_one(loopback_listener.fd);
-        require(turtle::tcp::check_ready(loopback_client).empty());
-        require(turtle::tcp::check_ready(loopback_server).empty());
-        ::close(loopback_listener.fd);
-        ::close(loopback_client);
-        ::close(loopback_server);
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
         return 1;

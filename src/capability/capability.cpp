@@ -2,11 +2,10 @@
 #include "model/run_config.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <cerrno>
+#include <charconv>
 #include <cstring>
 #include <fstream>
-#include <map>
 #include <optional>
 #include <sched.h>
 #include <set>
@@ -59,8 +58,7 @@ std::optional<std::set<int>> parse_cpu_list(const std::string& text) {
     return cpus;
 }
 
-model::CpuTopology inspect_cpu_topology(int cpu,
-                                        const std::optional<std::set<int>>& online_cpus) {
+model::CpuTopology inspect_cpu_topology(int cpu, const std::optional<std::set<int>>& online_cpus) {
     model::CpuTopology topology;
     topology.cpu = cpu;
     const auto path = cpu_path(cpu) + "/topology/";
@@ -86,36 +84,12 @@ model::CpuTopology inspect_cpu_topology(int cpu,
 }
 
 const model::CpuTopology* find_topology(const model::Environment& environment, int cpu) {
-    const auto found = std::find_if(environment.cpu_topology.begin(),
-                                    environment.cpu_topology.end(),
-                                    [cpu](const auto& topology) { return topology.cpu == cpu; });
+    const auto found =
+        std::find_if(environment.cpu_topology.begin(), environment.cpu_topology.end(),
+                     [cpu](const auto& topology) { return topology.cpu == cpu; });
     return found == environment.cpu_topology.end() ? nullptr : &*found;
 }
 
-std::string physical_core_key(const model::Environment& environment, int cpu) {
-    if (const auto* topology = find_topology(environment, cpu)) {
-        if (!topology->package_id || !topology->core_id)
-            return {};
-        return std::to_string(*topology->package_id) + ":" +
-               std::to_string(*topology->core_id);
-    }
-    // Preserve the old synthetic-fixture contract.  A non-empty topology list
-    // is authoritative, so supplied facts never fall back to this host.
-    if (environment.cpu_topology.empty() &&
-        std::find(environment.physical_cpus.begin(), environment.physical_cpus.end(), cpu) !=
-            environment.physical_cpus.end())
-        return "representative:" + std::to_string(cpu);
-    return {};
-}
-
-std::vector<std::pair<const char*, int>> selected_role_cpus(const model::RunConfig& config) {
-    std::vector<std::pair<const char*, int>> selected{{"director", config.director_cpu},
-                                                     {"client", config.client_cpu},
-                                                     {"server", config.server_cpu}};
-    if (config.lookup.enabled)
-        selected.emplace_back("ca", config.ca_cpu);
-    return selected;
-}
 } // namespace
 
 std::string stable_environment_hash(const model::Environment& environment) {
@@ -174,9 +148,9 @@ model::Environment inspect_environment() {
     const auto paranoid = read_line("/proc/sys/kernel/perf_event_paranoid");
     environment.perf_event_paranoid = parse_int(paranoid);
     if (!environment.perf_event_paranoid)
-        environment.perf_event_paranoid_reason =
-            paranoid.empty() ? "perf_event_paranoid is unavailable"
-                             : "perf_event_paranoid is not an integer";
+        environment.perf_event_paranoid_reason = paranoid.empty()
+                                                     ? "perf_event_paranoid is unavailable"
+                                                     : "perf_event_paranoid is not an integer";
     std::ifstream cpuinfo("/proc/cpuinfo");
     for (std::string line; std::getline(cpuinfo, line);) {
         if (line.starts_with("model name") || line.starts_with("Hardware")) {
@@ -192,17 +166,16 @@ model::Environment inspect_environment() {
         std::set<std::string> cores;
         std::set<std::string> governors;
         bool unknown_topology = false;
-        const auto online_cpus =
-            parse_cpu_list(read_line("/sys/devices/system/cpu/online"));
+        const auto online_cpus = parse_cpu_list(read_line("/sys/devices/system/cpu/online"));
         for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
             if (!CPU_ISSET(cpu, &allowed))
                 continue;
             environment.allowed_cpus.push_back(cpu);
             auto topology = inspect_cpu_topology(cpu, online_cpus);
-            const auto key = topology.package_id && topology.core_id
-                                 ? std::to_string(*topology.package_id) + ":" +
-                                       std::to_string(*topology.core_id)
-                                 : std::string{};
+            const auto key =
+                topology.package_id && topology.core_id
+                    ? std::to_string(*topology.package_id) + ":" + std::to_string(*topology.core_id)
+                    : std::string{};
             environment.cpu_topology.push_back(std::move(topology));
             if (key.empty())
                 unknown_topology = true;
@@ -270,59 +243,14 @@ bool pin_to_cpu(int cpu, std::string& explanation) {
 }
 void choose_cpus(model::RunConfig& config, const model::Environment& environment) {
     if (!config.pin_cores) {
-        config.director_cpu = -1;
-        config.client_cpu = -1;
-        config.server_cpu = -1;
-        config.ca_cpu = -1;
+        config.cpu = -1;
         return;
     }
-
-    const bool with_ca = config.lookup.enabled;
-    const std::size_t required = with_ca ? 4 : 3;
-    int selected[4] = {config.director_cpu, config.client_cpu, config.server_cpu,
-                       with_ca ? config.ca_cpu : -1};
-    std::set<std::string> used;
-    auto physical_key = [&](int cpu) { return physical_core_key(environment, cpu); };
-
-    for (std::size_t index = 0; index < required; ++index) {
-        const int cpu = selected[index];
-        if (cpu < 0)
-            continue;
-        if (std::find(environment.allowed_cpus.begin(), environment.allowed_cpus.end(), cpu) ==
-            environment.allowed_cpus.end())
-            throw std::runtime_error("Requested CPU is not allowed");
-        const auto key = physical_key(cpu);
-        if (key.empty())
-            throw std::runtime_error("Requested CPU physical core cannot be verified");
-        if (!used.insert(key).second)
-            throw std::runtime_error("Requested CPUs must have distinct verified physical cores");
-    }
-
-    for (std::size_t index = 0; index < required; ++index) {
-        if (selected[index] >= 0)
-            continue;
-        for (const int candidate : environment.physical_cpus) {
-            if (std::find(environment.allowed_cpus.begin(), environment.allowed_cpus.end(),
-                          candidate) == environment.allowed_cpus.end())
-                continue;
-            const auto key = physical_key(candidate);
-            if (!key.empty() && used.insert(key).second) {
-                selected[index] = candidate;
-                break;
-            }
-        }
-        if (selected[index] < 0) {
-            const char* count = with_ca ? "Four" : "Three";
-            throw std::runtime_error(std::string(count) +
-                                     " distinct physical cores are unavailable; explicitly "
-                                     "disable affinity to proceed");
-        }
-    }
-
-    config.director_cpu = selected[0];
-    config.client_cpu = selected[1];
-    config.server_cpu = selected[2];
-    config.ca_cpu = with_ca ? selected[3] : -1;
+    if (config.cpu < 0 && !environment.allowed_cpus.empty())
+        config.cpu = environment.allowed_cpus.front();
+    if (std::find(environment.allowed_cpus.begin(), environment.allowed_cpus.end(), config.cpu) ==
+        environment.allowed_cpus.end())
+        throw std::runtime_error("Requested endpoint CPU is not allowed");
 }
 
 std::vector<std::string> cpu_selection_warnings(const model::RunConfig& config,
@@ -331,49 +259,30 @@ std::vector<std::string> cpu_selection_warnings(const model::RunConfig& config,
         return {"CPU affinity is disabled; role placement is not verified"};
 
     std::vector<std::string> warnings;
-    const auto roles = selected_role_cpus(config);
-    std::map<std::string, std::string> role_by_core;
-    for (const auto& [role, cpu] : roles) {
-        if (cpu < 0)
-            continue;
-        const auto key = physical_core_key(environment, cpu);
-        if (key.empty())
-            continue;
-        const auto [previous, inserted] = role_by_core.emplace(key, role);
-        if (!inserted)
-            warnings.push_back(previous->second + " and " + role +
-                               " roles share a verified physical core");
-    }
-
-    for (const auto& [role, cpu] : roles) {
-        if (cpu < 0) {
-            warnings.push_back(std::string(role) + " CPU placement is not verified");
-            continue;
-        }
-        const auto* topology = find_topology(environment, cpu);
-        if (!topology || !topology->package_id || !topology->core_id) {
-            warnings.push_back(std::string(role) + " CPU physical core is not verified");
-            continue;
-        }
-        if (!topology->thread_siblings) {
-            warnings.push_back(std::string(role) + " CPU thread siblings are unknown; "
-                               "exclusive core use is not guaranteed");
-            continue;
-        }
+    const auto role = std::string(model::name(config.role));
+    const int cpu = config.cpu;
+    const auto* topology = find_topology(environment, cpu);
+    if (cpu < 0)
+        warnings.push_back(role + " CPU placement is not verified");
+    else if (!topology || !topology->package_id || !topology->core_id)
+        warnings.push_back(role + " CPU physical core is not verified");
+    else if (!topology->thread_siblings)
+        warnings.push_back(
+            role + " CPU thread siblings are unknown; exclusive core use is not guaranteed");
+    else {
         for (const auto& sibling : *topology->thread_siblings) {
             if (sibling.cpu == cpu || sibling.online == false)
                 continue;
             const bool allowed =
                 std::find(environment.allowed_cpus.begin(), environment.allowed_cpus.end(),
                           sibling.cpu) != environment.allowed_cpus.end();
-            auto warning = std::string(role) + " CPU shares its physical core with CPU " +
-                           std::to_string(sibling.cpu);
+            auto warning =
+                role + " CPU shares its physical core with CPU " + std::to_string(sibling.cpu);
             if (!allowed)
                 warning += " outside the allowed affinity mask";
             if (!sibling.online)
                 warning += "; sibling online state is unknown";
-            warning += "; sibling idleness is unverified and exclusive core use is not "
-                       "guaranteed";
+            warning += "; sibling idleness is unverified and exclusive core use is not guaranteed";
             warnings.push_back(std::move(warning));
         }
     }

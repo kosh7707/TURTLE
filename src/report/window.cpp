@@ -675,8 +675,7 @@ Json partition(const Json& header, const std::vector<Json>& input) {
         for (const auto& e : input)
             if (e.at("connection") == index && boundary(e))
                 events.push_back(&e);
-        const bool functional_valid =
-            conn.value("scenario_completed", conn.value("application_verified", false));
+        const bool functional_valid = conn.value("scenario_completed", false);
         const auto common = common_window(header, conn, events);
         bool primary_observable = true;
         std::string primary_reason;
@@ -727,17 +726,15 @@ Json partition(const Json& header, const std::vector<Json>& input) {
                 start = time(*e);
                 start_event = e;
             }
-            const bool revised = header.value("measurement_contract_revision", 0) >= 3;
-            if ((revised && conn.contains("end_sequence") &&
-                 e->at("sequence") == conn.at("end_sequence")) ||
-                (!revised && k == "CALL_END" &&
-                 e->at("call") == (client ? "app_recv" : "app_send") &&
-                 e->value("result", 0LL) == 2)) {
+            if (conn.contains("end_sequence") && e->contains("sequence") &&
+                e->at("sequence") == conn.at("end_sequence")) {
                 end = time(*e);
                 end_event = e;
             }
         }
-        if (!start || !end || *end < *start) {
+        if (!start || !end || *end < *start ||
+            (conn.contains("start_sequence") && !conn.at("start_sequence").is_null() &&
+             start_event->value("sequence", Json(nullptr)) != conn.at("start_sequence"))) {
             result["valid"] = false;
             result["primary_window"] = {{"available", false},
                                         {"reason", "missing_successful_measurement_boundaries"}};
@@ -745,7 +742,30 @@ Json partition(const Json& header, const std::vector<Json>& input) {
             results.push_back(result);
             continue;
         }
+        const bool api_completion_contract = header.value("measurement_contract_revision", 3) == 4;
+        if (api_completion_contract) {
+            const auto scenario = header.at("config").at("tls").value("scenario", "client-request");
+            const bool completion_matches =
+                scenario == "handshake"
+                    ? kind(*end_event) == "CALL_END" && end_event->value("call", "") == "handshake" &&
+                          end_event->value("result", -1) == 2
+                    : common.value("available", false) &&
+                          common.at("end_event_sequence") == end_event->at("sequence");
+            if (!completion_matches) {
+                result["valid"] = false;
+                result["primary_window"] = {{"available", false},
+                                            {"reason", "scenario_completion_call_mismatch"}};
+                result["reason"] = "scenario_completion_call_mismatch";
+                results.push_back(result);
+                continue;
+            }
+        }
+        const char* end_definition = api_completion_contract
+                                         ? "last_successful_scenario_call_return"
+                                         : "scenario_complete";
         const bool io_observed = io_events_observed(header);
+        result["start_event_sequence"] = start_event->value("sequence", Json(nullptr));
+        result["end_event_sequence"] = end_event->value("sequence", Json(nullptr));
         if (!io_observed) {
             result.update(
                 {{"valid", functional_valid},
@@ -757,9 +777,7 @@ Json partition(const Json& header, const std::vector<Json>& input) {
                  {"wait_ns", nullptr},
                  {"gap_ns", nullptr},
                  {"segments", Json::array()},
-                 {"end_definition", header.value("measurement_contract_revision", 0) >= 3
-                                        ? "scenario_complete"
-                                        : "successful_application_call_end"},
+                 {"end_definition", end_definition},
                  {"io_breakdown", {{"available", false}, {"reason", "io_events_not_observed"}}}});
             for (const char* metric : {"thread_cpu_ns", "cycles", "instructions"}) {
                 result[metric] = nullptr;
@@ -825,7 +843,26 @@ Json partition(const Json& header, const std::vector<Json>& input) {
             previous = now;
         }
         const auto elapsed = *end - *start;
-        consistent = consistent && computation + io + wait + gap == elapsed;
+        consistent = consistent && !in_call && !in_io && !in_wait &&
+                     computation + io + wait + gap == elapsed;
+        // The partition can still conserve elapsed time when an entire I/O pair
+        // is lost: it would charge that interval to computation. Check the raw
+        // sequence, including library/kernel events omitted from the partition.
+        if (start_event->contains("sequence") && end_event->contains("sequence")) {
+            auto expected = start_event->at("sequence").get<std::uint64_t>();
+            const auto last = end_event->at("sequence").get<std::uint64_t>();
+            for (const auto& e : input) {
+                if (e.at("connection") != index || !e.contains("sequence"))
+                    continue;
+                const auto sequence = e.at("sequence").get<std::uint64_t>();
+                if (sequence < start_event->at("sequence").get<std::uint64_t>() || sequence > last)
+                    continue;
+                if (sequence != expected)
+                    consistent = false;
+                expected = sequence + 1;
+            }
+            consistent = consistent && expected == last + 1;
+        }
         result.update({{"valid", functional_valid && consistent},
                        {"start_ns", *start},
                        {"end_ns", *end},
@@ -835,9 +872,7 @@ Json partition(const Json& header, const std::vector<Json>& input) {
                        {"wait_ns", wait},
                        {"gap_ns", gap},
                        {"segments", segments},
-                       {"end_definition", header.value("measurement_contract_revision", 0) >= 3
-                                              ? "scenario_complete"
-                                              : "successful_application_call_end"}});
+                       {"end_definition", end_definition}});
         for (const char* metric : {"thread_cpu_ns", "cycles", "instructions"}) {
             result[metric] = nullptr;
             const bool supported =
@@ -851,19 +886,45 @@ Json partition(const Json& header, const std::vector<Json>& input) {
             }
         }
         result["heap_peak_bytes"] = nullptr;
-        if (start_event->contains("heap") && !start_event->at("heap").is_null())
-            result["heap_peak_bytes"] = start_event->at("heap").at("live");
-        for (const auto* e : events) {
-            if (time(*e) <= *start || time(*e) > *end || !e->contains("heap") ||
-                e->at("heap").is_null())
-                continue;
-            const auto peak = e->at("heap").at("interval_peak").get<std::uint64_t>();
-            if (result["heap_peak_bytes"].is_null() ||
-                peak > result["heap_peak_bytes"].get<std::uint64_t>())
+        result["heap_peak_reason"] = "heap_not_observed";
+        if (start_event->contains("heap") && !start_event->at("heap").is_null()) {
+            auto peak = start_event->at("heap").at("live").get<std::uint64_t>();
+            bool complete_heap = true;
+            // Every meter read resets the interval peak, including non-boundary
+            // snapshots. Sequence order also preserves intervals within one clock tick.
+            for (const auto& e : input) {
+                if (e.at("connection") != index || !e.contains("sequence") ||
+                    e.at("sequence") <= start_event->at("sequence") ||
+                    e.at("sequence") > end_event->at("sequence") ||
+                    e.value("kind", "") == "KERNEL_RX")
+                    continue;
+                // KERNEL_RX shares its IO_RECV_RETURN snapshot; it is not a
+                // second read. In particular, a copy of the start snapshot
+                // must not bring the pre-window interval peak back in.
+                if (!e.contains("heap") || e.at("heap").is_null()) {
+                    complete_heap = false;
+                    continue;
+                }
+                peak = std::max(peak, e.at("heap").at("interval_peak").get<std::uint64_t>());
+            }
+            if (complete_heap && consistent) {
                 result["heap_peak_bytes"] = peak;
+                result["heap_peak_reason"] = nullptr;
+            } else {
+                result["heap_peak_reason"] = "heap_snapshot_missing";
+            }
+        } else if (header.value("mode", "") == "memory" &&
+                   header.value("capabilities", Json::object()).value("heap_tracking", false)) {
+            result["heap_peak_reason"] = "heap_snapshot_missing";
         }
-        if (!consistent)
+        if (!consistent) {
             result["reason"] = "boundary nesting/order or interval conservation failed";
+            result["io_breakdown"] = {{"available", false},
+                                       {"reason", "boundary_sequence_or_nesting_incomplete"}};
+            for (const char* metric : {"computation_ns", "io_ns", "wait_ns", "gap_ns"})
+                result[metric] = nullptr;
+            result["segments"] = nullptr;
+        }
         results.push_back(result);
     }
     return results;

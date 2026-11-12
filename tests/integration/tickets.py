@@ -15,7 +15,7 @@ def main():
     turtle, report, interpret, adapters, pki = sys.argv[1:]
     root = Path(tempfile.mkdtemp(prefix="turtle-tickets-"))
     try:
-        run(turtle, "run", "--client", "openssl", "--server", "openssl",
+        run(turtle, "--client", "openssl", "--server", "openssl",
             "--adapter-dir", adapters, "--pki", pki, "--samples", "2", "--tickets", "2",
             "--mode", "trace", "--no-affinity", "--no-perf", "--output", root / "raw")
         for sample in sorted((root / "raw").glob("sample-*")):

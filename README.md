@@ -1,23 +1,25 @@
 # TURTLE
 
+로컬 실험 조건 작성과 결과 탐색은 별도 저장소 `~/TURTLE-experiment-web`에서 제공합니다. 웹 실행법, 새 빌드·설치 경로의 재현 절차와 산출물 보관 기록은 [로컬 웹·재현 기록](docs/project/local-web-reproduction.md)을 참고하십시오.
+
 **TLS 1.3 전체 핸드셰이크를 같은 실행 계약과 관측 경계에서 비교하는 C++20 벤치마크 프레임워크입니다.** TURTLE은 약어가 아닙니다.
 
 암호군은 `TLS_AES_128_GCM_SHA256` 하나로 고정합니다. 키 교환 그룹과 인증서·서명 방식은 별도 프로필 항목입니다. 실제 인증서 기반 전체 핸드셰이크와 암호화된 핑퐁을 실행하며, PSK·세션 재개·0-RTT는 사용하지 않습니다.
 
 ## 1. 무엇을 재는가
 
-TLS 구현체가 메시지 생성, 인증서 검증과 암호 연산을 맡고, 프레임워크가 새 역할 프로세스, TCP, 비차단 실행, 계측과 원자료 저장을 맡습니다. 클라이언트와 서버를 따로 보고하며 해독과 통계는 측정 뒤 별도 프로그램에서 수행합니다.
+TLS 구현체가 메시지 생성, 인증서 검증과 암호 연산을 맡고, 프레임워크가 각 독립 엔드포인트 안에서 TCP, 비차단 실행, 계측과 원자료 저장을 맡습니다. 클라이언트와 서버를 따로 보고하며 해독과 통계는 측정 뒤 별도 프로그램에서 수행합니다.
 
 주 측정 구간은 다음과 같습니다.
 
 | 역할 | 시작 | 끝 |
 |---|---|---|
-| 클라이언트 `primary_window` | 첫 핸드셰이크 호출 시작 | 선택한 시나리오 완료 |
-| 서버 `primary_window` | 첫 성공 TLS 수신 반환 | 선택한 시나리오 완료 |
+| 클라이언트 `primary_window` | 첫 핸드셰이크 호출 시작 | 시나리오의 마지막 TLS API 성공 반환 |
+| 서버 `primary_window` | 첫 성공 TLS 수신 반환 | 시나리오의 마지막 TLS API 성공 반환 |
 
-현재 개정 3은 순수 핸드셰이크, 서버 Ping, Finished와 Ping 결합, 클라이언트 요청·서버 응답을 구별합니다. 보고서는 공통 호출 경계, ClientHello→Finished 송신 경계와 레코드 연산 귀속도 추가로 계산합니다. 이 보기는 **어느 I/O 경계 사이에서 작업했는지**를 보여 줄 뿐 메시지의 독립 비용이나 순수 암호 연산 시간을 뜻하지 않습니다. 정확한 경계와 포함 범위는 [실행과 계측 경계](docs/design/runtime.md)와 [보고서의 측정 구간](docs/analysis/reporting.md)에 있습니다.
+현재 개정 4는 순수 핸드셰이크, 서버 Ping, Finished와 Ping 결합, 클라이언트 요청·서버 응답을 구별합니다. 마지막 송신은 TLS API의 성공 반환까지, 마지막 수신은 TLS 검증·복호화를 마쳐 응용 버퍼에 전달한 성공 반환까지입니다. 소켓 정리와 사후 결과 조회는 종료 조건이 아닙니다. 보고서는 공통 호출 경계, ClientHello→Finished 소켓 제출 경계와 레코드 연산 귀속도 추가로 계산합니다. 이 보기는 **어느 I/O 경계 사이에서 작업했는지**를 보여 줄 뿐 메시지의 독립 비용이나 순수 암호 연산 시간을 뜻하지 않습니다. 정확한 경계와 포함 범위는 [실행과 계측 경계](docs/design/runtime.md)와 [보고서의 측정 구간](docs/analysis/reporting.md)에 있습니다.
 
-표본마다 서버와 클라이언트를 새 프로세스로 만들고, 한 역할 프로세스 안에서는 준비 연결 뒤 여러 측정 연결을 차례로 실행할 수 있습니다. 측정 연결은 순서별로 분리해 같은 위치끼리 요약합니다. 시행마다 새 TCP를 만들고 연결 셋업·TCP 시간은 별도 구간으로 남깁니다. 클라이언트 TCP 시작과 연결 준비 시작에서 각각 ClientFinished 소켓 제출까지의 구간도 제공합니다.
+기본은 엔드포인트 프로세스당 TLS 컨텍스트 하나·준비 연결 0개·측정 연결 1개입니다. 외부 실행기는 독립 표본마다 서버와 클라이언트를 새 프로세스로 만들며, 명시하면 한 컨텍스트에서 여러 연결을 실행할 수 있습니다. 측정 연결은 순서별로 분리해 같은 위치끼리 요약합니다. 시행마다 새 TCP를 만들고 연결 셋업·TCP 시간은 별도 구간으로 남깁니다. 클라이언트 TCP 시작과 연결 준비 시작에서 각각 ClientFinished 소켓 제출까지의 구간도 제공합니다.
 
 ## 2. 어디까지 보이는가
 
@@ -38,30 +40,68 @@ TLS 구현체가 메시지 생성, 인증서 검증과 암호 연산을 맡고, 
 
 OpenSSL 라이브러리 직접 소켓 경로는 TLS 기능을 확인할 수 있지만 프레임워크 스트림과 I/O 분해가 없습니다. 라이브러리 직접 소켓을 쓰는 서버는 첫 수신 경계를 볼 수 없어 `primary_window`를 만들 수 없습니다. 이 프로젝트에는 서버의 계측 없는 외부 기준선이 없습니다.
 
-원자료 형식은 `schema=2`, 현재 측정 의미는 `measurement_contract_revision=3`, 모듈 바이너리 계약은 adapter ABI 3입니다. 기존 schema 1 자료의 의미와 해석은 보존합니다. 세 값은 서로 다른 호환성 축입니다. 자세한 필드와 미계측 표시는 [원자료 형식](docs/analysis/record-format.md)을 따릅니다.
+원자료 형식은 `schema=3`, 현재 측정 의미는 `measurement_contract_revision=4`, 모듈 바이너리 계약은 adapter ABI 3입니다. TLS 판독기는 schema 3의 측정 계약 개정 3·4를 받습니다. 개정 3 자료는 기록된 종료점 그대로 재분석하고 개정 4와 같은 비교 조건으로 합치지 않습니다. 다른 형식은 명시적인 오류로 끝냅니다. 세 값은 서로 다른 호환성 축입니다. 자세한 필드와 미계측 표시는 [원자료 형식](docs/analysis/record-format.md)을 따릅니다.
 
 ## 3. 어떻게 실행하는가
 
-Linux, C++20 컴파일러, CMake 3.20 이상, Ninja와 OpenSSL 개발 파일이 필요합니다. 시험·실험 스크립트에는 Python 3.10 이상과 `openssl` 명령이 필요합니다. 정상 실행 중에는 인터넷을 사용하지 않습니다.
+Linux, C++20 컴파일러, CMake 3.20 이상과 Ninja가 필요합니다. 기본 내장 OpenSSL 구성에는 OpenSSL 개발 파일이 필요하며, 다른 역할별 구성은 선택한 구현체의 의존성만 요구합니다. 시험·실험 스크립트에는 Python 3.10 이상과 `openssl` 명령이 필요합니다. 정상 실행 중에는 인터넷을 사용하지 않습니다.
+
+기본 어댑터 연결은 `builtin`이며 OpenSSL 하나를 실행 파일에 연결합니다. TLS 라이브러리 자체의 정적·동적 링크는 별도 조건입니다.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 4
 scripts/make-pki.sh pki/default
+./build/turtle-client capabilities
 
-./build/turtle capabilities
-./build/turtle run --client openssl --server openssl \
-  --profile examples/profiles/server-auth.json --samples 10 \
-  --output results/first
+# 서버 터미널: 자기 파일과 주소만 지정합니다.
+./build/turtle-server --pki pki/default --listen 127.0.0.1:44330 \
+  --control-listen 127.0.0.1:44331 --timeout-ms 60000 \
+  --output results/server
 
-./build/turtle-interpret results/first/sample-000001/client.jsonl \
-  results/first/sample-000001/client.decoded.json
-./build/turtle-report results/first results/first/report
+# 클라이언트 터미널: 위 서버가 준비된 뒤 실행합니다.
+./build/turtle-client --pki pki/default --connect 127.0.0.1:44330 \
+  --control-connect 127.0.0.1:44331 --timeout-ms 60000 \
+  --output results/client
+
+./build/turtle-interpret results/client/client.jsonl results/client/client.decoded.json
+./build/turtle-interpret results/server/server.jsonl results/server/server.decoded.json
+./build/turtle-report --pair results/client/client.jsonl results/server/server.jsonl results/report
 ```
 
-기본값은 지휘·클라이언트·서버를 서로 다른 것으로 확인한 물리 코어에 고정하는 것입니다. 해당 배치가 불가능한 개발 환경에서만 `--no-affinity`를 명시합니다. 프로그램은 전역 주파수 정책, Turbo나 `perf_event_paranoid`를 바꾸지 않습니다. 출력 폴더의 기존 표본은 덮어쓰지 않으므로 다시 실행할 때 새 폴더를 지정합니다. 빠른 확인에서는 기본 1,000개 대신 `--samples`를 명시하십시오.
+서버·클라이언트는 다른 작업 폴더와 장비에서 같은 공유 시나리오로 실행할 수 있습니다. 각 장비에 자기 인증서·키·신뢰 파일을 두고 접근 가능한 IPv4 주소를 지정합니다. 데이터 TCP와 제어 TCP는 별도이며 제어 메시지를 TLS에 넣지 않습니다. 클라이언트가 실행 ID를 만들고 서버와 공유합니다. 서로 다른 시계의 절대 단조 시각을 빼지 않으며 교정되지 않은 교차 장비 시간 관계는 미관측입니다.
 
-준비 연결과 여러 측정 연결은 `--warmups 1 --connections 2`처럼 지정합니다. 메모리 계측은 `--mode memory`, 상호 인증은 `--mutual-auth`를 사용합니다.
+연결·준비 모듈은 같은 제어 TCP 연결에서 프로토콜·실행 ID·시나리오를 대조하고, 양쪽 TLS 컨텍스트·버퍼·요청 기능의 준비와 계측 지원 상태를 교환합니다. 준비된 뒤 첫 측정용 TLS TCP를 만듭니다. 사전 TLS 핸드셰이크나 확인용 데이터 연결은 만들지 않습니다. `client.jsonl`·`server.jsonl`의 `preparation`과 보고서의 표본별 `preparation`에서 진행 단계와 양쪽 상태를 확인할 수 있습니다. 제어 접속 성공은 데이터 포트 접근이나 인증서 검증 성공을 뜻하지 않습니다. 그 결과는 실제 연결 기록에 남습니다.
+
+로컬 주소도 실제 TCP/IP 소켓을 사용합니다. `127.0.0.1`은 커널 루프백으로 전달되며 물리 NIC를 거치지 않습니다. 서버의 `--listen 0.0.0.0:44330 --control-listen 0.0.0.0:44331`은 모든 로컬 IPv4 인터페이스에서 수신한다는 뜻입니다. 클라이언트에는 `127.0.0.1`이나 서버의 실제 주소를 지정하며 `0.0.0.0`을 접속 대상으로 받지 않습니다. veth 실험은 가상 인터페이스를 지나는 TCP입니다. 같은 호스트의 LAN IP를 지정하는 것만으로 물리 NIC 통과가 보장되지 않습니다. [로컬 TCP·관측 제어와 `s_time`의 차이](docs/design/runtime.md#로컬-tcp와-물리-네트워크)를 참고하십시오.
+
+### 역할별 빌드와 로컬 반복
+
+```sh
+cmake -S . -B build-client -G Ninja -DTURTLE_BUILD_SERVER=OFF \
+  -DTURTLE_BUILD_ANALYSIS=OFF -DTURTLE_IMPLEMENTATION=wolfssl
+cmake --build build-client --parallel 4
+cmake -S . -B build-server -G Ninja -DTURTLE_BUILD_CLIENT=OFF \
+  -DTURTLE_BUILD_ANALYSIS=OFF -DTURTLE_IMPLEMENTATION=mbedtls
+cmake --build build-server --parallel 4
+cmake -S . -B build-analysis -G Ninja -DTURTLE_BUILD_CLIENT=OFF -DTURTLE_BUILD_SERVER=OFF
+cmake --build build-analysis --parallel 4
+
+# 기본 build의 내장 OpenSSL 쌍을 새 프로세스로 두 번 실행합니다.
+./build/turtle-local --profile examples/profiles/server-auth.json \
+  --samples 2 --output results/local
+./build/turtle-report results/local results/local/report
+```
+
+각 빌드에 `CMAKE_TOOLCHAIN_FILE`, `CMAKE_PREFIX_PATH`, `TURTLE_DEPS_ROOT`를 따로 지정할 수 있습니다. 클라이언트 전용 구성은 서버·분석 의존성을 요구하지 않습니다. 교차 컴파일 configure에서 대상 프로그램을 실행하지 않으며 지원 검사는 대상 장비 준비 단계에서 수행합니다. ARM 빌드·실행은 아직 검증하지 않았습니다.
+
+배포할 때는 해당 실행 파일과 자기 인증서·키를 옮깁니다. 동적 TLS 라이브러리로 빌드했다면 그 라이브러리도 대상 로더가 찾을 수 있어야 합니다. 설치 경로는 `CMAKE_INSTALL_RPATH` 또는 대상의 라이브러리 검색 경로로 지정합니다. `cmake --install BUILD --prefix DEST`는 선택한 엔드포인트 실행 파일을 설치합니다.
+
+엔드포인트의 `--cpu N`은 자기 CPU 하나만 선택합니다. 로컬 실행기는 실행기·클라이언트·서버를 서로 다른 것으로 확인한 물리 코어에 배치하며 조회를 켜면 하나를 더 요구합니다. 해당 로컬 배치가 불가능할 때 `--no-affinity`를 명시합니다. 출력은 덮어쓰지 않으며 전역 주파수·Turbo·perf 설정을 바꾸지 않습니다.
+
+프로필은 `scenario`(공유 TLS·연결 수·시간 제한), `endpoint`(자기 파일·계측·소켓), `experiment`(외부 표본 반복·배치)로 나뉩니다. `examples/profiles/`는 `turtle-experiment-profile` schema 1이고 `turtle-local`에 전달합니다. 직접 실행용 `examples/endpoints/`는 `turtle-endpoint-profile` schema 1입니다. 기존 지휘 실행 명령과 평면 프로필의 호환 경로는 제거했습니다. TLS 판독기는 schema 3의 측정 계약 개정 3·4를 받습니다. 개정 3 자료는 기록된 종료점 그대로 재분석하고 개정 4와 같은 비교 조건으로 합치지 않습니다. 다른 형식은 명시적인 오류로 끝냅니다.
+
+준비·측정 연결은 `--warmups 1 --connections 2`, 메모리는 `--mode memory`, 상호 인증은 `--mutual-auth`로 선택합니다. 기본 외부 표본 수는 1입니다.
 
 ### 한 컨텍스트 안의 반복 보기
 
@@ -92,7 +132,7 @@ python3 scripts/run-study.py --build build --pki pki/default \
   --output results/repeated-context-cross
 ```
 
-실행기에 `--connections N`을 쓰면 그 값만 `turtle run`에 전달합니다. 생략하면 프로필 값이나 `turtle`의 기본값 1을 덮어쓰지 않습니다. 반복 보기의 비교는 전체 실행 coverage와 지표 완결성, 하나로 확인된 study 이름공간을 요구하며, 배치별 탐색 결과만 냅니다. 자세한 단위와 지원 경계는 [보고서와 비교 조건](docs/analysis/reporting.md)을 확인하십시오.
+실행기에 `--connections N`을 쓰면 그 값만 `turtle-local`에 전달합니다. 생략하면 프로필 값이나 `turtle-local`의 기본값 1을 덮어쓰지 않습니다. 반복 보기의 비교는 전체 실행 coverage와 지표 완결성, 하나로 확인된 study 이름공간을 요구하며, 배치별 탐색 결과만 냅니다. 자세한 단위와 지원 경계는 [보고서와 비교 조건](docs/analysis/reporting.md)을 확인하십시오.
 
 현재 WSL에서는 실제 TCP 다중 연결과 세 라이브러리의 네 시나리오를 확인했습니다. 이 기능 검증은 네이티브 Linux의 성능 결론이 아닙니다.
 
@@ -102,12 +142,16 @@ python3 scripts/run-study.py --build build --pki pki/default \
 # 이 단계에서만 공식 배포 소스를 내려받습니다. 전역 설치가 아닙니다.
 JOBS=4 scripts/build-deps.sh all
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DTURTLE_WITH_WOLFSSL=ON -DTURTLE_WITH_MBEDTLS=ON
+  -DTURTLE_ADAPTER_LINKAGE=module -DTURTLE_BUILD_MODULES=ON \
+  -DTURTLE_WITH_OPENSSL=ON -DTURTLE_WITH_WOLFSSL=ON -DTURTLE_WITH_MBEDTLS=ON \
+  -DTURTLE_BUILD_LOOKUP=ON
 cmake --build build --parallel 4
 
-./build/turtle run --client wolfssl --server mbedtls \
+./build/turtle-local --client wolfssl --server mbedtls \
   --pki pki/default --mutual-auth --samples 10 --output results/cross
 ```
+
+`module` 실행 파일은 `--module adapters/openssl.so`처럼 모듈을 명시합니다. `turtle-local --client wolfssl --server mbedtls`는 각 실행 파일에 해당 모듈 경로를 전달합니다. 내장 실행 파일은 `--module`을 받지 않습니다. 혼합 실행은 `--client-bin`, `--server-bin`으로 각 빌드의 실행 파일을 지정합니다.
 
 고정 판은 OpenSSL 3.5.4, wolfSSL 5.8.2-stable, Mbed TLS 3.6.4입니다. 의존성 스크립트는 SHA-256 또는 커밋을 확인하며 운영체제 패키지를 설치하지 않습니다. adapter ABI 3의 진입점은 `turtle_adapter_v3`입니다. v1·v2 모듈을 읽는 호환 계층이 없으므로 코어와 모든 어댑터를 함께 다시 빌드해야 합니다. 세 구현의 정확한 지원 범위는 [공통 어댑터 설명](implementations/common/README.md)을 확인하십시오.
 
@@ -133,7 +177,7 @@ python3 scripts/netem-study.py run --build build --profile PROFILE.json \
   --net-profile NET.json --samples 8 --output RESULTS
 ```
 
-기존 조회 경로는 [모의 CA와 격리 netem 실행](docs/experiments/mock-ca.md)을 따릅니다. 원본 패킷 보존, [TCP 바이트 분석](docs/analysis/tcp-analysis.md), 방향별 속도·초기 혼잡 윈도를 지원합니다. `examples/networks/tls-1mbit-cwnd4.json`은 네트워크 schema 2 예시이며 기존 schema 1도 유지합니다.
+기존 조회 경로는 [모의 CA와 격리 netem 실행](docs/experiments/mock-ca.md)을 따릅니다. 원본 패킷 보존, [TCP 바이트 분석](docs/analysis/tcp-analysis.md), 방향별 속도·초기 혼잡 윈도를 지원합니다. `examples/networks/tls-1mbit-cwnd4.json`은 네트워크 프로필 schema 3 예시입니다. 네트워크 프로필도 현재 형식만 받습니다.
 
 네트워크 schema 3은 지정 위치의 최초 패킷 제거와 커널 재전송·qdisc 제거 수집을 추가합니다. 이 선택 경로에는 관리자 권한, Clang BPF target, 커널 BTF와 libbpf가 필요합니다. `scripts/kernel-loss-study.py`로 세 라이브러리의 무손실·지정 손실·랜덤 손실 복구를 검증합니다. [빌드·실행 절차와 관측 한계](docs/analysis/tcp-analysis.md#지정-바이트-손실과-커널-재전송)를 따릅니다.
 
@@ -149,7 +193,7 @@ CPU 함수·모듈 표본은 [CPU 프로파일링](docs/analysis/cpu-profiling.m
 
 ## 4. 무엇을 지원하지 않는가
 
-- 한 호스트 안의 로컬 TCP만 실행합니다. 원격 두 호스트 실행기나 호스트 사이 하드웨어 비교는 없습니다.
+- 서로 다른 장비에는 실행 중인 서버의 데이터·제어 IP:Port로 접속합니다. 배포·새 프로세스 반복·결과 회수는 외부 실행 환경의 책임이며 SSH 자동화를 필수 기능으로 두지 않습니다. 실제 ARM 장비·툴체인 검증, 네이티브 Linux 본 실험, 배포 크기·RSS 계측은 후속 작업입니다.
 - 서버의 계측 없는 외부 기준선이 없으며, 관측자 켬/끔 차이로 전체 계측 비용을 복원하지 않습니다.
 - 스택 최고 사용량, NIC 하드웨어 시각과 CPU 호출 스택·코어별 귀속은 미지원입니다. 커널 재전송·소프트웨어 송신·ACK와 원본 pcap의 관측 위치는 구별합니다.
 - 저자 BiTHaC의 실제 캐싱 비교 쌍과 upstream ML-KEM C/AVX2 비교를 제공합니다. 인증서 압축, OCSP/ACME 운영 서비스, 후보 AVX-512 논문 구현과 논문 성능 수치의 재현은 아직 제공하지 않습니다.

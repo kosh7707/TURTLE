@@ -7,6 +7,8 @@ import struct
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parent))
+
 spec = importlib.util.spec_from_file_location('correlation', sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -14,12 +16,13 @@ spec.loader.exec_module(module)
 with tempfile.TemporaryDirectory(prefix='turtle-tcp-map-') as tmp:
     root = Path(tmp)
     raw = root / 'client.jsonl'
-    raw.write_text(json.dumps({'role': 'client', 'valid': True,
+    raw.write_text(json.dumps({'type': 'sample', 'schema': 3, 'measurement_contract_revision': 3,
+                               'role': 'client', 'valid': True, 'run_id': 'tcp-fixture', 'context_id': 'context', 'sample': 1,
                                'connections': [{'index': 0}]}) + '\n' + json.dumps({
         'connection': 0, 'kind': 'IO_SEND_RETURN', 'transferred': 6,
         'stream_begin': 0, 'stream_end': 6, 'sequence': 1}) + '\n')
     (root / 'client.conn-0.sent.bin').write_bytes(b'abcdef')
-    raw.with_suffix('.decoded.json').write_text(json.dumps({'connections': [{
+    raw.with_suffix('.decoded.json').write_text(json.dumps({'schema': 1, 'run_id': 'tcp-fixture', 'context_id': 'context', 'sample': 1, 'role': 'client', 'connections': [{
         'decryption_complete': True, 'client_sent': {'messages': [
             {'name': 'FixtureMessage', 'record_stream_ranges': [{'begin': 0, 'end': 6}]}]}}]}))
     flow = {'source': '10.0.0.1', 'destination': '10.0.0.2', 'source_port': 1234,
@@ -62,7 +65,14 @@ with tempfile.TemporaryDirectory(prefix='turtle-tcp-map-') as tmp:
     assert conn['messages'][0]['socket_submission_events'] == [1]
     assert result['kernel_observation']['status'] == 'unsupported'
     assert conn['kernel_retransmission_count'] is None
-    kernel = {'status': 'complete', 'buffer_lost': 0, 'failures': {'ring_lost': 0},
+    decoded_path = raw.with_suffix('.decoded.json')
+    decoded = json.loads(decoded_path.read_text())
+    decoded['run_id'] = 'different-execution'
+    decoded_path.write_text(json.dumps(decoded))
+    assert module.correlate(packets, raw)['reason'] == 'decoded_tls_identity_mismatch'
+    decoded['run_id'] = 'tcp-fixture'
+    decoded_path.write_text(json.dumps(decoded))
+    kernel = {'status': 'complete' , 'buffer_lost': 0, 'failures': {'ring_lost': 0},
               'cleanup_errors': [], 'events': [
                   {'flow': flow, 'kind': 'targeted_drop', 'initial_data_sequence': 0xfffffffd,
                    'stream_begin': 0, 'stream_end': 4},

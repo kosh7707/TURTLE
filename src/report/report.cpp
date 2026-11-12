@@ -1,4 +1,5 @@
 #include "report/report.hpp"
+#include "record/schema.hpp"
 #include "report/comparison_condition.hpp"
 #include "report/network_evidence.hpp"
 #include "report/perf_condition.hpp"
@@ -18,17 +19,6 @@
 namespace turtle::report {
 namespace {
 using Json = nlohmann::json;
-
-Json measurement_contract_revision(const Json& header) {
-    if (!header.contains("measurement_contract_revision"))
-        return nullptr;
-    const auto& value = header.at("measurement_contract_revision");
-    if (value.is_number_unsigned() && value.get<std::uint64_t>() > 0)
-        return value;
-    if (value.is_number_integer() && value.get<std::int64_t>() > 0)
-        return value;
-    return nullptr;
-}
 
 std::optional<Json> read_json(const std::filesystem::path& path, std::string& reason) {
     std::ifstream file(path);
@@ -60,6 +50,11 @@ decoded_connections(const Json& header, const Json& decoded, std::string& reason
     }
     if (!decoded.contains("sample") || decoded.at("sample") != header.at("sample")) {
         reason = "sample_mismatch";
+        return std::nullopt;
+    }
+    if ((decoded.value("run_id", Json(nullptr)) != header.at("run_id") ||
+         decoded.value("context_id", Json(nullptr)) != header.at("context_id"))) {
+        reason = "execution_identity_mismatch";
         return std::nullopt;
     }
     if (!decoded.contains("role") || decoded.at("role") != header.at("role")) {
@@ -103,7 +98,30 @@ struct PeerHeader {
     bool verified = false;
     std::string reason;
     Json header;
+    std::optional<std::string> measurement_failure = "peer_not_selected";
 };
+
+std::optional<std::string> measurement_failure(const Json& header, const Json& parts) {
+    const auto& config = header.at("config");
+    if (config.contains("connections")) {
+        const auto warmups = config.value("warmups", std::size_t{0});
+        const auto measured = config.at("connections").get<std::size_t>();
+        const auto& connections = header.at("connections");
+        if (connections.size() < warmups || connections.size() - warmups != measured)
+            return "requested_connection_set_incomplete";
+        for (std::size_t i = 0; i < connections.size(); ++i)
+            if (connections[i].at("index") != i ||
+                connections[i].value("warmup", false) != (i < warmups) ||
+                !connections[i].value("scenario_completed", false))
+                return "requested_connection_set_incomplete";
+    }
+    if (parts.empty())
+        return "measured_connections_missing";
+    for (const auto& part : parts)
+        if (!part.value("valid", false))
+            return part.value("reason", "connection_measurement_incomplete");
+    return std::nullopt;
+}
 
 Json socket_settings(const Json& header) {
     Json settings = Json::array();
@@ -127,10 +145,36 @@ Json context_identity(const Json& header) {
     return {{"size", size}, {"hash", header.at("loaded_context_hash")}};
 }
 
-PeerHeader peer_header(const std::filesystem::path& path, const Json& header) {
+std::optional<std::string> cleanup_failure(const std::filesystem::path& path, const Json& header) {
+    const auto marker =
+        path.parent_path() / (header.at("role").get<std::string>() + ".failure.json");
+    std::ifstream file(marker);
+    if (!file)
+        return std::nullopt;
+    try {
+        const auto failure = Json::parse(file);
+        if (failure.value("run_id", "") != header.value("run_id", "") ||
+            failure.value("context_id", "") != header.value("context_id", ""))
+            return "cleanup marker identity differs";
+        return "cleanup failed: " +
+               failure.value("reason", "completion acknowledgement unavailable");
+    } catch (const Json::exception&) {
+        return "cleanup marker unreadable";
+    }
+}
+
+PeerHeader peer_header(const Json& header,
+                       const std::map<std::string, std::filesystem::path>& identities) {
     const auto role = header.at("role").get<std::string>();
     const auto expected_role = role == "client" ? "server" : "client";
-    const auto peer_path = path.parent_path() / (std::string(expected_role) + ".jsonl");
+    std::filesystem::path peer_path;
+    const auto key =
+        Json::array({header.at("run_id"), header.at("context_id"), expected_role}).dump();
+    const auto found = identities.find(key);
+    if (found == identities.end())
+        return {false, "peer_not_selected", Json::object()};
+    peer_path = found->second;
+
     std::ifstream file(peer_path);
     if (!file) {
         return {false, "peer_file_absent", Json::object()};
@@ -145,13 +189,25 @@ PeerHeader peer_header(const std::filesystem::path& path, const Json& header) {
     } catch (const Json::exception&) {
         return {false, "peer_header_malformed", Json::object()};
     }
-    if ((peer.value("schema", 0) != 1 && peer.value("schema", 0) != 2) ||
+    if (peer.value("schema", 0) != 3 ||
+        !record::supported_measurement_contract(peer.value("measurement_contract_revision", 0)) ||
         peer.value("type", "") != "sample") {
         return {false, "peer_schema_mismatch", std::move(peer)};
     }
     if (peer.value("role", "") != expected_role) {
         return {false, "peer_role_mismatch", std::move(peer)};
     }
+    for (const char* field : {"run_id", "context_id", "scenario"})
+        if (!peer.contains(field) || peer.at(field) != header.at(field))
+            return {false, std::string("peer_") + field + "_mismatch", std::move(peer)};
+    Json own = Json::array(), other = Json::array();
+    for (const auto& c : header.at("connections"))
+        own.push_back(Json::array({c.at("index"), c.at("warmup")}));
+    for (const auto& c : peer.at("connections"))
+        other.push_back(Json::array({c.at("index"), c.at("warmup")}));
+    if (own != other)
+        return {false, "peer_connections_differ", std::move(peer)};
+
     for (const char* field : {"sample", "batch", "profile_hash"}) {
         if (!peer.contains(field) || peer.at(field) != header.at(field)) {
             return {false, std::string("peer_") + field + "_mismatch", std::move(peer)};
@@ -163,20 +219,24 @@ PeerHeader peer_header(const std::filesystem::path& path, const Json& header) {
         !peer.at("config").is_object()) {
         return {false, "peer_metadata_incomplete", std::move(peer)};
     }
-    return {true, "matched_opposite_role_header", std::move(peer)};
+    if (const auto failure = cleanup_failure(peer_path, peer)) {
+        peer["valid"] = false;
+        peer["invalid_reason"] = *failure;
+    }
+    std::optional<std::string> failure;
+    try {
+        std::vector<Json> events;
+        while (std::getline(file, line))
+            if (!line.empty())
+                events.push_back(Json::parse(line));
+        failure = events.empty() ? std::optional<std::string>("peer_boundary_events_missing")
+                                 : measurement_failure(peer, partition(peer, events));
+    } catch (const Json::exception&) {
+        failure = "peer_measurement_records_unreadable";
+    }
+    return {true, "matched_opposite_role_header", std::move(peer), std::move(failure)};
 }
 
-std::optional<std::string> director_invalid_reason(const std::filesystem::path& directory) {
-    std::ifstream file(directory / "director.txt");
-    if (!file) {
-        return std::nullopt;
-    }
-    std::string line;
-    if (!std::getline(file, line) || line != "valid") {
-        return line.empty() ? "director status is empty" : line;
-    }
-    return std::nullopt;
-}
 std::optional<AuthoritativeLedger>
 authoritative_ledger(const std::filesystem::path& sample_path,
                      const std::filesystem::path& input_root,
@@ -277,9 +337,10 @@ Comparison compare(std::span<const double> a, std::span<const double> b, std::ui
     return {difference, lo, hi, lo > 0 || hi < 0};
 }
 Json summarize(const std::filesystem::path& input, const std::filesystem::path& output,
-               bool repeated_context) {
-    std::vector<std::filesystem::path> paths;
-    if (std::filesystem::is_regular_file(input))
+               bool repeated_context, std::vector<std::filesystem::path> selected) {
+    std::vector<std::filesystem::path> paths = std::move(selected);
+    if (!paths.empty()) {
+    } else if (std::filesystem::is_regular_file(input))
         paths.push_back(input);
     else
         for (const auto& entry : std::filesystem::recursive_directory_iterator(input))
@@ -287,6 +348,22 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                                             entry.path().filename() == "server.jsonl"))
                 paths.push_back(entry.path());
     std::sort(paths.begin(), paths.end());
+    std::map<std::string, std::filesystem::path> identities;
+    for (const auto& path : paths) {
+        std::ifstream input_file(path);
+        std::string first;
+        std::getline(input_file, first);
+        const auto header = Json::parse(first);
+        record::require_tls_sample(header);
+        // A preparation failure may occur before an execution ID is negotiated.
+        // Keep that failure, but never pair unidentified endpoints.
+        if (header.value("run_id", "").empty() || header.value("context_id", "").empty())
+            continue;
+        const auto key =
+            Json::array({header.at("run_id"), header.at("context_id"), header.at("role")}).dump();
+        if (!identities.emplace(key, path).second)
+            throw std::runtime_error("duplicate endpoint execution identity in selected input");
+    }
     std::vector<RepeatedStudyInput> repeated_studies;
     std::vector<RepeatedRunInput> repeated_runs;
     std::vector<RepeatedContextInput> repeated_contexts;
@@ -504,8 +581,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
         if (!std::getline(file, line))
             throw std::runtime_error("empty raw record: " + path.string());
         auto header = Json::parse(line);
-        if (header.at("type") != "sample" || (header.at("schema") != 1 && header.at("schema") != 2))
-            throw std::runtime_error("unsupported raw record schema");
+        record::require_tls_sample(header);
         const auto scenario_name =
             header.at("config").value("scenario_name", std::string("standard-tls"));
         const bool lookup_scenario = scenario_name == "synthetic-lookup-plus-standard-tls" ||
@@ -594,8 +670,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                         unavailable_server_client_hello_to_finished_send_window(attribution_reason);
             }
         }
-        const auto peer = peer_header(path, header);
-        const auto director_reason = director_invalid_reason(path.parent_path());
+        const auto peer = peer_header(header, identities);
+        const auto completion_failure = cleanup_failure(path, header);
         const auto ledger =
             authoritative_ledger(path, input, repeated_context ? &repeated_ledger_cache : nullptr);
         std::optional<std::string> parent_status;
@@ -611,46 +687,59 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
                 (void)id;
                 attempts.push_back(attempt);
             }
-            network =
-                read_network_evidence(ledger->root,
-                                      lookup_scenario ? NetworkTopology::lookup_4ns
-                                                      : NetworkTopology::tls_3ns_or_legacy_4ns,
-                                      attempts);
+            network = read_network_evidence(ledger->root,
+                                            lookup_scenario ? NetworkTopology::lookup_4ns
+                                                            : NetworkTopology::tls_only_3ns,
+                                            attempts);
         }
         const bool network_handoff = header.at("config").contains("network_handoff") &&
                                      header.at("config").at("network_handoff").is_object();
         const bool network_required = network.present || network_handoff;
         if (!network_required) {
-            network.integrity = {{"status", "not_applicable_loopback"},
-                                 {"eligible", true},
-                                 {"reasons", Json::array()}};
+            network.integrity = {
+                {"status", "not_requested"}, {"eligible", true}, {"reasons", Json::array()}};
         } else if (!network.present) {
             network.integrity = {
                 {"status", "failed"},
                 {"eligible", false},
                 {"reasons", Json::array({"network_provenance_missing_or_unreadable"})}};
         }
-        bool valid = header.value("valid", false);
-        for (const auto& p : parts)
-            valid = valid && p.value("valid", false);
-        if (parts.empty())
-            valid = false;
-        if (director_reason)
+        const auto own_measurement_failure =
+            events.empty() ? std::optional<std::string>("boundary_events_missing")
+                           : measurement_failure(header, parts);
+        bool valid = header.value("valid", false) && !own_measurement_failure;
+        if (completion_failure)
             valid = false;
         if (parent_status && *parent_status != "success")
             valid = false;
+        if (peer.verified && !peer.header.value("valid", false))
+            valid = false;
         std::string invalid_reason = header.value("invalid_reason", "");
-        if (director_reason)
-            invalid_reason = *director_reason;
+        if (invalid_reason.empty() && own_measurement_failure)
+            invalid_reason = *own_measurement_failure;
+        if (peer.verified && !peer.header.value("valid", false))
+            invalid_reason = "peer failed: " + peer.header.value("invalid_reason", "");
+        if (completion_failure)
+            invalid_reason = *completion_failure;
         if (parent_status && *parent_status != "success")
             invalid_reason = "parent attempt ledger status: " + *parent_status;
         samples.push_back({{"path", path.string()},
                            {"sample", header.at("sample")},
+                           {"run_id", header.value("run_id", Json(nullptr))},
+                           {"context_id", header.value("context_id", Json(nullptr))},
+                           {"cross_endpoint_elapsed_ns", nullptr},
+                           {"cross_endpoint_time_reason", "uncalibrated_clock_relationship"},
                            {"role", header.at("role")},
                            {"valid", valid},
                            {"invalid_reason", invalid_reason},
+                           {"failure_phase", header.value("failure_phase", Json(nullptr))},
+                           {"preparation", header.value("preparation", Json(nullptr))},
                            {"peer_header_status", peer.verified ? "verified" : "unverified"},
                            {"peer_header_reason", peer.reason},
+                           {"peer_measurement_status", peer.measurement_failure ? "missing" : "complete"},
+                           {"peer_measurement_reason", peer.measurement_failure
+                                                           ? Json(*peer.measurement_failure)
+                                                           : Json(nullptr)},
                            {"decoded_sidecar_status", sidecar_status},
                            {"decoded_sidecar_reason", sidecar_reason},
                            {"network_integrity", network.integrity},
@@ -660,9 +749,9 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             continue;
         }
         const auto own_context = context_identity(header);
-        const auto own_measurement_contract = measurement_contract_revision(header);
+        const auto own_measurement_contract = header.at("measurement_contract_revision");
         const auto peer_measurement_contract =
-            peer.verified ? measurement_contract_revision(peer.header) : Json(nullptr);
+            peer.verified ? peer.header.at("measurement_contract_revision") : Json(nullptr);
         const auto own_perf = detail::perf_condition(header);
         const auto peer_perf =
             peer.verified ? detail::perf_condition(peer.header) : detail::PerfCondition{};
@@ -689,17 +778,13 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             {"build_options", header.at("declaration").value("build_options", "")},
             {"measurement_contract_revision", own_measurement_contract},
             {"run_controls", Json::object()},
-            {"client_adapter", header.at("config").value("client_adapter", "")},
-            {"server_adapter", header.at("config").value("server_adapter", "")},
+            {"client_adapter", nullptr},
+            {"server_adapter", nullptr},
             {"pinned_cpu", header.value("pinned_cpu", -1)},
             {"peer_verified", peer.verified},
             {"peer_valid", peer.verified ? peer.header.value("valid", false) : false},
             {"peer_pinned_cpu", peer.verified ? peer.header.value("pinned_cpu", -1) : -1},
-            {"peer_adapter",
-             peer.verified
-                 ? peer.header.at("config").value(
-                       header.at("role") == "client" ? "server_adapter" : "client_adapter", "")
-                 : ""},
+            {"peer_adapter", nullptr},
             {"peer_library",
              peer.verified ? peer.header.at("declaration").value("library", "") : ""},
             {"peer_library_version",
@@ -713,8 +798,35 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             {"correction", "raw"},
             {"timing_interpretation",
              header.at("mode") == "timing" && !cpu_profiled ? "performance" : "diagnostic_only"}};
+        dimensions["preparation_version"] =
+            header.value("preparation", Json::object()).value("version", Json(nullptr));
+        dimensions["peer_preparation_version"] =
+            peer.verified
+                ? peer.header.value("preparation", Json::object()).value("version", Json(nullptr))
+                : Json(nullptr);
+        dimensions["adapter_connection"] = header.at("adapter_connection");
+        dimensions["adapter_connection"].erase("artifact");
+        dimensions["peer_adapter_connection"] =
+            peer.verified ? peer.header.at("adapter_connection") : Json(nullptr);
+        if (peer.verified)
+            dimensions["peer_adapter_connection"].erase("artifact");
+        const auto own_profile = Json::parse(header.at("config").value("profile_document", "{}"));
+        dimensions["certificate_inputs"] = own_profile.value("certificate_inputs", Json(nullptr));
+        dimensions["peer_certificate_inputs"] =
+            peer.verified ? Json::parse(peer.header.at("config").value("profile_document", "{}"))
+                                .value("certificate_inputs", Json(nullptr))
+                          : Json(nullptr);
+        dimensions["peer_environment_hash"] =
+            peer.verified ? peer.header.at("environment_hash") : Json(nullptr);
+        const auto own_role = header.at("role").get<std::string>();
+        const auto other_role = own_role == "client" ? "server" : "client";
+        dimensions[own_role + "_adapter"] = header.at("config").value("implementation", "");
+        dimensions[std::string(other_role) + "_adapter"] =
+            peer.verified ? peer.header.at("config").value("implementation", "") : "";
+        dimensions["peer_adapter"] = dimensions[std::string(other_role) + "_adapter"];
+
         dimensions["scenario_name"] = scenario_name;
-        if (header.value("schema", 1) >= 2) {
+        {
             dimensions["tls_scenario"] =
                 header.at("config").at("tls").value("scenario", "client-request");
             dimensions["send_policy"] =
@@ -749,14 +861,23 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
               "keylog_capacity", "calibration_samples", "connections"})
             if (header.at("config").contains(control))
                 dimensions["run_controls"][control] = header.at("config").at(control);
-        if (detail::has_explicit_perf_condition(header)) {
-            dimensions["run_controls"]["perf_scope"] = own_perf.controls.at("perf_scope");
-            dimensions["perf_support"] = own_perf.support;
-        }
-        if (peer.verified && detail::has_explicit_perf_condition(peer.header)) {
+        dimensions["run_controls"]["perf_scope"] = own_perf.controls.at("perf_scope");
+        dimensions["perf_support"] = own_perf.support;
+        if (peer.verified) {
             dimensions["peer_run_controls"] = peer_perf.controls;
             dimensions["peer_perf_support"] = peer_perf.support;
         }
+        for (const char* key : {"timeout_ms", "flush_grace_ms", "local_boundary_observer"})
+            dimensions["run_controls"][key] = header.at("config").value(key, Json(nullptr));
+        dimensions["peer_mode"] = peer.verified ? peer.header.at("mode") : Json(nullptr);
+        dimensions["peer_observation_level"] =
+            peer.verified ? peer.header.value("observation_level", Json(nullptr)) : Json(nullptr);
+        dimensions["peer_run_controls"] = Json::object();
+        for (const auto& item : dimensions.at("run_controls").items())
+            dimensions["peer_run_controls"][item.key()] =
+                peer.verified ? peer.header.at("config").value(item.key(), Json(nullptr))
+                              : Json(nullptr);
+
         dimensions["automatic_comparison_identity_complete"] =
             dimensions.at("automatic_comparison_identity_complete").get<bool>() &&
             own_perf.complete && peer_perf.complete;
@@ -818,11 +939,13 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             const bool metrics_admitted =
                 !network_required || network.integrity.value("eligible", false);
             const bool comparison_base =
-                metrics_admitted && !own_measurement_contract.is_null() &&
+                metrics_admitted && !peer.measurement_failure && !own_measurement_contract.is_null() &&
                 !peer_measurement_contract.is_null() && own_perf.complete && peer_perf.complete &&
                 primary_windows_complete && !native_stream_unobserved(header) &&
                 channel_observer_enabled(header);
             std::vector<std::string> comparison_reasons;
+            if (peer.measurement_failure)
+                comparison_reasons.push_back("peer_measurement_incomplete");
             if (own_measurement_contract.is_null())
                 comparison_reasons.push_back("measurement_contract_revision_unknown");
             if (peer_measurement_contract.is_null())
@@ -871,6 +994,8 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             dimensions["connection"] = p.at("connection");
             auto& group = collected[dimensions.dump()];
             group.dimensions = dimensions;
+            if (peer.measurement_failure)
+                group.comparison_exclusion_reasons.insert("peer_measurement_incomplete");
             if (own_measurement_contract.is_null())
                 group.comparison_exclusion_reasons.insert("measurement_contract_revision_unknown");
             if (peer_measurement_contract.is_null())
@@ -885,7 +1010,7 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             const bool metrics_admitted =
                 !network_required || network.integrity.value("eligible", false);
             group.automatic_comparison_eligible =
-                group.automatic_comparison_eligible && metrics_admitted &&
+                group.automatic_comparison_eligible && metrics_admitted && !peer.measurement_failure &&
                 !own_measurement_contract.is_null() && !peer_measurement_contract.is_null() &&
                 own_perf.complete && peer_perf.complete && !cpu_profiled;
             const bool primary_available =
@@ -961,12 +1086,14 @@ Json summarize(const std::filesystem::path& input, const std::filesystem::path& 
             };
         }
         if (group.metrics.contains(std::string(common_elapsed))) {
+            const auto scenario = group.dimensions.value("tls_scenario", "client-request");
+            const bool server_first = scenario == "server-ping" || scenario == "finished-ping";
             item[std::string(common_window_name)] = {
                 {"definition", common_window_name},
                 {"start", "first_handshake_call_begin"},
                 {"end", "last_successful_full_application_completion_call_end_for_role"},
-                {"client_end_call", "app_recv"},
-                {"server_end_call", "app_send"},
+                {"client_end_call", server_first ? "app_send" : "app_recv"},
+                {"server_end_call", server_first ? "app_recv" : "app_send"},
             };
         }
         if (group.metrics.contains(std::string(server_window_elapsed))) {

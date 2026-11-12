@@ -2,14 +2,14 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <nlohmann/json.hpp>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 
 namespace turtle::report {
 
-enum class NetworkTopology { tls_only_3ns, tls_3ns_or_legacy_4ns, lookup_4ns };
+enum class NetworkTopology { tls_only_3ns, lookup_4ns };
 
 struct NetworkAttempt {
     std::uint64_t id = 0;

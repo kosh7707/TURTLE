@@ -2,6 +2,7 @@
 
 // One endpoint sample owns its resolved runtime configuration by value.
 #include "model/run_config.hpp"
+#include "model/preparation.hpp"
 
 namespace turtle::model {
 
@@ -11,6 +12,7 @@ struct SampleInfo {
     Role role = Role::Client;
     std::int64_t pid = 0;
     RunConfig config;
+    PreparationInfo preparation;
     Declaration declaration;
     Environment environment;
     Capabilities capabilities;
@@ -23,6 +25,7 @@ struct SampleInfo {
     bool io_events_available = true;
     bool kernel_receive_events_available = false;
     std::string invalid_reason;
+    std::string failure_phase;
     std::string observation_level = "L0";
     std::string tls_stream_reason;
     std::string io_events_reason;

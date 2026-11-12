@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Socket-free contracts for the randomized study runner."""
 
+from profiles import experiment_profile, flatten_experiment
 import json
 import os
 from pathlib import Path
@@ -31,7 +32,7 @@ def record(program):
     with log.open('a') as stream:
         stream.write(json.dumps({'program': program, 'args': sys.argv[1:]}) + '\\n')
 """
-    write_program(build / "turtle", common + """record('turtle')
+    write_program(build / "turtle-local", common + """record('turtle')
 if os.environ.get('STUDY_STUB_FAIL') == 'turtle':
     print('injected turtle failure', file=sys.stderr)
     raise SystemExit(23)
@@ -86,7 +87,7 @@ def main():
         root = Path(temporary)
         make_stubs(root)
         profile = root / "profile.json"
-        profile.write_text(json.dumps({"measurement": {"connections": 7}}))
+        profile.write_text(json.dumps(experiment_profile(measurement={"connections": 7})))
 
         default_output = root / "default"
         result, rows = invoke(
@@ -184,8 +185,8 @@ def main():
               failed_manifest["runs"][0]["returncode"] == 23,
               "the failed attempt was not durably recorded")
 
-        example = json.loads((repository / "examples/profiles/repeated-context.json").read_text())
-        baseline = json.loads((repository / "examples/profiles/server-auth.json").read_text())
+        example = flatten_experiment(json.loads((repository / "examples/profiles/repeated-context.json").read_text()))
+        baseline = flatten_experiment(json.loads((repository / "examples/profiles/server-auth.json").read_text()))
         for key in ("pki", "tls", "socket", "technique"):
             check(example[key] == baseline[key], f"repeated-context profile changed {key}")
         check(example["measurement"] == {

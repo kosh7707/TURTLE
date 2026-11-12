@@ -15,7 +15,7 @@ mlkem=OFF
 [[ ! -f "$deps/install/mbedtls-3.6.4-pic/include/mbedtls/ssl.h" ]] || mbed=ON
 if [[ -f "$deps/install/bithac-baseline/lib/libwolfssl.a" && -f "$deps/install/bithac-cached/lib/libwolfssl.a" ]]; then bithac=ON; fi
 if [[ -f "$deps/install/mlkem-c/lib/libwolfssl.a" && -f "$deps/install/mlkem-avx2/lib/libwolfssl.a" ]]; then mlkem=ON; fi
-options=(-G Ninja -DTURTLE_WARNINGS_AS_ERRORS=ON "-DTURTLE_DEPS_ROOT=$deps"
+options=(-G Ninja -DTURTLE_BUILD_LOOKUP=ON -DTURTLE_ADAPTER_LINKAGE=module -DTURTLE_BUILD_MODULES=ON -DTURTLE_WITH_OPENSSL=ON -DTURTLE_WARNINGS_AS_ERRORS=ON "-DTURTLE_DEPS_ROOT=$deps"
          "-DTURTLE_WITH_WOLFSSL=$wolf" "-DTURTLE_WITH_MBEDTLS=$mbed" "-DTURTLE_WITH_BITHAC=$bithac"
          "-DTURTLE_WITH_MLKEM=$mlkem")
 printf 'Adapters: OpenSSL=ON wolfSSL=%s MbedTLS=%s BiTHaC=%s ML-KEM=%s\n' "$wolf" "$mbed" "$bithac" "$mlkem"

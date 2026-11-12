@@ -38,10 +38,6 @@ sockaddr_in numeric_ipv4(const std::string& address, std::uint16_t port) {
     return result;
 }
 
-sockaddr_in loopback(std::uint16_t port) {
-    return numeric_ipv4("127.0.0.1", port);
-}
-
 Endpoint endpoint_from(const sockaddr_in& address) {
     char text[INET_ADDRSTRLEN]{};
     if (::inet_ntop(AF_INET, &address.sin_addr, text, sizeof(text)) == nullptr)
@@ -67,15 +63,14 @@ template <class T> bool field_returned(socklen_t length, std::size_t offset) noe
 
 } // namespace
 
-Listener listen_loopback() {
-    return listen_ipv4("127.0.0.1", 0);
-}
-
 Listener listen_ipv4(const std::string& address, std::uint16_t port) {
     const sockaddr_in bind_address = numeric_ipv4(address, port);
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0)
         fail("socket");
+    const int reuse = 1;
+    if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
+        fail("SO_REUSEADDR", fd);
     if (::bind(fd, reinterpret_cast<const sockaddr*>(&bind_address), sizeof(bind_address)) < 0)
         fail("bind", fd);
     if (::listen(fd, 16) < 0)
@@ -87,36 +82,6 @@ Listener listen_ipv4(const std::string& address, std::uint16_t port) {
         ::close(fd);
         throw;
     }
-}
-
-int accept_one(int listen_fd) {
-    const int fd = ::accept(listen_fd, nullptr, nullptr);
-    if (fd < 0)
-        fail("accept");
-    return fd;
-}
-
-int connect_loopback(std::uint16_t port) {
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
-        fail("socket");
-    const sockaddr_in address = loopback(port);
-    if (::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) < 0)
-        fail("connect", fd);
-    return fd;
-}
-
-int connect_ipv4(const std::string& source_address, const Endpoint& destination) {
-    const sockaddr_in source = numeric_ipv4(source_address, 0);
-    const sockaddr_in target = numeric_ipv4(destination.address, destination.port);
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
-        fail("socket");
-    if (::bind(fd, reinterpret_cast<const sockaddr*>(&source), sizeof(source)) < 0)
-        fail("bind source", fd);
-    if (::connect(fd, reinterpret_cast<const sockaddr*>(&target), sizeof(target)) < 0)
-        fail("connect", fd);
-    return fd;
 }
 
 Endpoint local_endpoint(int fd) {

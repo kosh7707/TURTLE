@@ -83,12 +83,13 @@ def connection(index: int, warmup: bool = False) -> Json:
 def header(sample: int, role: str, client_adapter: str, server_adapter: str,
            *, batch: int = 1, measured: int = 2, warmups: int = 0,
            mode: str = "timing", observer: bool = True,
-           revision: int | None = 2, lookup: bool = False,
+           revision: int | None = 3, lookup: bool = False,
            indices: list[int] | None = None) -> Json:
     own = client_adapter if role == "client" else server_adapter
     indices = indices if indices is not None else list(range(warmups + measured))
     h: Json = {
-        "type": "sample", "schema": 1, "sample": sample, "batch": batch,
+        "adapter_connection": {"mode": "module", "tls_linkage": "fixture"},
+        "type": "sample", "schema": 3, "sample": sample, "batch": batch,
         "role": role, "valid": True, "profile_hash": "fixed-profile",
         "environment_hash": "fixed-environment", "mode": mode,
         "pinned_cpu": 2 if role == "client" else 3,
@@ -98,11 +99,11 @@ def header(sample: int, role: str, client_adapter: str, server_adapter: str,
             "scenario_name": "standard-tls" if not lookup else
                              "synthetic-lookup-plus-standard-tls",
             "lookup": {"enabled": lookup, "cache_mode": "empty"},
-            "client_adapter": client_adapter, "server_adapter": server_adapter,
+            "implementation": own, "tls": {"scenario": "client-request"},
             "perf": False, "perf_scope": "user", "channel_observer": observer,
             "isolate": True, "pin_cores": True, "kernel_timestamps": False,
             "timeout_ms": 10000, "flush_grace_ms": 500,
-            "failure_policy": "fixed-attempts", "warmups": warmups,
+            "warmups": warmups,
             "connections": measured, "tcp_nodelay": True,
             "socket_send_buffer": 4096, "socket_receive_buffer": 4096,
             "application_bytes": 4,
@@ -190,9 +191,15 @@ def write_sample(run: Path, directory_name: str, sample: int,
     ):
         h = header(sample, role, client_adapter, server_adapter, batch=batch,
                    measured=measured, warmups=warmups, indices=indices)
+        h.update(run_id=str(directory), context_id="context", scenario={})
+        data = events(role, vals, cpus, indices=indices)
+        for item in h["connections"]:
+            end = next((e for e in reversed(data) if e["connection"] == item["index"]), None)
+            if end:
+                item.update(end_sequence=end["sequence"], scenario_completed=True)
         if mutate_header:
             mutate_header(h, role)
-        rows = [h] + events(role, vals, cpus, indices=indices)
+        rows = [h] + data
         write_jsonl(directory / f"{role}.jsonl", rows)
 
 
@@ -257,7 +264,7 @@ def run_default_and_repeated(reporter: Path, input_path: Path, base: Path,
     invoke(reporter, input_path, default, False, cwd=cwd)
     invoke(reporter, input_path, repeated, True, cwd=cwd)
     require(file_map(default) == file_map(repeated, omit_repeated=True),
-            "opt-in changed a legacy output byte or file")
+            "opt-in changed a default output byte or file")
     path = repeated / "repeated-context-summary.json"
     require(path.is_file(), "opt-in did not add repeated-context-summary.json")
     return json.loads(path.read_text(encoding="utf-8"))
@@ -645,6 +652,7 @@ def partition_validity_contract(reporter: Path, root: Path) -> None:
     def unverify_application(h: Json, role: str) -> None:
         del role
         h["connections"][1]["application_verified"] = False
+        h["connections"][1]["scenario_completed"] = False
     write_sample(invalid, "sample-000001", 1, "fixture-adapter-A",
                  "fixture-adapter-A", [5, 5], [6, 6],
                  mutate_header=unverify_application)
@@ -698,7 +706,6 @@ def malformed_connection_contract(reporter: Path, root: Path) -> None:
 def existing_eligibility_contract(reporter: Path, root: Path) -> None:
     mutations: dict[str, Callable[[Json, str], None]] = {
         "memory": lambda h, role: h.update(mode="memory"),
-        "missing-revision": lambda h, role: h.pop("measurement_contract_revision", None),
         "missing-perf-identity": lambda h, role: h["capabilities"].pop(
             "perf_effective_scope", None),
         "observer-disabled": lambda h, role: (

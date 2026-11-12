@@ -4,11 +4,13 @@
 #include "lifecycle/capture.hpp"
 #include "lifecycle/endpoint_protocol.hpp"
 #include "lifecycle/lookup_runtime.hpp"
+#include "lifecycle/peer_session.hpp"
 #include "measure/measure.hpp"
 #include "model/sample.hpp"
 #include "record/record.hpp"
 #include "transport/channel.hpp"
 #include "transport/tcp.hpp"
+#include <nlohmann/json.hpp>
 #include <poll.h>
 
 #include <algorithm>
@@ -25,31 +27,32 @@ namespace turtle::lifecycle::detail {
 namespace {
 
 struct Module {
-    void* handle = nullptr;
-    ImplementationApi api;
-    explicit Module(const std::string& path) {
-        handle = ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-        if (!handle)
-            throw std::runtime_error(::dlerror());
-        auto entry = reinterpret_cast<AdapterEntry>(::dlsym(handle, adapter_entry_name));
-        if (!entry) {
+    struct Unload {
+        void operator()(void* handle) const noexcept {
             ::dlclose(handle);
-            handle = nullptr;
-            throw std::runtime_error("adapter ABI v3 entry turtle_adapter_v3 is missing");
         }
-        api = entry();
+    };
+    std::unique_ptr<void, Unload> handle;
+    ImplementationApi api;
+    Module(const std::string& path, AdapterEntry builtin) {
+        if (builtin) {
+            api = builtin();
+        } else {
+            handle.reset(::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL));
+            if (!handle)
+                throw std::runtime_error(::dlerror());
+            auto entry = reinterpret_cast<AdapterEntry>(::dlsym(handle.get(), adapter_entry_name));
+            if (!entry) {
+                throw std::runtime_error("adapter ABI v3 entry turtle_adapter_v3 is missing");
+            }
+            api = entry();
+        }
         if (api.version != adapter_api_version || !api.name || !api.setup || !api.declaration ||
             !api.open || !api.handshake_step || !api.peer_verification || !api.negotiated ||
             !api.app_send || !api.app_recv || !api.error || !api.close || !api.save ||
             !api.teardown) {
-            ::dlclose(handle);
-            handle = nullptr;
             throw std::runtime_error("incomplete adapter API");
         }
-    }
-    ~Module() {
-        if (handle)
-            ::dlclose(handle);
     }
 };
 using TlsCapture = Capture<measure::Meter>;
@@ -76,10 +79,10 @@ std::vector<std::uint8_t> load_serialized_context(const model::RunConfig& config
 }
 
 int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample,
-                 const std::string& directory, int listener, const tcp::DialAddress& address,
-                 int control_fd, control::Deadline deadline, std::span<const std::uint8_t> saved,
-                 const lookup::Snapshot* reference, const lookup::Snapshot* initial,
-                 std::vector<int> lookup_sockets) {
+                 const std::string& directory, PeerSession& session,
+                 const tcp::DialAddress& address, control::Deadline deadline, AdapterEntry builtin,
+                 std::span<const std::uint8_t> saved, const lookup::Snapshot* reference,
+                 const lookup::Snapshot* initial) {
     const std::size_t count = config.warmups + config.connections;
     record::Writer writer(directory, role, count);
     record::Buffer buffer(
@@ -90,10 +93,12 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
     info.role = role;
     info.pid = ::getpid();
     info.config = config;
+    info.preparation = session.status();
+    info.failure_phase = "setup";
     if (!config.tls.framework_io || !config.channel_observer) {
         const bool native_io = !config.tls.framework_io;
-        const char* reason = native_io ? "native_socket_io_not_observed"
-                                       : "channel_observer_disabled";
+        const char* reason =
+            native_io ? "native_socket_io_not_observed" : "channel_observer_disabled";
         info.observation_level = native_io ? "library-only" : "observer-disabled";
         info.tls_stream_available = false;
         info.io_events_available = false;
@@ -101,20 +106,24 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
         info.tls_stream_reason = reason;
         info.io_events_reason = reason;
         info.kernel_receive_events_reason = reason;
-        info.incomplete.push_back(
-            native_io ? "native socket I/O has no framework byte or kernel capture"
-                      : "channel observer disabled; framework I/O bytes and receive events were not captured");
+        info.incomplete.push_back(native_io
+                                      ? "native socket I/O has no framework byte or kernel capture"
+                                      : "channel observer disabled; framework I/O bytes and "
+                                        "receive events were not captured");
     }
     measure::Meter meter(config.mode, config.perf, config.perf_scope);
     TlsCapture capture{meter, buffer};
-    control::Waiter parent(control_fd);
-    ChildProtocol protocol(parent);
+    const int control_fd = session.peer();
+    const int listener = session.listener();
+    control::Waiter peer(control_fd);
+    PeerProtocol protocol(peer, sample);
     std::vector<int> sockets(count, -1);
     std::unique_ptr<control::WaitSet> accept_wait;
-    detail::ClientLookupRuntime client_lookup(config, meter, sample, directory, control_fd,
-                                              reference, initial, std::move(lookup_sockets));
+    detail::ClientLookupRuntime client_lookup(config, meter, sample, directory, reference, initial);
     std::optional<model::ConnectionInfo> active_connection;
+    std::optional<control::Deadline> cleanup_deadline;
     auto record_failure = [&](const char* reason) {
+        info.preparation = session.status();
         if (active_connection) {
             const auto index = active_connection->index;
             active_connection->tcp_end = tcp::read_tcp_info(sockets[index]);
@@ -135,7 +144,7 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
         info.capabilities = meter.capabilities();
         meter.require_requested_scope();
         if (config.pin_cores) {
-            const int cpu = role == Role::Client ? config.client_cpu : config.server_cpu;
+            const int cpu = config.cpu;
             std::string reason;
             if (!capability::pin_to_cpu(cpu, reason))
                 throw std::runtime_error("endpoint CPU affinity failed: " + reason);
@@ -145,16 +154,14 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
         info.calibration = meter.calibrate(config.calibration_samples);
         if (listener >= 0) {
             tcp::nonblocking_listener(listener);
-            accept_wait = std::make_unique<control::WaitSet>(listener, control_fd);
+            accept_wait = std::make_unique<control::WaitSet>(listener, control_fd, false);
         }
-        client_lookup.prepare(info);
+        client_lookup.prepare(info, deadline);
         const auto module_begin = meter.read();
-        Module module(
-            (std::filesystem::path(config.adapter_directory) /
-             ((role == Role::Client ? config.client_adapter : config.server_adapter) + ".so"))
-                .string());
+        Module module(config.adapter_path, builtin);
         const auto module_end = meter.read();
         auto& api = module.api;
+        info.config.implementation = api.name();
         HostServices host{meter.allocator(),
                           {&capture, keylog},
                           {&capture, plaintext},
@@ -186,11 +193,14 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
         info.connections.reserve(count);
         if (config.isolate)
             control::isolate(true);
-        send(parent, control::MessageKind::TcpReady, deadline, sample);
-        auto start = protocol.receive(deadline);
-        if (start.kind != control::MessageKind::Start)
-            throw std::runtime_error("endpoint expected START");
         info.declaration = api.declaration(context.get());
+        const auto linkage = info.declaration.build_options.find(";tls_linkage=");
+        info.config.tls_linkage =
+            linkage == std::string::npos
+                ? "unavailable"
+                : info.declaration.build_options.substr(
+                      linkage + 13,
+                      info.declaration.build_options.find(';', linkage + 13) - (linkage + 13));
         if (!saved.empty() && !info.declaration.context_serialization)
             throw std::runtime_error("adapter cannot restore context");
         if (std::find(info.declaration.scenarios.begin(), info.declaration.scenarios.end(),
@@ -211,12 +221,23 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
             event.snapshot = value;
             buffer.append(event);
         };
-        setup_event(model::EventKind::ModuleBegin, module_begin);
-        setup_event(model::EventKind::ModuleEnd, module_end);
+        if (!builtin) {
+            setup_event(model::EventKind::ModuleBegin, module_begin);
+            setup_event(model::EventKind::ModuleEnd, module_end);
+        }
         setup_event(model::EventKind::SetupBegin, setup_begin);
         setup_event(model::EventKind::SetupEnd, setup_end);
         if (info.declaration.is_mock)
             info.incomplete.push_back("mock: no TLS encryption or certificate verification");
+        info.failure_phase = "ready";
+        if (buffer.overflowed())
+            throw std::runtime_error("capture capacity exhausted during preparation");
+        session.prepare(info, peer);
+        info.preparation = session.status();
+        if (config.phase_fd >= 0)
+            (void)control::exchange_phase(config.phase_fd, sample, control::Phase::Setup,
+                                          control::PhaseEdge::End, deadline);
+        protocol.synchronize(control::MessageKind::Start, 0, deadline);
         info.clock_start = measure::clock_pair();
 
         for (std::size_t i = 0; i < count; ++i) {
@@ -224,25 +245,25 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
             auto& connection = *active_connection;
             connection.index = i;
             connection.warmup = i < config.warmups;
-            client_lookup.run_connection(i, protocol, parent, deadline);
+            client_lookup.run_connection(i, deadline);
             capture.connection = i;
             capture.sent = capture.received = capture.first_receive = 0;
             capture.call = model::Call::None;
             // Synchronize readiness before the TCP-inclusive trial starts.
-            send(parent, control::MessageKind::TcpReady, deadline, sample, i);
-            auto release = protocol.receive(deadline);
-            if (release.kind != control::MessageKind::Start || release.connection != i)
-                throw std::runtime_error("endpoint trial release missing");
+            info.failure_phase = "ready";
+            protocol.synchronize(control::MessageKind::TcpReady, i, deadline);
+            protocol.synchronize(control::MessageKind::Start, i, deadline);
+            info.failure_phase = "tcp";
             capture.event(role == Role::Client ? model::EventKind::TcpConnectBegin
                                                : model::EventKind::AcceptBegin);
             if (role == Role::Client) {
                 sockets[i] = tcp::begin_connect(address);
-                control::WaitSet connect_wait(sockets[i], control_fd);
-                protocol.wait(connect_wait, true, deadline);
+                control::WaitSet connect_wait(sockets[i], control_fd, false);
+                connect_wait.wait_data(true, deadline);
                 tcp::finish_connect(sockets[i]);
             } else {
                 while ((sockets[i] = tcp::try_accept(listener)) < 0)
-                    protocol.wait(*accept_wait, false, deadline);
+                    accept_wait->wait_data(false, deadline);
             }
             capture.event(role == Role::Client ? model::EventKind::TcpConnectEnd
                                                : model::EventKind::AcceptEnd);
@@ -255,9 +276,15 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
                 info.kernel_receive_events_available = true;
                 info.kernel_receive_events_reason.clear();
             }
+            const auto local = tcp::local_endpoint(sockets[i]);
+            const auto peer = tcp::peer_endpoint(sockets[i]);
+            connection.local_address = local.address;
+            connection.local_port = local.port;
+            connection.peer_address = peer.address;
+            connection.peer_port = peer.port;
             connection.tcp_start = tcp::read_tcp_info(sockets[i]);
             capture.event(model::EventKind::TcpReady);
-            control::WaitSet wait_set(sockets[i], control_fd);
+            control::WaitSet wait_set(sockets[i], control_fd, false);
             transport::Channel channel{sockets[i], &capture,
                                        config.channel_observer ? TlsCapture::observe : nullptr};
             channel.output = output_buffer;
@@ -267,6 +294,7 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
             channel.submit_first_write =
                 channel.holding && config.tls.send_policy == SendPolicy::ServerHelloFirst;
             auto io = channel.io();
+            info.failure_phase = "scenario";
             capture.call = model::Call::Open;
             capture.event(model::EventKind::OpenBegin);
             std::unique_ptr<Connection, decltype(api.close)> tls(api.open(context.get(), io),
@@ -309,6 +337,7 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
                                                           remaining);
                         },
                         remaining);
+                    const auto returned_sequence = capture.sequence;
                     if (result.step == Step::Failed)
                         adapter_failure(sending ? "application send failed"
                                                 : "application receive failed");
@@ -318,7 +347,7 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
                         if (result.bytes)
                             throw std::runtime_error("retry returned bytes");
                         capture.event(model::EventKind::WaitBegin);
-                        protocol.wait(wait_set, result.step == Step::WantWrite, deadline);
+                        wait_set.wait_data(result.step == Step::WantWrite, deadline);
                         capture.event(model::EventKind::WaitEnd);
                         continue;
                     }
@@ -327,6 +356,8 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
                     if (!sending && offset == 0)
                         capture.event(model::EventKind::ApplicationFirstByte);
                     offset += result.bytes;
+                    if (offset == total)
+                        connection.end_sequence = returned_sequence;
                 }
                 capture.event(sending ? model::EventKind::ApplicationWriteEnd
                                       : model::EventKind::ApplicationReadEnd);
@@ -340,8 +371,11 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
             for (;;) {
                 auto step = capture.invoke(model::Call::Handshake,
                                            [&] { return api.handshake_step(tls.get()); });
-                if (step == Step::Complete)
+                if (step == Step::Complete) {
+                    if (!application_enabled)
+                        connection.end_sequence = capture.sequence;
                     break;
+                }
                 if (step == Step::Failed)
                     adapter_failure("handshake failed");
                 if (step == Step::ApplicationWriteReady) {
@@ -355,24 +389,23 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
                                       model::Location::Framework);
                         channel.holding = false;
                         while (channel.queued) {
-                            const auto result = capture.invoke(
-                                model::Call::Flush, [&] { return channel.flush(); });
+                            const auto result =
+                                capture.invoke(model::Call::Flush, [&] { return channel.flush(); });
                             if (result.status == IoStatus::WantWrite) {
                                 capture.event(model::EventKind::WaitBegin);
-                                protocol.wait(wait_set, true, deadline);
+                                wait_set.wait_data(true, deadline);
                                 capture.event(model::EventKind::WaitEnd);
                             } else if (result.status != IoStatus::Ok) {
                                 throw std::runtime_error("output batch submission failed");
                             }
                         }
-                        capture.event(model::EventKind::OutputFlushEnd,
-                                      model::Location::Framework);
+                        capture.event(model::EventKind::OutputFlushEnd, model::Location::Framework);
                     }
                     ping_written = true;
                     continue;
                 }
                 capture.event(model::EventKind::WaitBegin);
-                protocol.wait(wait_set, step == Step::WantWrite, deadline);
+                wait_set.wait_data(step == Step::WantWrite, deadline);
                 capture.event(model::EventKind::WaitEnd);
             }
             capture.event(model::EventKind::HandshakeComplete);
@@ -397,7 +430,6 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
             }
             connection.scenario_completed = true;
             client_lookup.scenario_end();
-            connection.end_sequence = capture.sequence;
             if (role == Role::Server && capture.first_receive)
                 connection.start_sequence = capture.first_receive;
             if (connection.start_sequence) {
@@ -429,11 +461,7 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
             connection.tcp_end = tcp::read_tcp_info(sockets[i]);
             info.connections.push_back(std::move(connection));
             active_connection.reset();
-            send(parent, control::MessageKind::ConnectionComplete, deadline, sample, i);
-            auto continue_message = protocol.receive(deadline);
-            if (continue_message.kind != control::MessageKind::Start ||
-                continue_message.connection != i)
-                throw std::runtime_error("endpoint connection release missing");
+            protocol.synchronize(control::MessageKind::ConnectionComplete, i, deadline);
             capture.call = model::Call::Close;
             capture.event(model::EventKind::CloseBegin);
             channel.drain_tx();
@@ -456,6 +484,9 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
             sockets[i] = -1;
             client_lookup.close_connection(i);
         }
+        if (config.phase_fd >= 0)
+            (void)control::exchange_phase(config.phase_fd, sample, control::Phase::Scenario,
+                                          control::PhaseEdge::End, deadline);
         auto output = api.save(context.get());
         info.saved_context_size = output.size();
         capture.call = model::Call::Save;
@@ -475,51 +506,46 @@ int run_tls_role(const model::RunConfig& config, Role role, std::uint64_t sample
                 info.perf_complete = false;
         if (buffer.overflowed() || client_lookup.overflowed())
             throw std::runtime_error("capture buffer overflow");
-    } catch (const AbortRequested&) {
-        record_failure("parent requested abort");
     } catch (const std::exception& error) {
         record_failure(error.what());
-        try {
-            send(parent, control::MessageKind::Failed, deadline, sample, 0, false, {}, 0, 0,
-                 info.invalid_reason);
-        } catch (...) {
-        }
+        cleanup_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(config.flush_grace_ms);
+        protocol.fail(info.invalid_reason, *cleanup_deadline);
     }
     close_all(sockets);
     client_lookup.close_sockets();
-    if (listener >= 0)
-        ::close(listener);
-    auto flush_deadline = deadline + std::chrono::milliseconds(config.flush_grace_ms);
-    try {
-        const auto command = protocol.flush(flush_deadline);
-        flush_deadline = protocol.cleanup_deadline();
-        if (command.kind == control::MessageKind::AbortFlush && info.valid) {
-            info.valid = false;
-            info.invalid_reason = "parent aborted after participant completion";
-        } else if (command.kind == control::MessageKind::Flush && !info.valid) {
-            throw std::runtime_error("invalid endpoint received normal FLUSH");
+    if (!cleanup_deadline)
+        cleanup_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(config.flush_grace_ms);
+    const auto flush_deadline = *cleanup_deadline;
+    if (info.valid) {
+        info.failure_phase = "cleanup";
+        try {
+            protocol.synchronize(control::MessageKind::Flush, 0, flush_deadline);
+        } catch (const std::exception& error) {
+            record_failure(error.what());
         }
-    } catch (const std::exception& error) {
-        info.valid = false;
-        if (info.invalid_reason.empty())
-            info.invalid_reason = error.what();
     }
+    if (info.valid)
+        info.failure_phase.clear();
     try {
         writer.write(info, buffer);
-        client_lookup.write(info.valid, info.invalid_reason);
-        send(parent, control::MessageKind::Flushed, flush_deadline, sample);
+        client_lookup.write(info.valid, info.invalid_reason, flush_deadline);
+        if (info.valid)
+            protocol.synchronize(control::MessageKind::Flushed, 0, flush_deadline);
     } catch (const std::exception& error) {
-        info.valid = false;
-        const std::string flush_failure = error.what();
-        if (info.invalid_reason.empty())
-            info.invalid_reason = flush_failure;
-        try {
-            send(parent, control::MessageKind::Failed, flush_deadline, sample, 0, false, {}, 0, 0,
-                 flush_failure);
-        } catch (const std::exception& notify_error) {
-            std::cerr << model::name(role) << " flush failure: " << flush_failure
-                      << "; failure notification: " << notify_error.what() << '\n';
-        }
+        record_failure(error.what());
+        protocol.fail(info.invalid_reason, flush_deadline);
+        // The process exit status and local cleanup marker retain flush failures.
+        std::ofstream failure(std::filesystem::path(directory) /
+                              (std::string(model::name(role)) + ".failure.json"));
+        failure << nlohmann::json{{"phase", "cleanup"},
+                                  {"valid", false},
+                                  {"run_id", config.run_id},
+                                  {"context_id", config.context_id},
+                                  {"reason", info.invalid_reason}}
+                << '\n';
+        std::cerr << model::name(role) << " cleanup: " << error.what() << '\n';
     }
     return info.valid ? 0 : 1;
 }

@@ -1,21 +1,41 @@
 {
+  "type": "turtle-experiment-profile",
+  "schema": 1,
   "name": "p256-ecdsa-repeated-context",
-  "pki": "../../pki/default",
-  "tls": {
-    "version": "TLS1.3",
-    "cipher": "TLS_AES_128_GCM_SHA256",
-    "group": "secp256r1",
-    "signature": "ecdsa_secp256r1_sha256",
-    "server_name": "localhost",
-    "mutual_auth": false,
-    "compatibility_ccs": true,
-    "framework_io": true,
-    "tickets": 0,
-    "application_bytes": 32,
-    "record_size_limit": 0,
-    "certificate_compression": false
+  "scenario": {
+    "tls": {
+      "version": "TLS1.3",
+      "cipher": "TLS_AES_128_GCM_SHA256",
+      "group": "secp256r1",
+      "signature": "ecdsa_secp256r1_sha256",
+      "server_name": "localhost",
+      "mutual_auth": false,
+      "compatibility_ccs": true,
+      "tickets": 0,
+      "application_bytes": 32,
+      "record_size_limit": 0,
+      "certificate_compression": false
+    },
+    "measurement": {
+      "connections": 16,
+      "warmups": 0,
+      "timeout_ms": 30000
+    }
   },
-  "socket": {"tcp_nodelay": true, "send_buffer": 65536, "receive_buffer": 65536},
-  "technique": {"name": "unmodified-baseline"},
-  "measurement": {"connections": 16, "warmups": 0, "timeout_ms": 30000}
+  "endpoint": {
+    "tls": {
+      "framework_io": true
+    },
+    "measurement": {},
+    "pki": "../../pki/default",
+    "socket": {
+      "tcp_nodelay": true,
+      "send_buffer": 65536,
+      "receive_buffer": 65536
+    },
+    "technique": {
+      "name": "unmodified-baseline"
+    }
+  },
+  "experiment": {}
 }

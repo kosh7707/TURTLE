@@ -21,7 +21,7 @@ def check(value, message):
 
 def verify(turtle, report, interpret, adapters, pki, root, client, server, scenario, policy, mutual,
            client_bytes=32, server_bytes=32, connections=1, group='secp256r1', tx_timestamps=False):
-    command = [turtle, 'run', '--adapter-dir', adapters, '--pki', pki,
+    command = [turtle, '--adapter-dir', adapters, '--pki', pki,
                '--client', client, '--server', server, '--scenario', scenario,
                '--send-policy', policy, '--client-bytes', client_bytes, '--server-bytes', server_bytes,
                '--samples', 1, '--connections', connections, '--no-affinity', '--no-perf',
@@ -37,7 +37,7 @@ def verify(turtle, report, interpret, adapters, pki, root, client, server, scena
         rows = [json.loads(line) for line in raw.read_text().splitlines()]
         header, events = rows[0], rows[1:]
         headers[role] = header
-        check(header['schema'] == 2 and header['measurement_contract_revision'] == 3, 'version axes')
+        check(header['schema'] == 3 and header['measurement_contract_revision'] == 4, 'version axes')
         check(header['valid'] and not header['declaration']['is_mock'], header['invalid_reason'])
         check(header['declaration']['patch_hash'], 'instrumentation provenance absent')
         check(header['declaration']['internal_events'], 'internal trace support absent')

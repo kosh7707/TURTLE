@@ -1,3 +1,4 @@
+#include "control/control.hpp"
 #include "lookup/lookup.hpp"
 #include "measure/measure.hpp"
 #include "transport/channel.hpp"
@@ -137,8 +138,7 @@ struct WaitMeasurements {
     bool timed = false;
 };
 
-template <typename Operation>
-void drive(Operation& operation, Io& io, WaitMeasurements& waits) {
+template <typename Operation> void drive(Operation& operation, Io& io, WaitMeasurements& waits) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     for (;;) {
         const auto progress = operation.advance(io);
@@ -228,10 +228,13 @@ int main(int argc, char** argv) {
             int listener_fd = -1;
             int connection_fd = -1;
             try {
-                const auto listener = turtle::tcp::listen_loopback();
+                const auto listener = turtle::tcp::listen_ipv4("127.0.0.1", 0);
                 listener_fd = listener.fd;
                 exact_write(ready_pipe[1], &listener.port, sizeof listener.port);
-                connection_fd = turtle::tcp::accept_one(listener.fd);
+                turtle::tcp::nonblocking_listener(listener.fd);
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                while ((connection_fd = turtle::tcp::try_accept(listener.fd)) < 0)
+                    turtle::control::wait(listener.fd, false, deadline);
                 ::close(listener_fd);
                 listener_fd = -1;
                 make_nonblocking(connection_fd);
@@ -262,8 +265,7 @@ int main(int argc, char** argv) {
                 report.poll_wait_timed = poll_waits.timed;
                 report.ca_begin =
                     events.counts.get(turtle::lookup::SemanticEventKind::CaProcessBegin);
-                report.ca_end =
-                    events.counts.get(turtle::lookup::SemanticEventKind::CaProcessEnd);
+                report.ca_end = events.counts.get(turtle::lookup::SemanticEventKind::CaProcessEnd);
                 report.request_count = report.ca_begin;
                 for (const auto count : events.counts.values)
                     report.semantic_event_count += count;
@@ -295,7 +297,10 @@ int main(int argc, char** argv) {
         ::close(report_pipe[1]);
         std::uint16_t port = 0;
         exact_read(ready_pipe[0], &port, sizeof port);
-        const int fd = turtle::tcp::connect_loopback(port);
+        const int fd =
+            turtle::tcp::begin_connect(turtle::tcp::prepare_dial("127.0.0.1", {"127.0.0.1", port}));
+        turtle::control::wait(fd, true, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+        turtle::tcp::finish_connect(fd);
         make_nonblocking(fd);
         turtle::lookup::Snapshot expected(object);
         turtle::lookup::Snapshot empty;
@@ -303,7 +308,8 @@ int main(int argc, char** argv) {
         turtle::lookup::Cache cache(heap.allocator());
         cache.restore(empty);
         EventCounts events;
-        turtle::lookup::Client client(cache, expected.object(), heap.allocator(), events.observer());
+        turtle::lookup::Client client(cache, expected.object(), heap.allocator(),
+                                      events.observer());
         ChannelCounts channel_counts;
         turtle::transport::Channel channel{fd, &channel_counts, ChannelCounts::observe};
         auto io = channel.io();
@@ -360,10 +366,9 @@ int main(int argc, char** argv) {
         require(report.semantic_event_count == 2,
                 "CA semantic processing interval contains I/O/wait events");
         require(report.channel_send_returns > 0 && report.channel_recv_returns > 0 &&
-                    report.channel_successful_sends > 0 &&
-                    report.channel_successful_receives > 0 && report.poll_waits > 0 &&
-                    report.poll_wait_timed && client_poll_waits.count > 0 &&
-                    client_poll_waits.timed,
+                    report.channel_successful_sends > 0 && report.channel_successful_receives > 0 &&
+                    report.poll_waits > 0 && report.poll_wait_timed &&
+                    client_poll_waits.count > 0 && client_poll_waits.timed,
                 "Channel I/O and poll waits were not observed separately");
         require(report.ca_begin_monotonic_ns > 0 &&
                     report.ca_end_monotonic_ns >= report.ca_begin_monotonic_ns &&

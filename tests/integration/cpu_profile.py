@@ -7,6 +7,8 @@ import shutil
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parent))
+
 spec = importlib.util.spec_from_file_location('cpu_profile', Path(sys.argv[1]))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -49,3 +51,22 @@ with tempfile.TemporaryDirectory(prefix='turtle-perf-symbols-') as temporary:
     (root / binaries[0]['path']).unlink()
     assert module.verify_binaries(root, manifest)['status'] == 'missing'
 print('sample weighting, missing observations and binary preservation across rebuilds verified')
+
+# Builtin adapters have no measured module load. Only their setup boundary can start this span.
+from raw_record import lifetime_span, require_tls_sample
+fixture_events = [
+    {'kind': 'MODULE_BEGIN', 'monotonic_ns': 1},
+    {'kind': 'SETUP_BEGIN', 'call': 'setup', 'monotonic_ns': 2},
+    {'kind': 'CALL_END', 'call': 'teardown', 'monotonic_ns': 5},
+]
+for mode, expected, start in (('builtin', 'context-setup-to-teardown', 2),
+                              ('module', 'module-to-teardown', 1)):
+    name, begin, end = lifetime_span({'adapter_connection': {'mode': mode}}, fixture_events)
+    assert name == expected and begin['monotonic_ns'] == start and end['monotonic_ns'] == 5
+for old in (1, 2):
+    try:
+        require_tls_sample({'type': 'sample', 'schema': old, 'measurement_contract_revision': 3})
+    except ValueError as error:
+        assert 'requires schema 3' in str(error)
+    else:
+        raise AssertionError('old TLS schema was accepted')

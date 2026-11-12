@@ -1,3 +1,4 @@
+#include "record/schema.hpp"
 #include "report/network_evidence.hpp"
 #include "report/perf_condition.hpp"
 #include "report/report.hpp"
@@ -34,7 +35,7 @@ struct Attempt {
     Json connections = Json::array();
     Json observation_ids = Json::array();
     Json artifacts = Json::object();
-    Json legacy_artifact_status = Json::array();
+    Json artifact_status = Json::array();
     std::string source = "attempt_ledger";
 };
 
@@ -270,50 +271,46 @@ bool tls_context_identity_complete(const Json& context) {
                      : !context.at("hash").get<std::string>().empty();
 }
 
-Json measurement_contract_revision(const Json& header) {
-    if (!header.contains("measurement_contract_revision"))
-        return nullptr;
-    const auto& value = header.at("measurement_contract_revision");
-    if (value.is_number_unsigned() && value.get<std::uint64_t>() > 0)
-        return value;
-    if (value.is_number_integer() && value.get<std::int64_t>() > 0)
-        return value;
-    return nullptr;
-}
-
-Json endpoint_identity(const std::optional<Json>& header, std::string_view role) {
+Json endpoint_identity(const std::optional<Json>& header) {
     if (!header || !header->contains("config") || !header->at("config").is_object() ||
         !header->contains("declaration") || !header->at("declaration").is_object())
         return nullptr;
     const auto& config = header->at("config");
     const auto& declaration = header->at("declaration");
-    const char* adapter = role == "client" ? "client_adapter" : "server_adapter";
     const auto perf = detail::perf_condition(*header);
     Json support = perf.support;
     const auto capabilities = header->value("capabilities", Json::object());
     for (const char* field : {"monotonic_clock", "thread_cpu_clock", "perf", "heap_tracking",
                               "affinity", "kernel_timestamp_configured"})
         support[field] = capabilities.contains(field) ? capabilities.at(field) : Json(nullptr);
-    return {{"role", role},
-            {"adapter", config.value(adapter, Json(nullptr))},
-            {"library", declaration.value("library", Json(nullptr))},
-            {"library_version", declaration.value("version", Json(nullptr))},
-            {"build_options", declaration.value("build_options", Json(nullptr))},
-            {"measurement_contract_revision", measurement_contract_revision(*header)},
-            {"environment_hash", header->value("environment_hash", Json(nullptr))},
-            {"loaded_context", tls_context_identity(*header)},
-            {"mode", header->value("mode", Json(nullptr))},
-            {"pinned_cpu", header->value("pinned_cpu", Json(nullptr))},
-            {"measurement_controls",
-             {{"perf", config.value("perf", Json(nullptr))},
-              {"perf_scope", perf.controls.at("perf_scope")},
-              {"isolate", config.value("isolate", Json(nullptr))},
-              {"pin_cores", config.value("pin_cores", Json(nullptr))},
-              {"kernel_timestamps", config.value("kernel_timestamps", Json(nullptr))},
-              {"channel_observer",
-               config.value("channel_observer", true) &&
-                   header->value("observation_level", std::string()) != "observer-disabled"}}},
-            {"support", support}};
+    Json result = {{"role", header->at("role")},
+                   {"adapter", config.value("implementation", Json(nullptr))},
+                   {"library", declaration.value("library", Json(nullptr))},
+                   {"library_version", declaration.value("version", Json(nullptr))},
+                   {"build_options", declaration.value("build_options", Json(nullptr))},
+                   {"measurement_contract_revision", header->at("measurement_contract_revision")},
+                   {"environment_hash", header->value("environment_hash", Json(nullptr))},
+                   {"loaded_context", tls_context_identity(*header)},
+                   {"mode", header->value("mode", Json(nullptr))},
+                   {"pinned_cpu", header->value("pinned_cpu", Json(nullptr))},
+                   {"measurement_controls",
+                    {{"perf", config.value("perf", Json(nullptr))},
+                     {"perf_scope", perf.controls.at("perf_scope")},
+                     {"isolate", config.value("isolate", Json(nullptr))},
+                     {"pin_cores", config.value("pin_cores", Json(nullptr))},
+                     {"kernel_timestamps", config.value("kernel_timestamps", Json(nullptr))},
+                     {"channel_observer", config.value("channel_observer", true) &&
+                                              header->value("observation_level", std::string()) !=
+                                                  "observer-disabled"}}},
+                   {"support", support}};
+    result["adapter_connection"] = header->value("adapter_connection", Json::object());
+    result["adapter_connection"].erase("artifact");
+    result["certificate_inputs"] = Json::parse(config.value("profile_document", "{}"))
+                                       .value("certificate_inputs", Json(nullptr));
+    result["measurement_controls"]["local_boundary_observer"] =
+        config.value("local_boundary_observer", Json(nullptr));
+
+    return result;
 }
 
 bool endpoint_identity_complete(const Json& endpoint) {
@@ -446,8 +443,8 @@ std::map<std::uint64_t, Attempt> ledger_attempts(const std::filesystem::path& ro
     if (status_error && status_error != std::errc::no_such_file_or_directory)
         throw std::runtime_error("cannot inspect authoritative attempt ledger: " + path.string());
     if (status.type() == std::filesystem::file_type::not_found) {
-        ledger_status = "absent_using_legacy_tls_and_director_fallback";
-        return attempts;
+        throw std::runtime_error(
+            "lookup analysis requires attempts.jsonl from the external runner");
     }
     const auto ledger = read_authoritative_ledger(path);
     requested = ledger.requested;
@@ -463,7 +460,7 @@ std::map<std::uint64_t, Attempt> ledger_attempts(const std::filesystem::path& ro
         attempt.started = row.value("started", true);
         attempt.connections = row.value("connections", Json::array());
         attempt.observation_ids = row.value("network_observation_ids", Json::array());
-        attempt.legacy_artifact_status = row.value("artifact_status", Json::array());
+        attempt.artifact_status = row.value("artifact_status", Json::array());
         attempt.artifacts = row.contains("artifacts") && row.at("artifacts").is_object()
                                 ? row.at("artifacts")
                                 : Json::object();
@@ -491,7 +488,7 @@ std::map<std::uint64_t, Attempt> ledger_attempts(const std::filesystem::path& ro
 std::optional<Json> tls_partition(const std::filesystem::path& path, std::size_t connection) {
     const auto rows = json_lines(path);
     if (rows.empty() || rows.front().value("type", "") != "sample" ||
-        (rows.front().value("schema", 0) != 1 && rows.front().value("schema", 0) != 2))
+        rows.front().value("schema", 0) != 3)
         return std::nullopt;
     std::vector<Json> events(rows.begin() + 1, rows.end());
     try {
@@ -505,10 +502,10 @@ std::optional<Json> tls_partition(const std::filesystem::path& path, std::size_t
 
 std::optional<Json> tls_header(const std::filesystem::path& path) {
     const auto rows = json_lines(path);
-    if (!rows.empty() && rows.front().value("type", "") == "sample" &&
-        (rows.front().value("schema", 0) == 1 || rows.front().value("schema", 0) == 2))
-        return rows.front();
-    return std::nullopt;
+    if (rows.empty())
+        return std::nullopt;
+    record::require_tls_sample(rows.front());
+    return rows.front();
 }
 
 std::vector<std::filesystem::path> sample_directories(const std::filesystem::path& root) {
@@ -520,7 +517,7 @@ std::vector<std::filesystem::path> sample_directories(const std::filesystem::pat
             continue;
         const auto name = entry.path().filename();
         if (name == "lookup.jsonl" || name == "ca.jsonl" || name == "client.jsonl" ||
-            name == "server.jsonl" || name == "director.txt")
+            name == "server.jsonl")
             directories.insert(entry.path().parent_path());
     }
     return {directories.begin(), directories.end()};
@@ -535,25 +532,6 @@ std::uint64_t sample_id(const Artifact& lookup, const std::optional<Json>& clien
     if (server && server->contains("sample"))
         return server->at("sample").get<std::uint64_t>();
     return 0;
-}
-
-std::string legacy_status(const std::filesystem::path& directory, const std::optional<Json>& client,
-                          const std::optional<Json>& server, std::string& reason) {
-    std::ifstream director(directory / "director.txt");
-    std::string line;
-    if (director && (!std::getline(director, line) || line != "valid")) {
-        reason = line.empty() ? "director status is empty" : line;
-        return "error";
-    }
-    if (!client || !server) {
-        reason = "legacy TLS role artifact missing";
-        return "incomplete";
-    }
-    if (!client->value("valid", false) || !server->value("valid", false)) {
-        reason = "legacy child marked invalid";
-        return "error";
-    }
-    return "success";
 }
 
 Json status_counts(const std::map<std::uint64_t, Attempt>& attempts, std::size_t requested) {
@@ -609,22 +587,6 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                        std::move(server)};
     }
 
-    if (attempts.empty()) {
-        for (const auto& [id, sample] : samples) {
-            Attempt attempt;
-            attempt.id = id;
-            attempt.started = true;
-            attempt.source = "legacy_tls_director_fallback";
-            attempt.status =
-                legacy_status(sample.directory, sample.client, sample.server, attempt.reason);
-            if (sample.client && sample.client->contains("connections"))
-                for (const auto& connection : sample.client->at("connections"))
-                    attempt.connections.push_back(connection.at("index"));
-            attempts[id] = std::move(attempt);
-        }
-        requested = attempts.size();
-    }
-
     std::vector<NetworkAttempt> network_attempts;
     network_attempts.reserve(attempts.size());
     for (const auto& [id, attempt] : attempts)
@@ -675,7 +637,7 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                 network_required = true;
             row_network_integrity["required"] = network_required;
             if (!network_required) {
-                row_network_integrity["status"] = "not_applicable_loopback";
+                row_network_integrity["status"] = "not_requested";
                 row_network_integrity["eligible"] = true;
                 row_network_integrity["reasons"] = Json::array();
             }
@@ -852,7 +814,22 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
             const bool ca_complete =
                 hit ||
                 (ca_summary && ca_summary->value("artifact_status", "missing") == "complete");
-            const bool tls_complete = tls && tls->value("valid", false);
+            bool identities_match = false;
+            if (sample_it != samples.end() && sample_it->second.client) {
+                identities_match = true;
+                const auto& client = *sample_it->second.client;
+                for (const char* field : {"run_id", "context_id"}) {
+                    const auto expected = client.value(field, Json(nullptr));
+                    identities_match =
+                        identities_match && !expected.is_null() && lookup && ca &&
+                        lookup->header.value(field, Json(nullptr)) == expected &&
+                        ca->header.value(field, Json(nullptr)) == expected &&
+                        sample_it->second.server &&
+                        sample_it->second.server->value(field, Json(nullptr)) == expected;
+                }
+            }
+            row["execution_identity_status"] = identities_match ? "matched" : "mismatch";
+            const bool tls_complete = tls && tls->value("valid", false) && identities_match;
             row["connection_status"] =
                 lookup_complete && ca_complete && tls_complete ? "success" : "incomplete";
 
@@ -941,8 +918,8 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                         ? lookup->header.at("scenario_name")
                         : header.at("config").value("scenario_name", Json(nullptr));
                 identity["client_pinned_cpu"] = header.value("pinned_cpu", Json(nullptr));
-                identity["client_endpoint"] = endpoint_identity(sample_it->second.client, "client");
-                identity["server_endpoint"] = endpoint_identity(sample_it->second.server, "server");
+                identity["client_endpoint"] = endpoint_identity(sample_it->second.client);
+                identity["server_endpoint"] = endpoint_identity(sample_it->second.server);
             } else {
                 identity["connection_policy"] = nullptr;
                 identity["tls_profile_hash"] = nullptr;
@@ -1024,6 +1001,8 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
             if (!endpoint_identity_complete(identity.at("client_endpoint")) ||
                 !endpoint_identity_complete(identity.at("server_endpoint")))
                 missing_identity.push_back("endpoint_identity_incomplete");
+            if (!identities_match)
+                missing_identity.push_back("execution_identity_mismatch");
             row["condition_identity"] = identity;
             row["automatic_comparison_eligible"] =
                 missing_identity.empty() && row_network_integrity.value("eligible", false);
@@ -1071,7 +1050,7 @@ Json summarize_lookup_run(const std::filesystem::path& input) {
                                  {"reason", attempt.reason},
                                  {"source", attempt.source},
                                  {"artifacts", attempt.artifacts},
-                                 {"artifact_status", attempt.legacy_artifact_status},
+                                 {"artifact_status", attempt.artifact_status},
                                  {"network_observation_ids", attempt.observation_ids},
                                  {"connection_rows", refs}});
     }

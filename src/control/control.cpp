@@ -5,32 +5,23 @@
 #include <cerrno>
 #include <chrono>
 #include <climits>
-#include <csignal>
-#include <cstring>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
-#include <thread>
-#include <vector>
 
-#include <arpa/inet.h>
 #include <nlohmann/json.hpp>
-#include <sched.h>
 #include <sys/epoll.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 namespace turtle::control {
 namespace {
-constexpr std::size_t message_address_size = 15;
 constexpr std::size_t message_reason_size = 255;
-constexpr std::size_t message_frame_size = 312;
+constexpr std::size_t message_frame_size = 22 + message_reason_size;
 constexpr std::size_t maximum_json_line_size = 4096;
 constexpr std::size_t maximum_json_payload_size = maximum_json_line_size - 1;
 constexpr std::array<unsigned char, 4> message_magic{'T', 'C', 'T', 'L'};
-constexpr std::uint16_t message_version = 1;
 
 int timeout_ms(Deadline deadline) {
     const auto remaining = deadline - std::chrono::steady_clock::now();
@@ -70,27 +61,7 @@ std::uint64_t get_u64(const unsigned char* input) noexcept {
 }
 
 bool valid_kind(MessageKind kind) noexcept {
-    return kind >= MessageKind::NamespaceReady && kind <= MessageKind::Exit;
-}
-
-void validate_address(MessageKind kind, std::string_view address, std::uint16_t port) {
-    if (kind != MessageKind::ReadyAddress) {
-        if (!address.empty() || port != 0)
-            throw std::runtime_error("address is only valid in ready-address messages");
-        return;
-    }
-    if (address.empty() || address.size() > message_address_size)
-        throw std::runtime_error("ready-address message has an invalid IPv4 address length");
-    in_addr parsed{};
-    std::array<char, message_address_size + 1> text{};
-    std::memcpy(text.data(), address.data(), address.size());
-    if (::inet_pton(AF_INET, text.data(), &parsed) != 1)
-        throw std::runtime_error("ready-address message is not numeric IPv4");
-}
-
-void validate_cleanup_deadline(MessageKind kind, std::uint64_t deadline) {
-    if (deadline != 0 && kind != MessageKind::Flush && kind != MessageKind::AbortFlush)
-        throw std::runtime_error("cleanup deadline is only valid in flush messages");
+    return kind >= MessageKind::TcpReady && kind <= MessageKind::Failed;
 }
 
 void validate_reason(MessageKind kind, std::string_view reason) {
@@ -144,64 +115,41 @@ void receive_all(Waiter& waiter, unsigned char* data, std::size_t size, Deadline
 std::array<unsigned char, message_frame_size> encode_message(const Message& message) {
     if (!valid_kind(message.kind))
         throw std::runtime_error("invalid control message kind");
-    validate_address(message.kind, message.address, message.port);
-    validate_cleanup_deadline(message.kind, message.cleanup_deadline_monotonic_ns);
     validate_reason(message.kind, message.reason);
-
     std::array<unsigned char, message_frame_size> frame{};
     std::copy(message_magic.begin(), message_magic.end(), frame.begin());
-    put_u16(frame.data() + 4, message_version);
+    put_u16(frame.data() + 4, protocol_version);
     put_u16(frame.data() + 6, static_cast<std::uint16_t>(message.kind));
     put_u64(frame.data() + 8, message.sample);
     put_u32(frame.data() + 16, message.connection);
-    put_u64(frame.data() + 20, message.request_id);
-    put_u64(frame.data() + 28, message.cleanup_deadline_monotonic_ns);
-    frame[36] = message.cache_hit ? 1U : 0U;
-    frame[37] = static_cast<unsigned char>(message.address.size());
-    put_u16(frame.data() + 38, message.port);
-    std::copy(message.address.begin(), message.address.end(), frame.begin() + 40);
-    const std::size_t reason_size = std::min(message.reason.size(), message_reason_size);
-    frame[55] = static_cast<unsigned char>(reason_size);
-    frame[56] = message.reason.size() > message_reason_size ? 1U : 0U;
-    std::copy_n(message.reason.begin(), reason_size, frame.begin() + 57);
+    const auto size = std::min(message.reason.size(), message_reason_size);
+    frame[20] = static_cast<unsigned char>(size);
+    frame[21] = message.reason.size() > message_reason_size ? 1U : 0U;
+    std::copy_n(message.reason.begin(), size, frame.begin() + 22);
     return frame;
 }
 
 Message decode_message(const std::array<unsigned char, message_frame_size>& frame) {
     if (!std::equal(message_magic.begin(), message_magic.end(), frame.begin()) ||
-        get_u16(frame.data() + 4) != message_version)
-        throw std::runtime_error("invalid control message header");
+        get_u16(frame.data() + 4) != protocol_version)
+        throw std::runtime_error("unsupported control protocol");
     const auto raw_kind = get_u16(frame.data() + 6);
-    if (raw_kind > static_cast<std::uint16_t>(MessageKind::Exit))
-        throw std::runtime_error("invalid control message kind");
-    if (frame[36] > 1U || frame[37] > message_address_size || frame[56] > 1U)
+    if (raw_kind > static_cast<std::uint16_t>(MessageKind::Failed) || frame[21] > 1U)
         throw std::runtime_error("invalid control message fields");
-    const auto address_size = static_cast<std::size_t>(frame[37]);
-    if (std::any_of(frame.begin() + 40 + address_size, frame.begin() + 55,
+    const auto size = static_cast<std::size_t>(frame[20]);
+    const bool truncated = frame[21] != 0;
+    if ((truncated && size != message_reason_size) ||
+        std::any_of(frame.begin() + 22 + size, frame.end(),
                     [](unsigned char value) { return value != 0; }))
-        throw std::runtime_error("invalid control message address padding");
-    const auto reason_size = static_cast<std::size_t>(frame[55]);
-    const bool reason_truncated = frame[56] != 0;
-    if ((reason_truncated && reason_size != message_reason_size) ||
-        std::any_of(frame.begin() + 57 + reason_size, frame.end(),
-                    [](unsigned char value) { return value != 0; }))
-        throw std::runtime_error("invalid control message reason encoding");
-
+        throw std::runtime_error("invalid control reason encoding");
     Message message;
     message.kind = static_cast<MessageKind>(raw_kind);
     message.sample = get_u64(frame.data() + 8);
     message.connection = get_u32(frame.data() + 16);
-    message.request_id = get_u64(frame.data() + 20);
-    message.cleanup_deadline_monotonic_ns = get_u64(frame.data() + 28);
-    message.cache_hit = frame[36] != 0;
-    message.address.assign(reinterpret_cast<const char*>(frame.data() + 40), address_size);
-    message.port = get_u16(frame.data() + 38);
-    message.reason.assign(reinterpret_cast<const char*>(frame.data() + 57), reason_size);
-    if (reason_truncated)
-        message.reason += "[truncated]";
-    validate_address(message.kind, message.address, message.port);
-    validate_cleanup_deadline(message.kind, message.cleanup_deadline_monotonic_ns);
+    message.reason.assign(reinterpret_cast<const char*>(frame.data() + 22), size);
     validate_reason(message.kind, message.reason);
+    if (truncated)
+        message.reason += "[truncated]";
     return message;
 }
 
@@ -229,10 +177,6 @@ const char* name(PhaseEdge value) noexcept {
 }
 const char* name(MessageKind value) noexcept {
     switch (value) {
-    case MessageKind::NamespaceReady:
-        return "namespace_ready";
-    case MessageKind::ReadyAddress:
-        return "ready_address";
     case MessageKind::TcpReady:
         return "tcp_ready";
     case MessageKind::Start:
@@ -245,14 +189,10 @@ const char* name(MessageKind value) noexcept {
         return "connection_complete";
     case MessageKind::Flush:
         return "flush";
-    case MessageKind::AbortFlush:
-        return "abort_flush";
     case MessageKind::Flushed:
         return "flushed";
     case MessageKind::Failed:
         return "failed";
-    case MessageKind::Exit:
-        return "exit";
     }
     return "unknown";
 }
@@ -297,7 +237,7 @@ void Waiter::wait(bool writing, Deadline deadline) {
     }
 }
 
-WaitSet::WaitSet(int data_fd, int control_fd)
+WaitSet::WaitSet(int data_fd, int control_fd, bool monitor_control)
     : data_fd_(data_fd), control_fd_(control_fd), epoll_(::epoll_create1(EPOLL_CLOEXEC)) {
     if (data_fd_ < 0 || control_fd_ < 0 || data_fd_ == control_fd_) {
         if (epoll_ >= 0)
@@ -314,7 +254,7 @@ WaitSet::WaitSet(int data_fd, int control_fd)
         throw std::runtime_error("wait-set data registration failed");
     }
     event.data.u32 = 1;
-    if (::epoll_ctl(epoll_, EPOLL_CTL_ADD, control_fd_, &event)) {
+    if (monitor_control && ::epoll_ctl(epoll_, EPOLL_CTL_ADD, control_fd_, &event)) {
         ::close(epoll_);
         throw std::runtime_error("wait-set control registration failed");
     }
@@ -350,6 +290,10 @@ WaitSet::Ready WaitSet::wait(bool data_writing, Deadline deadline) {
     }
 }
 
+void WaitSet::wait_data(bool writing, Deadline deadline) {
+    (void)wait(writing, deadline);
+}
+
 void send_message(Waiter& waiter, const Message& message, Deadline deadline) {
     const auto frame = encode_message(message);
     send_all(waiter, frame.data(), frame.size(), deadline);
@@ -363,128 +307,11 @@ void wait(int fd, bool writing, Deadline deadline) {
     Waiter waiter(fd);
     waiter.wait(writing, deadline);
 }
-void barrier(Waiter& waiter, Deadline deadline) {
-    const char ready = 1;
-    waiter.wait(true, deadline);
-    if (::send(waiter.fd(), &ready, 1, MSG_NOSIGNAL) != 1)
-        throw std::runtime_error("ready signal failed");
-    waiter.wait(false, deadline);
-    char peer = 0;
-    if (::recv(waiter.fd(), &peer, 1, 0) != 1 || peer != ready)
-        throw std::runtime_error("peer not ready");
-}
-void barrier(int fd, Deadline deadline) {
-    Waiter waiter(fd);
-    barrier(waiter, deadline);
-}
 void isolate(bool allow_new_connections) {
     const rlimit limit{0, 0};
     if ((!allow_new_connections && ::setrlimit(RLIMIT_NOFILE, &limit)) ||
         ::setrlimit(RLIMIT_NPROC, &limit))
         throw std::runtime_error("resource isolation failed");
-}
-
-namespace {
-constexpr auto killed_child_reap_budget = std::chrono::milliseconds(250);
-
-ReapResult reap_children(std::span<const pid_t> children, Deadline deadline) {
-    struct Child {
-        pid_t pid;
-        bool pending = true;
-    };
-    std::vector<Child> owned;
-    owned.reserve(children.size());
-    for (const pid_t pid : children) {
-        if (pid <= 0)
-            continue;
-        const auto duplicate = std::find_if(owned.begin(), owned.end(),
-                                            [pid](const Child& child) { return child.pid == pid; });
-        if (duplicate == owned.end())
-            owned.push_back({pid, true});
-    }
-
-    ReapResult outcome;
-    for (;;) {
-        bool any_pending = false;
-        for (auto& child : owned) {
-            if (!child.pending)
-                continue;
-            int status = 0;
-            const pid_t result = ::waitpid(child.pid, &status, WNOHANG);
-            if (result == child.pid) {
-                child.pending = false;
-                outcome.all_success =
-                    outcome.all_success && WIFEXITED(status) && WEXITSTATUS(status) == 0;
-            } else if (result == 0 || (result < 0 && errno == EINTR)) {
-                any_pending = true;
-            } else {
-                child.pending = false;
-                outcome.all_reaped = false;
-                outcome.all_success = false;
-            }
-        }
-        if (!any_pending)
-            return outcome;
-        if (std::chrono::steady_clock::now() >= deadline)
-            break;
-        std::this_thread::sleep_until(
-            std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(1)));
-    }
-
-    // The caller's grace has expired. SIGKILL does not extend that deadline;
-    // this separate fixed window only gives the kernel a bounded chance to
-    // publish and reap the resulting exits.
-    outcome.all_success = false;
-    outcome.forced_kill = true;
-    for (const auto& child : owned)
-        if (child.pending)
-            (void)::kill(child.pid, SIGKILL);
-
-    const Deadline recovery_deadline = std::chrono::steady_clock::now() + killed_child_reap_budget;
-    for (;;) {
-        bool any_pending = false;
-        for (auto& child : owned) {
-            if (!child.pending)
-                continue;
-            const pid_t result = ::waitpid(child.pid, nullptr, WNOHANG);
-            if (result == child.pid) {
-                child.pending = false;
-            } else if (result == 0 || (result < 0 && errno == EINTR)) {
-                any_pending = true;
-            } else {
-                child.pending = false;
-                outcome.all_reaped = false;
-            }
-        }
-        if (!any_pending)
-            return outcome;
-        if (std::chrono::steady_clock::now() >= recovery_deadline) {
-            outcome.all_reaped = false;
-            return outcome;
-        }
-        std::this_thread::sleep_until(std::min(
-            recovery_deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(1)));
-    }
-}
-} // namespace
-
-ReapResult reap_result(std::span<const pid_t> children, Deadline deadline) {
-    return reap_children(children, deadline);
-}
-bool reap_owned(std::span<const pid_t> children, Deadline deadline) {
-    return reap_result(children, deadline).all_reaped;
-}
-bool reap(pid_t server, pid_t client, Deadline deadline) {
-    const std::array<pid_t, 2> children{server, client};
-    const auto outcome = reap_result(children, deadline);
-    return outcome.all_reaped && outcome.all_success;
-}
-
-void enter_network_namespace(int namespace_fd) {
-    if (namespace_fd < 0)
-        throw std::invalid_argument("network namespace descriptor is invalid");
-    if (::setns(namespace_fd, CLONE_NEWNET) < 0)
-        throw std::system_error(errno, std::generic_category(), "network namespace entry failed");
 }
 
 PhaseAck exchange_phase(int phase_control_fd, std::uint64_t attempt, Phase phase, PhaseEdge edge,
