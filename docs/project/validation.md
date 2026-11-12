@@ -134,3 +134,11 @@ PMU는 같은 관리자 조건에서 세 라이브러리 × `user`/`user+kernel`
 ## 로컬 웹·새 경로 재현의 후속 검증
 
 2026년 11월 12일 후속 작업에서 기존 97개 CTest와 새 고정 의존성 경로의 94개 CTest, 세 라이브러리 × builtin/module × 네 시나리오의 실제 설치 실행 24쌍을 확인했습니다. 웹이 생성한 프로필·CLI 명령과 결과 재가져오기도 별도로 검증합니다. 보관 목록·명령·정확한 조건과 관측 한계는 [로컬 웹·재현 기록](local-web-reproduction.md)을 따릅니다. 앞의 이전 검증·실패 근거는 변경하지 않고 보존합니다.
+
+## 공통 빌드 헬퍼의 후속 검증
+
+`scripts/build.sh`로 module·tests·builtin OpenSSL·wolfSSL 클라이언트 전용·Mbed TLS 서버 전용·analysis의 여섯 구성을 실제 빌드했습니다. 역할 전용 빌드에 상대 역할·분석 실행 파일이 생성되지 않고, 분석 전용 빌드에는 엔드포인트 실행 파일이 없음을 확인했습니다. 변경한 `check.sh`에서 기존 97개와 새 빌드 호출 계약 1개, 합계 **98/98 CTest**가 통과했습니다. cppcheck, 부품 경계 11개, 셸 구문·변경 공백 검사도 통과했습니다. [전체 검사 로그](../../results/build-helpers-20261112/check.log)를 남깁니다.
+
+새 빌드 호출 시험은 다른 작업 폴더·공백 포함 경로·별도 시험 폴더·의존성 선택·오류 시 호출 중단을 가짜 CMake/CTest로 확인하는 계약 시험입니다. 실제 TLS 근거는 별도로, 새 내장 OpenSSL 쌍과 wolfSSL 클라이언트·Mbed TLS 서버 쌍 각각 네 시나리오의 **8쌍**에서 TLS 1.3 전체 핸드셰이크·준비 1개·측정 2개 연결·양방향 경계 초과 페이로드를 확인했습니다. 새 분석 전용 빌드로 모두 해독·보고했고 무효 표본은 0개, 원자료 SHA-256은 불변입니다. [실제 TLS 결과](../../results/build-helpers-20261112/actual-tls.json)를 보존합니다.
+
+검증에만 쓴 임시 빌드는 검사 뒤 삭제하고 CMake 설정·빌드 로그·인증서·원자료·보고서는 `results/build-helpers-20261112/`에 남깁니다. 저장소의 활성 빌드는 `build-module`과 `build-tests-independent`를 재사용했습니다. [검증 요약](../../results/build-helpers-20261112/verification.json)에 세부 범위를 기록합니다.

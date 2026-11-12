@@ -1,5 +1,9 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(TURTLE_OPENSSL_PROGRAM openssl REQUIRED)
+add_test(NAME build_helper_contracts COMMAND ${Python3_EXECUTABLE} -B
+  "${CMAKE_CURRENT_SOURCE_DIR}/build_helpers.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/build.sh")
+set_tests_properties(build_helper_contracts PROPERTIES TIMEOUT 30)
 add_test(NAME kernel_event_byte_ranges COMMAND ${Python3_EXECUTABLE} -B
   "${CMAKE_CURRENT_SOURCE_DIR}/kernel_events.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/kernel_observer.py")

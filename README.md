@@ -46,27 +46,37 @@ OpenSSL 라이브러리 직접 소켓 경로는 TLS 기능을 확인할 수 있�
 
 Linux, C++20 컴파일러, CMake 3.20 이상과 Ninja가 필요합니다. 기본 내장 OpenSSL 구성에는 OpenSSL 개발 파일이 필요하며, 다른 역할별 구성은 선택한 구현체의 의존성만 요구합니다. 시험·실험 스크립트에는 Python 3.10 이상과 `openssl` 명령이 필요합니다. 정상 실행 중에는 인터넷을 사용하지 않습니다.
 
-기본 어댑터 연결은 `builtin`이며 OpenSSL 하나를 실행 파일에 연결합니다. TLS 라이브러리 자체의 정적·동적 링크는 별도 조건입니다.
+자주 쓰는 빌드는 [빌드 헬퍼](scripts/README.md)로 선택합니다. 인자 없이 실행하면 준비된 모듈과 클라이언트·서버·분석·조회 도구를 `build-module`에 빌드합니다. 의존성 다운로드는 별도의 `scripts/build-deps.sh` 단계에서 수행합니다.
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel 4
+scripts/build.sh                       # 모듈 구성
+scripts/build.sh client wolfssl        # 클라이언트 전용
+scripts/build.sh server mbedtls        # 서버 전용
+scripts/build.sh analysis              # 분석 도구
+REPEAT=1 scripts/check.sh               # 빌드 + 별도 시험 빌드 + 전체 시험
+```
+
+CMake의 기본 어댑터 연결은 `builtin`이며 OpenSSL 하나를 실행 파일에 연결합니다. 다음 명령은 그 내장 구성을 선택합니다. TLS 라이브러리 자체의 정적·동적 링크는 별도 조건입니다.
+
+```sh
+scripts/build.sh builtin openssl
+scripts/build.sh analysis
 scripts/make-pki.sh pki/default
-./build/turtle-client capabilities
+./build-builtin-openssl/turtle-client capabilities
 
 # 서버 터미널: 자기 파일과 주소만 지정합니다.
-./build/turtle-server --pki pki/default --listen 127.0.0.1:44330 \
+./build-builtin-openssl/turtle-server --pki pki/default --listen 127.0.0.1:44330 \
   --control-listen 127.0.0.1:44331 --timeout-ms 60000 \
   --output results/server
 
 # 클라이언트 터미널: 위 서버가 준비된 뒤 실행합니다.
-./build/turtle-client --pki pki/default --connect 127.0.0.1:44330 \
+./build-builtin-openssl/turtle-client --pki pki/default --connect 127.0.0.1:44330 \
   --control-connect 127.0.0.1:44331 --timeout-ms 60000 \
   --output results/client
 
-./build/turtle-interpret results/client/client.jsonl results/client/client.decoded.json
-./build/turtle-interpret results/server/server.jsonl results/server/server.decoded.json
-./build/turtle-report --pair results/client/client.jsonl results/server/server.jsonl results/report
+./build-analysis/turtle-interpret results/client/client.jsonl results/client/client.decoded.json
+./build-analysis/turtle-interpret results/server/server.jsonl results/server/server.decoded.json
+./build-analysis/turtle-report --pair results/client/client.jsonl results/server/server.jsonl results/report
 ```
 
 서버·클라이언트는 다른 작업 폴더와 장비에서 같은 공유 시나리오로 실행할 수 있습니다. 각 장비에 자기 인증서·키·신뢰 파일을 두고 접근 가능한 IPv4 주소를 지정합니다. 데이터 TCP와 제어 TCP는 별도이며 제어 메시지를 TLS에 넣지 않습니다. 클라이언트가 실행 ID를 만들고 서버와 공유합니다. 서로 다른 시계의 절대 단조 시각을 빼지 않으며 교정되지 않은 교차 장비 시간 관계는 미관측입니다.
@@ -78,19 +88,16 @@ scripts/make-pki.sh pki/default
 ### 역할별 빌드와 로컬 반복
 
 ```sh
-cmake -S . -B build-client -G Ninja -DTURTLE_BUILD_SERVER=OFF \
-  -DTURTLE_BUILD_ANALYSIS=OFF -DTURTLE_IMPLEMENTATION=wolfssl
-cmake --build build-client --parallel 4
-cmake -S . -B build-server -G Ninja -DTURTLE_BUILD_CLIENT=OFF \
-  -DTURTLE_BUILD_ANALYSIS=OFF -DTURTLE_IMPLEMENTATION=mbedtls
-cmake --build build-server --parallel 4
-cmake -S . -B build-analysis -G Ninja -DTURTLE_BUILD_CLIENT=OFF -DTURTLE_BUILD_SERVER=OFF
-cmake --build build-analysis --parallel 4
+scripts/build.sh client wolfssl
+scripts/build.sh server mbedtls
+scripts/build.sh analysis
 
-# 기본 build의 내장 OpenSSL 쌍을 새 프로세스로 두 번 실행합니다.
-./build/turtle-local --profile examples/profiles/server-auth.json \
-  --samples 2 --output results/local
-./build/turtle-report results/local results/local/report
+# 역할별로 빌드한 wolfSSL 클라이언트·Mbed TLS 서버를 두 번 실행합니다.
+python3 scripts/run-local.py --build build-analysis \
+  --client-bin build-client-wolfssl/turtle-client \
+  --server-bin build-server-mbedtls/turtle-server --pki pki/default \
+  --no-affinity --no-perf --samples 2 --output results/local
+./build-analysis/turtle-report results/local results/local/report
 ```
 
 각 빌드에 `CMAKE_TOOLCHAIN_FILE`, `CMAKE_PREFIX_PATH`, `TURTLE_DEPS_ROOT`를 따로 지정할 수 있습니다. 클라이언트 전용 구성은 서버·분석 의존성을 요구하지 않습니다. 교차 컴파일 configure에서 대상 프로그램을 실행하지 않으며 지원 검사는 대상 장비 준비 단계에서 수행합니다. ARM 빌드·실행은 아직 검증하지 않았습니다.
@@ -105,10 +112,10 @@ cmake --build build-analysis --parallel 4
 
 ### 한 컨텍스트 안의 반복 보기
 
-기본 보고서는 연결 위치별 진단을 그대로 유지합니다. 같은 역할 프로세스와 TLS 컨텍스트에서 실행한 측정 연결들의 대표값을 별도로 보려면 현재 소스로 `build/turtle-report`를 다시 빌드한 뒤 opt-in 플래그를 사용합니다.
+기본 보고서는 연결 위치별 진단을 그대로 유지합니다. 같은 역할 프로세스와 TLS 컨텍스트에서 실행한 측정 연결들의 대표값을 별도로 보려면 현재 소스로 `build-module/turtle-report`를 다시 빌드한 뒤 opt-in 플래그를 사용합니다.
 
 ```sh
-./build/turtle-report results/study results/study/report --repeated-context
+./build-module/turtle-report results/study results/study/report --repeated-context
 ```
 
 이 호출은 기존 보고 파일을 바꾸지 않고 `repeated-context-summary.json`을 하나 더 만듭니다. 각 표본·역할의 측정 연결 `K`개에서 StQ2를 먼저 계산하고, 같은 것으로 확인한 study·batch·실행 조건 안에서 그 컨텍스트 대표값의 분포를 만듭니다. 첫 측정 연결도 원자료와 계산 입력에 남으며 자동으로 버리지 않습니다. 다만 순위 가중치가 0일 수 있습니다. 준비 연결을 두지 않는 `warmups=0`을 권장합니다.
@@ -117,14 +124,14 @@ cmake --build build-analysis --parallel 4
 
 ```sh
 # 같은 라이브러리 self-pair의 실행별 기술통계
-python3 scripts/run-study.py --build build --pki pki/default \
+python3 scripts/run-study.py --build build-module --pki pki/default \
   --profile examples/profiles/repeated-context.json \
   --samples 10 --batches 3 --warmups 0 --modes timing \
   --repeated-context \
   --output results/repeated-context-self
 
 # 상대 엔드포인트를 고정할 수 있는 cross-pair 비교 후보도 생성
-python3 scripts/run-study.py --build build --pki pki/default \
+python3 scripts/run-study.py --build build-module --pki pki/default \
   --profile examples/profiles/repeated-context.json \
   --libraries openssl,mbedtls --cross --auth server \
   --samples 10 --batches 3 --warmups 0 --modes timing \
@@ -141,13 +148,9 @@ python3 scripts/run-study.py --build build --pki pki/default \
 ```sh
 # 이 단계에서만 공식 배포 소스를 내려받습니다. 전역 설치가 아닙니다.
 JOBS=4 scripts/build-deps.sh all
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DTURTLE_ADAPTER_LINKAGE=module -DTURTLE_BUILD_MODULES=ON \
-  -DTURTLE_WITH_OPENSSL=ON -DTURTLE_WITH_WOLFSSL=ON -DTURTLE_WITH_MBEDTLS=ON \
-  -DTURTLE_BUILD_LOOKUP=ON
-cmake --build build --parallel 4
+scripts/build.sh module
 
-./build/turtle-local --client wolfssl --server mbedtls \
+./build-module/turtle-local --client wolfssl --server mbedtls \
   --pki pki/default --mutual-auth --samples 10 --output results/cross
 ```
 
@@ -160,9 +163,9 @@ cmake --build build --parallel 4
 ```sh
 REPEAT=1 scripts/check.sh
 REPEAT=20 scripts/check.sh
-scripts/static-check.sh build "$PWD" all
+scripts/static-check.sh build-module "$PWD" all
 
-python3 scripts/run-study.py --build build --pki pki/default \
+python3 scripts/run-study.py --build build-module --pki pki/default \
   --samples 10 --batches 3 --cross --output results/study
 ```
 
@@ -173,7 +176,7 @@ python3 scripts/run-study.py --build build --pki pki/default \
 `scripts/netem-study.py`는 합성 인증서 조회 또는 조회를 끈 순수 TLS를 소유한 사용자·네트워크 이름공간에서 실행할 수 있습니다. 조회 결과는 캐시에 실제 소비하지만 수정하지 않은 TLS의 Certificate 메시지나 인증서 입력을 대체하지 않습니다. 이 경로는 인증서 압축·생략·캐싱 기법의 구현이 아닙니다.
 
 ```sh
-python3 scripts/netem-study.py run --build build --profile PROFILE.json \
+python3 scripts/netem-study.py run --build build-module --profile PROFILE.json \
   --net-profile NET.json --samples 8 --output RESULTS
 ```
 

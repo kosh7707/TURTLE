@@ -2,6 +2,8 @@
 
 현재 구현을 읽고 실행하는 데 필요한 문서를 모았습니다. 빌드와 첫 실행은 [프로젝트 README](../README.md), 완료 범위와 남은 작업은 [구현 계획](project/implementation-plan.md)에서 시작합니다.
 
+구성별 빌드·시험·인증서 준비 명령과 출력 경로는 [scripts 사용법](../scripts/README.md)에 모았습니다.
+
 ## 폴더 구성
 
 | 폴더 | 문서 종류 |
