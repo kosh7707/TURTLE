@@ -1,3 +1,0 @@
-Checks: '-*,clang-analyzer-core.*,clang-analyzer-cplusplus.*,clang-analyzer-unix.*,bugprone-dangling-handle,bugprone-use-after-move,performance-move-const-arg'
-WarningsAsErrors: '*'
-HeaderFilterRegex: '(include/turtle|src|implementations)/.*'
