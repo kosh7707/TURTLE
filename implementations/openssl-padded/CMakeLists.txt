@@ -1,0 +1,7 @@
+set(source "${TURTLE_DEPS_ROOT}/message-src/openssl")
+add_library(turtle_openssl_base STATIC ../openssl/message.c)
+target_include_directories(turtle_openssl_base PRIVATE "${PROJECT_SOURCE_DIR}/include")
+target_include_directories(turtle_openssl_base SYSTEM PRIVATE "${source}" "${source}/include" "${source}/ssl")
+target_compile_definitions(turtle_openssl_base PRIVATE turtle_register=turtle_openssl_base TURTLE_OPENSSL_NAME="openssl-padded")
+target_link_libraries(turtle_openssl_base PUBLIC "${source}/libssl.a" "${source}/libcrypto.a" dl pthread)
+turtle_implementation(openssl-padded SOURCES clienthello.c LIBRARIES turtle_openssl_base)

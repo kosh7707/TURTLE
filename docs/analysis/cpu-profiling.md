@@ -1,50 +1,15 @@
-# 별도 실행의 CPU 표본과 perf.data
+# CPU 표본
 
-`scripts/cpu-profile.py`는 실제 `perf record` 실행과 `perf.data`를 보존하고, `perf script` 표본을 TURTLE의 엔드포인트 PID·주 스레드·측정 구간에 연결합니다. 기존 `perf_event_open`의 총 사이클·명령어 계수와 다른 자료입니다. 표본의 함수·모듈 비중을 총 CPU 시간이나 정확한 함수 호출 비용으로 바꾸지 않습니다.
-
-```sh
-python3 scripts/cpu-profile.py run --perf /path/to/perf --build build \
-  --pki pki/default --client mlkem-c --server mlkem-c --group ML_KEM_768 \
-  --samples 3 --event cycles:u --frequency 997 --no-affinity \
-  --output results/cpu-mlkem-c
-python3 scripts/cpu-profile.py analyze --perf /path/to/perf \
-  --output results/cpu-mlkem-c
-```
-
-`--perf`를 생략하면 PATH의 도구를 사용합니다. 바이너리 build ID 대조에는 binutils의 `readelf`도 필요합니다. 실행은 상호 인증·클라이언트 요청/서버 응답, 컨텍스트당 연결 1개·워밍업 0회입니다. 일반 시간 실행과 별도 프로세스 쌍을 사용합니다. `--cpu-profile`은 외부 수집을 나타내는 원자료 표지이며 이 플래그 자체가 수집기를 시작하지는 않습니다. 실제 수집 증거는 `perf.data`, 명령·종료 코드와 표본입니다. 일반 보고서와 반복 컨텍스트 보고서는 어느 한 엔드포인트라도 이 표지가 있으면 시간값을 진단 자료로 남기고 자동 성능 비교에서 제외합니다.
-
-기본 빌드의 내장 어댑터를 사용하면 `--client`·`--server`를 생략합니다. 두 옵션은 모듈 선택이며 서로 다른 내장 빌드는 `--client-bin`·`--server-bin`으로 지정합니다. 내장 연결의 전체 관측 구간은 `context-setup-to-teardown`, 모듈 연결은 `module-to-teardown`입니다. 시작 경계를 구별하며 프로그램 진입 전 로딩 비용까지 포함했다고 해석하지 않습니다.
-
-## 범위와 산출물
-
-수집은 지휘자에서 상속한 task 이벤트를 사용합니다. 분석은 각 역할의 새 PID에서 PID와 같은 TID의 표본만 고릅니다. 다른 역할·지휘자·다른 스레드를 합산하지 않습니다. 스케줄러를 따라 이동하는 task 범위이며 코어별 귀속과 호출 스택은 제공하지 않습니다. 이벤트는 `cycles:u`, `cpu-clock:u`, `cycles`, `cpu-clock` 중 명시하고 실제 설정을 `perf.events.txt`에 보존합니다. 커널 포함 이벤트를 요청했을 때 권한이 없으면 다른 이벤트로 자동 변경하지 않습니다.
-
-`perf record --clockid mono`와 `perf script --ns`를 사용해 원자료의 CLOCK_MONOTONIC 구간에 연결합니다. 모듈 로드 시작→컨텍스트 해제 완료와 연결의 주 측정 구간을 따로 보고합니다. 후자의 시작·끝 순번은 JSONL에 남아 있습니다. 모듈→해제 구간은 준비·동기화·정리를 포함하지만 프로세스 전체 수명은 아닙니다.
-
-- `perf.data`, `record.stdout`, `record.stdout.stderr`: 원본 표본 자료와 실행 로그입니다.
-- `profile-manifest.json`, `perf.version.txt`, `perf.events.txt`, `perf.header.txt`: 명령, 커널·도구 판, 이벤트 설정입니다.
-- `perf.buildids.txt`, `binary-provenance.json`, `symbols/`: perf.data에 기록된 build ID와 일치하는 실행 파일·공유 라이브러리의 복사본 및 SHA-256입니다. 원래 절대 경로를 symbols 아래에 보존합니다.
-- `perf.script.txt`와 각 `.stderr`: 해석한 전체 표본과 경고이며 범위 밖 표본도 보존합니다.
-- `cpu-profile.json`, `cpu-functions.csv`: 엔드포인트·구간별 함수/모듈 표본 수, period 합·비중, 경과·스레드 CPU 시간과 바이너리 해시입니다.
-
-주파수 기반 수집에서는 표본마다 `period`가 다를 수 있으므로 비중은 표본 개수가 아닌 period 가중치로 계산합니다. 스레드 CPU 시간은 사용자+커널 합이며 `cycles:u`의 사용자 전용 표본과 범위가 다릅니다. `[unknown]` 표본도 분모에 남깁니다. 표본이 없는 짧은 구간은 `missing/no_perf_samples_in_window`, 값은 null입니다. 해석하지 못한 행·lost 기록·실패 엔드포인트를 보존하고 전체 분석을 완전한 자료로 표시하지 않습니다. 재분석은 debuginfod 다운로드를 사용하지 않습니다.
-
-수집 직후 파일 기반 바이너리를 복사하고 build ID를 대조합니다. 재분석은 저장한 파일의 해시를 확인한 뒤 `perf script --symfs symbols/`를 사용하므로 나중에 빌드한 실행 파일에 의존하지 않습니다. 저장본이 없거나 당시 ID와 다르면 관측 누락을 기록합니다. 별도의 debug-info 파일·커널 심볼까지 보존한다고 주장하지 않으며, 해석되지 않는 함수는 계속 unknown으로 남습니다. [perf script의 symfs 계약](https://raw.githubusercontent.com/torvalds/linux/master/tools/perf/Documentation/perf-script.txt)
-
-## 현재 확인과 한계
-
-현재 빌드·실제 수집·재분석 근거는 [검증 기록](../project/validation.md)에 모읍니다. WSL의 소프트웨어 CPU 표본을 PMU 계수나 네이티브 Linux 성능 결과로 바꾸지 않습니다. 도구·커널 조합의 경고는 수집 로그와 `tool_warnings`에 남깁니다. 짧은 구간은 표본이 없거나 적을 수 있으므로 함수 비중의 안정성을 주장하지 않습니다.
-
-## 가상 객체와 관측 부담 예비실행
-
-perf는 vDSO를 `/tmp/perf-vdso.so-*`에 잠시 내보냈다가 지울 수 있습니다. build ID 없는 이 항목은 저장된 사용자 라이브러리와 구별하며 해당 함수 이름을 unknown으로 유지합니다. 표본과 period 분모는 삭제하지 않습니다. 일반 파일의 build ID 부재·불일치나 저장본 변경은 계속 missing입니다. [perf의 vDSO 처리](https://github.com/torvalds/linux/blob/v6.18/tools/perf/util/vdso.c)
-
-`scripts/observation-study.py`는 OpenSSL 상호 인증·32바이트 양방향·컨텍스트당 새 연결 하나·워밍업 0을 고정하고 시간, 상세 추적, 추적+TX 시각, CPU 프로파일링을 별도 실행합니다. 블록 안 순서를 seed로 섞고 원래 실행 결과와 재분석 상태를 따로 보존합니다.
+CPU 표본은 일반 시간 표본과 분리한 실행에서 수집합니다. 엔드포인트별로 perf record를 시작하고 원본 `perf.data`, 이벤트 설정, 실행 당시 바이너리·공유 라이브러리와 build ID·SHA-256을 보존합니다. 현재 빌드의 다른 바이너리를 자동으로 가져와 심볼을 채우지 않습니다. 보존한 symfs를 지정해 재분석합니다.
 
 ```sh
-python3 scripts/observation-study.py run --build build --pki pki/default \
-  --perf .deps/tools/perf/bin/perf --output results/observation-pilot
-python3 scripts/observation-study.py analyze --build build --output results/observation-pilot
+python3 scripts/cpu-profile.py run --perf /path/to/perf --event cpu-clock:u \
+  --connections 40 --output results/cpu
+python3 scripts/cpu-profile.py analyze --perf /path/to/perf --output results/cpu
 ```
 
-출력은 역할별 주 구간의 경과·스레드 CPU 원값, 중앙값·사분위수와 시간 모드 대비 중앙값 차이입니다. WSL의 부하·가상화 변동을 포함하며 전체 계측 비용이나 보편적 부담률을 뜻하지 않습니다. 패킷·BPF 수집 부담은 네이티브 환경에서 같은 권한·토폴로지로 평가해야 합니다.
+`cycles:u` 또는 `cpu-clock:u`를 명시적으로 선택합니다. 필요한 권한과 커널 지원은 환경에 따라 다릅니다. 하드웨어 cycles 수집 실패를 다른 이벤트의 성공으로 숨기지 않습니다. frequency와 실제 이벤트 속성을 산출물에 기록합니다.
+
+perf 시계는 CLOCK_MONOTONIC입니다. 같은 호스트에서 실행한 해당 엔드포인트 PID의 주 스레드 표본만 준비·연결·시나리오와 상세 사건 구간에 대응합니다. 부모 시나리오와 하위 구간은 별도 보기이므로 표본 수를 서로 더하지 않습니다. 짧은 구간에 표본이 없으면 missing이지 함수 실행 비용 0이 아닙니다.
+
+보고서는 함수·모듈별 sample count와 period 비중입니다. 정확한 함수 호출 시간, 호출 횟수, 총 CPU 시간으로 환산하지 않습니다. 해석하지 못한 행, lost 사건, 심볼 미확인과 바이너리 출처 누락을 남깁니다. 가상 VDSO처럼 보존하지 못한 객체의 심볼을 현재 시스템에서 추정하지 않습니다. CPU 수집 표지가 있는 실행은 일반 시간의 자동 부트스트랩 비교에서 제외합니다.

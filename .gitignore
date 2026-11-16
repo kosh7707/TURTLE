@@ -5,6 +5,7 @@
 /.omx-state-locks/
 /.omx-state-locks.identity.json
 /.deps/
+/.deps-message*/
 /results/
 /artifacts/
 /pki/

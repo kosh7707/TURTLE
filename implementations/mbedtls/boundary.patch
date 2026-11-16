@@ -1,0 +1,338 @@
+--- a/library/ssl_client.c
++++ b/library/ssl_client.c
+@@ -18,6 +18,7 @@
+ 
+ #include "ssl_client.h"
+ #include "ssl_misc.h"
++#include "turtle_boundary.h"
+ #include "ssl_tls13_keys.h"
+ #include "ssl_debug_helpers.h"
+ 
+@@ -434,7 +435,7 @@
+  * } ClientHello;
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_write_client_hello_body(mbedtls_ssl_context *ssl,
++int ssl_write_client_hello_body(mbedtls_ssl_context *ssl,
+                                        unsigned char *buf,
+                                        unsigned char *end,
+                                        size_t *out_len,
+@@ -734,7 +735,7 @@
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_prepare_client_hello(mbedtls_ssl_context *ssl)
++int ssl_prepare_client_hello(mbedtls_ssl_context *ssl)
+ {
+     int ret;
+     size_t session_id_len;
+--- a/library/ssl_tls13_client.c
++++ b/library/ssl_tls13_client.c
+@@ -16,6 +16,7 @@
+ #include "mbedtls/platform.h"
+ 
+ #include "ssl_misc.h"
++#include "turtle_boundary.h"
+ #include "ssl_client.h"
+ #include "ssl_tls13_keys.h"
+ #include "ssl_debug_helpers.h"
+@@ -1589,7 +1590,7 @@
+  * } ServerHello;
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_parse_server_hello(mbedtls_ssl_context *ssl,
++int ssl_tls13_parse_server_hello(mbedtls_ssl_context *ssl,
+                                         const unsigned char *buf,
+                                         const unsigned char *end,
+                                         int is_hrr)
+@@ -1860,7 +1861,7 @@
+ #endif /* MBEDTLS_DEBUG_C */
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_postprocess_server_hello(mbedtls_ssl_context *ssl)
++int ssl_tls13_postprocess_server_hello(mbedtls_ssl_context *ssl)
+ {
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+     mbedtls_ssl_handshake_params *handshake = ssl->handshake;
+@@ -2066,7 +2067,7 @@
+  * } EncryptedExtensions;
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_parse_encrypted_extensions(mbedtls_ssl_context *ssl,
++int ssl_tls13_parse_encrypted_extensions(mbedtls_ssl_context *ssl,
+                                                 const unsigned char *buf,
+                                                 const unsigned char *end)
+ {
+@@ -2395,7 +2396,7 @@
+  * } CertificateRequest;
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_parse_certificate_request(mbedtls_ssl_context *ssl,
++int ssl_tls13_parse_certificate_request(mbedtls_ssl_context *ssl,
+                                                const unsigned char *buf,
+                                                const unsigned char *end)
+ {
+--- a/library/ssl_tls13_server.c
++++ b/library/ssl_tls13_server.c
+@@ -17,6 +17,7 @@
+ #include "mbedtls/psa_util.h"
+ 
+ #include "ssl_misc.h"
++#include "turtle_boundary.h"
+ #include "ssl_tls13_keys.h"
+ #include "ssl_debug_helpers.h"
+ 
+@@ -1246,9 +1247,9 @@
+ #define SSL_CLIENT_HELLO_TLS1_2       2
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
++int ssl_tls13_parse_client_hello(mbedtls_ssl_context *ssl,
+                                         const unsigned char *buf,
+-                                        const unsigned char *end)
++                                        const unsigned char *end, int turtle_transcript)
+ {
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+     const unsigned char *p = buf;
+@@ -1685,6 +1686,7 @@
+     MBEDTLS_SSL_PRINT_EXTS(3, MBEDTLS_SSL_HS_CLIENT_HELLO,
+                            handshake->received_extensions);
+ 
++    if (turtle_transcript) {
+     ret = mbedtls_ssl_add_hs_hdr_to_checksum(ssl,
+                                              MBEDTLS_SSL_HS_CLIENT_HELLO,
+                                              p - buf);
+@@ -1729,6 +1731,8 @@
+             MBEDTLS_SSL_DEBUG_RET(1, ("update_checksum"), ret);
+             return ret;
+         }
++    }
++
+     }
+ 
+     /*
+@@ -1891,7 +1895,7 @@
+ /* Update the handshake state machine */
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_postprocess_client_hello(mbedtls_ssl_context *ssl,
++int ssl_tls13_postprocess_client_hello(mbedtls_ssl_context *ssl,
+                                               int hrr_required)
+ {
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+@@ -1961,7 +1965,7 @@
+                              &buf, &buflen));
+ 
+     MBEDTLS_SSL_PROC_CHK_NEG(ssl_tls13_parse_client_hello(ssl, buf,
+-                                                          buf + buflen));
++                                                          buf + buflen, 1));
+     parse_client_hello_ret = ret; /* Store positive return value of
+                                    * parse_client_hello,
+                                    * as negative error codes are handled
+@@ -2011,7 +2015,7 @@
+  * Handler for MBEDTLS_SSL_SERVER_HELLO
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_prepare_server_hello(mbedtls_ssl_context *ssl)
++int ssl_tls13_prepare_server_hello(mbedtls_ssl_context *ssl)
+ {
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+     unsigned char *server_randbytes =
+@@ -2259,7 +2263,7 @@
+  *    } ServerHello;
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
++int ssl_tls13_write_server_hello_body(mbedtls_ssl_context *ssl,
+                                              unsigned char *buf,
+                                              unsigned char *end,
+                                              size_t *out_len,
+@@ -2400,7 +2404,7 @@
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_finalize_server_hello(mbedtls_ssl_context *ssl)
++int ssl_tls13_finalize_server_hello(mbedtls_ssl_context *ssl)
+ {
+     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+     ret = mbedtls_ssl_tls13_compute_handshake_transform(ssl);
+@@ -2542,7 +2546,7 @@
+  *
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_encrypted_extensions_body(mbedtls_ssl_context *ssl,
++int ssl_tls13_write_encrypted_extensions_body(mbedtls_ssl_context *ssl,
+                                                      unsigned char *buf,
+                                                      unsigned char *end,
+                                                      size_t *out_len)
+@@ -2691,7 +2695,7 @@
+  *
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_certificate_request_body(mbedtls_ssl_context *ssl,
++int ssl_tls13_write_certificate_request_body(mbedtls_ssl_context *ssl,
+                                                     unsigned char *buf,
+                                                     const unsigned char *end,
+                                                     size_t *out_len)
+--- a/library/ssl_tls13_generic.c
++++ b/library/ssl_tls13_generic.c
+@@ -20,6 +20,7 @@
+ #include "mbedtls/psa_util.h"
+ 
+ #include "ssl_misc.h"
++#include "turtle_boundary.h"
+ #include "ssl_tls13_invasive.h"
+ #include "ssl_tls13_keys.h"
+ #include "ssl_debug_helpers.h"
+@@ -180,7 +181,7 @@
+  * The caller has to ensure that the buffer has size at least
+  * SSL_VERIFY_STRUCT_MAX_SIZE bytes.
+  */
+-static void ssl_tls13_create_verify_structure(const unsigned char *transcript_hash,
++void ssl_tls13_create_verify_structure(const unsigned char *transcript_hash,
+                                               size_t transcript_hash_len,
+                                               unsigned char *verify_buffer,
+                                               size_t *verify_buffer_len,
+@@ -219,7 +220,7 @@
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_parse_certificate_verify(mbedtls_ssl_context *ssl,
++int ssl_tls13_parse_certificate_verify(mbedtls_ssl_context *ssl,
+                                               const unsigned char *buf,
+                                               const unsigned char *end,
+                                               const unsigned char *verify_buffer,
+@@ -446,7 +447,6 @@
+ 
+ /* Parse certificate chain send by the server. */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-MBEDTLS_STATIC_TESTABLE
+ int mbedtls_ssl_tls13_parse_certificate(mbedtls_ssl_context *ssl,
+                                         const unsigned char *buf,
+                                         const unsigned char *end)
+@@ -617,7 +617,6 @@
+ }
+ #else
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-MBEDTLS_STATIC_TESTABLE
+ int mbedtls_ssl_tls13_parse_certificate(mbedtls_ssl_context *ssl,
+                                         const unsigned char *buf,
+                                         const unsigned char *end)
+@@ -634,7 +633,7 @@
+ #if defined(MBEDTLS_SSL_KEEP_PEER_CERTIFICATE)
+ /* Validate certificate chain sent by the server. */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_validate_certificate(mbedtls_ssl_context *ssl)
++int ssl_tls13_validate_certificate(mbedtls_ssl_context *ssl)
+ {
+     /* Authmode: precedence order is SNI if used else configuration */
+ #if defined(MBEDTLS_SSL_SRV_C) && defined(MBEDTLS_SSL_SERVER_NAME_INDICATION)
+@@ -693,7 +692,7 @@
+ }
+ #else /* MBEDTLS_SSL_KEEP_PEER_CERTIFICATE */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_validate_certificate(mbedtls_ssl_context *ssl)
++int ssl_tls13_validate_certificate(mbedtls_ssl_context *ssl)
+ {
+     ((void) ssl);
+     return MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE;
+@@ -757,7 +756,7 @@
+  *    } Certificate;
+  */
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
++int ssl_tls13_write_certificate_body(mbedtls_ssl_context *ssl,
+                                             unsigned char *buf,
+                                             unsigned char *end,
+                                             size_t *out_len)
+@@ -896,7 +895,7 @@
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_certificate_verify_body(mbedtls_ssl_context *ssl,
++int ssl_tls13_write_certificate_verify_body(mbedtls_ssl_context *ssl,
+                                                    unsigned char *buf,
+                                                    unsigned char *end,
+                                                    size_t *out_len)
+@@ -1061,7 +1060,7 @@
+  */
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_preprocess_finished_message(mbedtls_ssl_context *ssl)
++int ssl_tls13_preprocess_finished_message(mbedtls_ssl_context *ssl)
+ {
+     int ret;
+ 
+@@ -1081,7 +1080,7 @@
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_parse_finished_message(mbedtls_ssl_context *ssl,
++int ssl_tls13_parse_finished_message(mbedtls_ssl_context *ssl,
+                                             const unsigned char *buf,
+                                             const unsigned char *end)
+ {
+@@ -1158,7 +1157,7 @@
+  */
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_prepare_finished_message(mbedtls_ssl_context *ssl)
++int ssl_tls13_prepare_finished_message(mbedtls_ssl_context *ssl)
+ {
+     int ret;
+ 
+@@ -1179,7 +1178,7 @@
+ }
+ 
+ MBEDTLS_CHECK_RETURN_CRITICAL
+-static int ssl_tls13_write_finished_message_body(mbedtls_ssl_context *ssl,
++int ssl_tls13_write_finished_message_body(mbedtls_ssl_context *ssl,
+                                                  unsigned char *buf,
+                                                  unsigned char *end,
+                                                  size_t *out_len)
+--- /dev/null
++++ b/library/turtle_boundary.h
+@@ -0,0 +1,43 @@
++#pragma once
++#include "ssl_misc.h"
++#include "ssl_tls13_keys.h"
++int ssl_prepare_client_hello(mbedtls_ssl_context* ssl);
++int ssl_write_client_hello_body(mbedtls_ssl_context* ssl, unsigned char* buf, unsigned char* end,
++                                size_t* out_len, size_t* binders_len);
++int ssl_tls13_parse_server_hello(mbedtls_ssl_context* ssl, const unsigned char* buf,
++                                 const unsigned char* end, int is_hrr);
++int ssl_tls13_postprocess_server_hello(mbedtls_ssl_context* ssl);
++int ssl_tls13_parse_encrypted_extensions(mbedtls_ssl_context* ssl, const unsigned char* buf,
++                                         const unsigned char* end);
++int ssl_tls13_parse_certificate_request(mbedtls_ssl_context* ssl, const unsigned char* buf,
++                                        const unsigned char* end);
++int ssl_tls13_parse_client_hello(mbedtls_ssl_context* ssl, const unsigned char* buf,
++                                 const unsigned char* end, int turtle_transcript);
++int ssl_tls13_postprocess_client_hello(mbedtls_ssl_context* ssl, int hrr_required);
++int ssl_tls13_prepare_server_hello(mbedtls_ssl_context* ssl);
++int ssl_tls13_write_server_hello_body(mbedtls_ssl_context* ssl, unsigned char* buf,
++                                      unsigned char* end, size_t* out_len, int is_hrr);
++int ssl_tls13_finalize_server_hello(mbedtls_ssl_context* ssl);
++int ssl_tls13_write_encrypted_extensions_body(mbedtls_ssl_context* ssl, unsigned char* buf,
++                                              unsigned char* end, size_t* out_len);
++int ssl_tls13_write_certificate_request_body(mbedtls_ssl_context* ssl, unsigned char* buf,
++                                             const unsigned char* end, size_t* out_len);
++int ssl_tls13_parse_certificate_verify(mbedtls_ssl_context* ssl, const unsigned char* buf,
++                                       const unsigned char* end, const unsigned char* verify_buffer,
++                                       size_t verify_buffer_len);
++void ssl_tls13_create_verify_structure(const unsigned char* transcript_hash,
++                                       size_t transcript_hash_len, unsigned char* verify_buffer,
++                                       size_t* verify_buffer_len, int from);
++int ssl_tls13_validate_certificate(mbedtls_ssl_context* ssl);
++int ssl_tls13_write_certificate_body(mbedtls_ssl_context* ssl, unsigned char* buf,
++                                     unsigned char* end, size_t* out_len);
++int ssl_tls13_write_certificate_verify_body(mbedtls_ssl_context* ssl, unsigned char* buf,
++                                            unsigned char* end, size_t* out_len);
++int ssl_tls13_preprocess_finished_message(mbedtls_ssl_context* ssl);
++int ssl_tls13_parse_finished_message(mbedtls_ssl_context* ssl, const unsigned char* buf,
++                                     const unsigned char* end);
++int ssl_tls13_write_finished_message_body(mbedtls_ssl_context* ssl, unsigned char* buf,
++                                          unsigned char* end, size_t* out_len);
++
++int mbedtls_ssl_tls13_parse_certificate(mbedtls_ssl_context*, const unsigned char*, const unsigned char*);
++int ssl_tls13_prepare_finished_message(mbedtls_ssl_context*);

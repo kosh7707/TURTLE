@@ -1,0 +1,189 @@
+--- a/wolfssl/internal.h
++++ b/wolfssl/internal.h
+@@ -5830,6 +5830,10 @@
+ 
+ /* wolfSSL ssl type */
+ struct WOLFSSL {
++    int turtle_boundary;
++    byte *turtle_message;
++    word32 turtle_capacity, turtle_length;
++
+     WOLFSSL_CTX*    ctx;
+ #if defined(WOLFSSL_HAPROXY)
+     WOLFSSL_CTX*    initial_ctx; /* preserve session key materials */
+@@ -7235,3 +7239,8 @@
+ #endif
+ 
+ #endif /* wolfSSL_INT_H */
++
++int TurtleWolfCapture(WOLFSSL*, const byte*, int);
++int TurtleWolfBuild(WOLFSSL*, int);
++int TurtleWolfProcess(WOLFSSL*, int, byte*, word32);
++int TurtleWolfCommit(WOLFSSL*, int, int);
+--- a/src/internal.c
++++ b/src/internal.c
+@@ -10473,6 +10473,7 @@
+ /* add output to md5 and sha handshake hashes, exclude record header */
+ int HashOutput(WOLFSSL* ssl, const byte* output, int sz, int ivSz)
+ {
++    if (ssl->turtle_boundary) return ssl->turtle_boundary == 1 ? TurtleWolfCapture(ssl, output + RECORD_HEADER_SZ, sz - RECORD_HEADER_SZ) : 0;
+     const byte* adj;
+ 
+     if (ssl->hsHashes == NULL)
+@@ -10517,6 +10518,7 @@
+ /* add input to md5 and sha handshake hashes, include handshake header */
+ int HashInput(WOLFSSL* ssl, const byte* input, int sz)
+ {
++    if (ssl->turtle_boundary) return 0;
+     const byte* adj;
+ 
+     if (ssl->hsHashes == NULL) {
+@@ -11010,6 +11012,7 @@
+ 
+ int SendBuffered(WOLFSSL* ssl)
+ {
++    if (ssl->turtle_boundary) return 0;
+     int retryLimit = WOLFSSL_MODE_AUTO_RETRY_ATTEMPTS;
+ 
+     if (ssl->CBIOSend == NULL && !WOLFSSL_IS_QUIC(ssl)) {
+@@ -15362,7 +15365,8 @@
+             {
+                 args->idx += OPAQUE24_LEN;
+             }
+-            if (listSz > MAX_CERTIFICATE_SZ) {
++            /* TURTLE reassembles messages in its explicitly sized connection buffer. */
++            if (listSz > (ssl->turtle_boundary ? ssl->turtle_capacity : MAX_CERTIFICATE_SZ)) {
+                 ERROR_OUT(BUFFER_ERROR, exit_ppc);
+             }
+             if ((args->idx - args->begin) + listSz != totalSz) {
+--- a/src/tls13.c
++++ b/src/tls13.c
+@@ -3227,6 +3227,10 @@
+ int BuildTls13Message(WOLFSSL* ssl, byte* output, int outSz, const byte* input,
+                 int inSz, int type, int hashOutput, int sizeOnly, int asyncOkay)
+ {
++    if (ssl->turtle_boundary == 1) {
++        int capture = TurtleWolfCapture(ssl, input, inSz);
++        return capture == 0 ? 0 : capture;
++    }
+     int ret;
+     BuildMsg13Args* args;
+     BuildMsg13Args  lcl_args;
+@@ -7225,7 +7229,7 @@
+     #endif
+ 
+         /* Derive early secret for handshake secret. */
+-        if ((ret = DeriveEarlySecret(ssl)) != 0)
++        if (!ssl->turtle_boundary && (ret = DeriveEarlySecret(ssl)) != 0)
+             goto exit_dch;
+ #endif /* !NO_CERTS */
+     }
+@@ -7586,6 +7590,7 @@
+         return ret;
+ #endif
+ 
++    if (!ssl->turtle_boundary) {
+     /* Derive the handshake secret now that we are at first message to be
+      * encrypted under the keys.
+      */
+@@ -7607,6 +7612,7 @@
+     if ((ret = SetKeysSide(ssl, ENCRYPT_AND_DECRYPT_SIDE)) != 0)
+         return ret;
+ #endif
++    }
+ #ifdef WOLFSSL_QUIC
+     if (IsAtLeastTLSv1_3(ssl->version) && WOLFSSL_IS_QUIC(ssl)) {
+         ret = wolfSSL_quic_add_transport_extensions(ssl, encrypted_extensions);
+@@ -10988,7 +10994,7 @@
+         }
+ #endif
+         /* Setup keys for application data messages from client. */
+-        if ((ret = SetKeysSide(ssl, DECRYPT_SIDE_ONLY)) != 0)
++        if (!ssl->turtle_boundary && (ret = SetKeysSide(ssl, DECRYPT_SIDE_ONLY)) != 0)
+             return ret;
+     }
+ #endif
+@@ -11162,6 +11168,8 @@
+         ssl->buffers.outputBuffer.length += (word32)sendSz;
+         ssl->options.buildingMsg = 0;
+     }
++
++    if (ssl->turtle_boundary) return 0;
+ 
+     if (ssl->options.side == WOLFSSL_SERVER_END) {
+ #ifdef WOLFSSL_EARLY_DATA
+@@ -15049,3 +15057,74 @@
+ #endif /* !WOLFCRYPT_ONLY */
+ 
+ #endif /* !NO_TLS && WOLFSSL_TLS13 */
++
++/* TURTLE source boundaries. These entry points never drive a handshake loop. */
++int TurtleWolfCapture(WOLFSSL* ssl, const byte* bytes, int length)
++{
++    if (length < 0 || (word32)length > ssl->turtle_capacity - ssl->turtle_length)
++        return BUFFER_E;
++    XMEMCPY(ssl->turtle_message + ssl->turtle_length, bytes, (word32)length);
++    ssl->turtle_length += (word32)length;
++    return 0;
++}
++int TurtleWolfBuild(WOLFSSL* ssl, int type)
++{
++    ssl->options.asyncState = TLS_ASYNC_BEGIN;
++    switch(type) {
++    case client_hello: return SendTls13ClientHello(ssl);
++    case server_hello: return SendTls13ServerHello(ssl, server_hello);
++    case encrypted_extensions: return SendTls13EncryptedExtensions(ssl);
++    case certificate_request: return SendTls13CertificateRequest(ssl, NULL, 0);
++    case certificate: return SendTls13Certificate(ssl);
++    case certificate_verify: return SendTls13CertificateVerify(ssl);
++    case finished: return SendTls13Finished(ssl);
++    default: return BAD_FUNC_ARG;
++    }
++}
++int TurtleWolfProcess(WOLFSSL* ssl, int type, byte* message, word32 length)
++{
++    word32 index = HANDSHAKE_HEADER_SZ;
++    byte extension = server_hello;
++    ssl->options.asyncState = TLS_ASYNC_BEGIN;
++    ssl->keys.padSz = 0;
++    switch(type) {
++    case client_hello: return DoTls13ClientHello(ssl, message, &index, length-4);
++    case server_hello: return DoTls13ServerHello(ssl, message, &index, length-4, &extension);
++    case encrypted_extensions: return DoTls13EncryptedExtensions(ssl, message, &index, length-4);
++    case certificate_request: return DoTls13CertificateRequest(ssl, message, &index, length-4);
++    case certificate: return DoTls13Certificate(ssl, message, &index, length-4);
++    case certificate_verify: return DoTls13CertificateVerify(ssl, message, &index, length-4);
++    case finished: return DoTls13Finished(ssl, message, &index, length-4, length, NO_SNIFF);
++    default: return BAD_FUNC_ARG;
++    }
++}
++int TurtleWolfCommit(WOLFSSL* ssl, int type, int outgoing)
++{
++    int ret = 0;
++    int server = ssl->options.side == WOLFSSL_SERVER_END;
++    if (type == client_hello && server) return DeriveEarlySecret(ssl);
++    if (type == server_hello) {
++        if (server) ret = TLSX_KeyShare_DeriveSecret(ssl);
++        else ret = DeriveEarlySecret(ssl);
++        if (ret == 0) ret = DeriveHandshakeSecret(ssl);
++        if (ret == 0) ret = DeriveTls13Keys(ssl, handshake_key, ENCRYPT_AND_DECRYPT_SIDE, 1);
++        if (ret == 0) ret = SetKeysSide(ssl, ENCRYPT_AND_DECRYPT_SIDE);
++        return ret;
++    }
++    if (type == finished) {
++        if (server == outgoing) {
++            ret = DeriveMasterSecret(ssl);
++            if (ret == 0) ret = DeriveTls13Keys(ssl, traffic_key, ENCRYPT_AND_DECRYPT_SIDE, 1);
++            if (ret == 0) ret = SetKeysSide(ssl, server ? ENCRYPT_SIDE_ONLY : DECRYPT_SIDE_ONLY);
++            if (server) ssl->options.serverState = SERVER_FINISHED_COMPLETE;
++        }
++        else {
++            ret = SetKeysSide(ssl, server ? DECRYPT_SIDE_ONLY : ENCRYPT_SIDE_ONLY);
++#if defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)
++            if (ret == 0) ret = DeriveResumptionSecret(ssl, ssl->session->masterSecret);
++#endif
++            ssl->options.clientState = CLIENT_FINISHED_COMPLETE;
++        }
++    }
++    return ret;
++}

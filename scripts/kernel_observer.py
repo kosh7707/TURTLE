@@ -12,6 +12,7 @@ from pathlib import Path
 import select
 import socket
 import time
+import resource
 
 
 class Config(C.Structure):
@@ -232,8 +233,9 @@ class Collector:
 
 
 def run(args):
-    metadata = {'type': 'turtle-kernel-events', 'schema': 1, 'status': 'initializing',
-                'clock': 'CLOCK_MONOTONIC (bpf_ktime_get_ns)', 'clock_pairs': [clock_pair()],
+    collector_wall,collector_cpu=time.monotonic_ns(),time.process_time_ns()
+    metadata = {'contract': 'turtle-message-kernel/1', 'status': 'initializing',
+                'run_id':args.run_id, 'clock': 'CLOCK_MONOTONIC (bpf_ktime_get_ns)', 'clock_pairs': [clock_pair()],
                 'kernel_release': os.uname().release, 'uid': os.geteuid(),
                 'buffer_capacity': CAPACITY, 'event_struct_size': C.sizeof(Event),
                 'object_sha256': hashlib.sha256(args.object.read_bytes()).hexdigest(),
@@ -284,6 +286,11 @@ def run(args):
                                    all(value == 0 for value in metadata['failures'].values()))
             if not collection_complete:
                 metadata.update(status='missing', missing_reason=metadata['missing_reason'] or 'collection_or_cleanup_incomplete')
+        metadata['collector_elapsed_ns']=time.monotonic_ns()-collector_wall
+        metadata['collector_process_cpu_ns']=time.process_time_ns()-collector_cpu
+        metadata['collector_peak_rss_kib']=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        metadata['kernel_program_overhead_ns']=None
+        metadata['kernel_program_overhead_status']='not-collected'
         metadata['clock_pairs'].append(clock_pair())
         args.output.write_text(json.dumps(metadata, indent=2) + '\n')
         control.close()
@@ -294,6 +301,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('client', 'server', 'router', 'control'):
         parser.add_argument(f'--{name}-fd', type=int, required=True)
+    parser.add_argument('--run-id',required=True)
     parser.add_argument('--object', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--c2s-target', type=int)

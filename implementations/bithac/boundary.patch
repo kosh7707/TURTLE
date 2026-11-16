@@ -1,0 +1,732 @@
+--- a/wolfssl/internal.h
++++ b/wolfssl/internal.h
+@@ -3615,6 +3615,7 @@
+ 
+ /* wolfSSL context type */
+ struct WOLFSSL_CTX {
++    void *turtle_ci_state;
+     WOLFSSL_METHOD* method;
+ #ifdef SINGLE_THREADED
+     WC_RNG*         rng;          /* to be shared with WOLFSSL w/o locking */
+@@ -5526,6 +5527,10 @@
+ 
+ /* wolfSSL ssl type */
+ struct WOLFSSL {
++    int turtle_boundary;
++    byte *turtle_message;
++    word32 turtle_capacity, turtle_length;
++
+     WOLFSSL_CTX*    ctx;
+ #if defined(WOLFSSL_HAPROXY)
+     WOLFSSL_CTX*    initial_ctx; /* preserve session key materials */
+@@ -6122,15 +6127,15 @@
+                                     size_t domainNameLen);
+ #if defined(WOLFSSL_CACHED_INFO) || defined(WOLFSSL_SSC)
+     WOLFSSL_LOCAL int CI_CalculateCertMsgHash(byte* hash, DerBuffer *cert, DerBuffer *certChain);
+-    WOLFSSL_LOCAL int CI_AddCacheEntry(byte *digest, CI_CACHE_ENTRY_TYPE entryType, TLSX_CACHED_INFO_TYPE objectType, buffer data, const byte *peerId, byte isSmallCert);
+-    WOLFSSL_LOCAL int CI_GetCacheEntryAndLock(const byte *digest, byte entryType, CICacheEntry **entry, word32 *lockedRow, byte readonly);
++    WOLFSSL_LOCAL int CI_AddCacheEntry(WOLFSSL_CTX *ctx, byte *digest, CI_CACHE_ENTRY_TYPE entryType, TLSX_CACHED_INFO_TYPE objectType, buffer data, const byte *peerId, byte isSmallCert);
++    WOLFSSL_LOCAL int CI_GetCacheEntryAndLock(WOLFSSL_CTX *ctx, const byte *digest, byte entryType, CICacheEntry **entry, word32 *lockedRow, byte readonly);
+     WOLFSSL_LOCAL int CI_RemoveCacheEntry(WOLFSSL *ssl, int row, word32 rowIdx, byte rowLockState);
+-    WOLFSSL_LOCAL void CI_UnlockCacheRow(word32 row);
+-    WOLFSSL_LOCAL void CI_UnlockCachePeerIndex(void);
+-    WOLFSSL_LOCAL int CI_RemoveFromPeerIndex(word32 row, word32 rowIdx, byte alreadyLocked);
+-    WOLFSSL_LOCAL int CI_UpdatePeerIndex(const byte *peerId, byte entryType, byte objectType, word32 row, word32 idx, byte alreadyLocked);
+-    WOLFSSL_LOCAL int CI_GetNextCacheObject(const byte *peerId, byte entryType, byte objectType, int *row, word32 *rowIdx, void **startEntry, byte *lockState);
+-    WOLFSSL_LOCAL int CI_GetCacheDigestByIndex(int row, word32 rowIdx, byte *digest);
++    WOLFSSL_LOCAL void CI_UnlockCacheRow(WOLFSSL_CTX *ctx, word32 row);
++    WOLFSSL_LOCAL void CI_UnlockCachePeerIndex(WOLFSSL_CTX *ctx);
++    WOLFSSL_LOCAL int CI_RemoveFromPeerIndex(WOLFSSL_CTX *ctx, word32 row, word32 rowIdx, byte alreadyLocked);
++    WOLFSSL_LOCAL int CI_UpdatePeerIndex(WOLFSSL_CTX *ctx, const byte *peerId, byte entryType, byte objectType, word32 row, word32 idx, byte alreadyLocked);
++    WOLFSSL_LOCAL int CI_GetNextCacheObject(WOLFSSL_CTX *ctx, const byte *peerId, byte entryType, byte objectType, int *row, word32 *rowIdx, void **startEntry, byte *lockState);
++    WOLFSSL_LOCAL int CI_GetCacheDigestByIndex(WOLFSSL_CTX *ctx, int row, word32 rowIdx, byte *digest);
+     
+     #ifdef WOLFSSL_TLS13
+     WOLFSSL_LOCAL int CIStripCertificateMsgForTls13(WOLFSSL *ssl, byte **output, word32 *outputSz, byte *input, word32 inputSz);
+@@ -6917,3 +6922,13 @@
+ #endif
+ 
+ #endif /* wolfSSL_INT_H */
++
++int TurtleWolfCapture(WOLFSSL*, const byte*, int);
++int TurtleWolfBuild(WOLFSSL*, int);
++int TurtleWolfProcess(WOLFSSL*, int, byte*, word32);
++int TurtleWolfCommit(WOLFSSL*, int, int);
++
++int TurtleCiCreate(WOLFSSL_CTX*);
++size_t TurtleCiBytes(WOLFSSL_CTX* ctx);
++void TurtleCiDestroy(WOLFSSL_CTX*);
++int TurtleCiFinish(WOLFSSL*);
+--- a/src/internal.c
++++ b/src/internal.c
+@@ -8270,7 +8270,7 @@
+     ssl->ssc_cert_cache_data.length = 0;
+     /* Release cache lock if still held */
+     if (ssl->ssc_cert_cache_row != (word32)-1) {
+-        CI_UnlockCacheRow(ssl->ssc_cert_cache_row);
++        CI_UnlockCacheRow(ssl->ctx, ssl->ssc_cert_cache_row);
+         ssl->ssc_cert_cache_row = (word32)-1;
+     }
+ 
+@@ -10014,6 +10014,7 @@
+ /* add output to md5 and sha handshake hashes, exclude record header */
+ int HashOutput(WOLFSSL* ssl, const byte* output, int sz, int ivSz)
+ {
++    if (ssl->turtle_boundary) return ssl->turtle_boundary == 1 ? TurtleWolfCapture(ssl, output + RECORD_HEADER_SZ, sz - RECORD_HEADER_SZ) : 0;
+     const byte* adj;
+ 
+     if (ssl->hsHashes == NULL)
+@@ -10051,6 +10052,7 @@
+ /* add input to md5 and sha handshake hashes, include handshake header */
+ int HashInput(WOLFSSL* ssl, const byte* input, int sz)
+ {
++    if (ssl->turtle_boundary) return 0;
+     const byte* adj;
+ 
+     if (ssl->hsHashes == NULL) {
+@@ -10532,6 +10534,7 @@
+ 
+ int SendBuffered(WOLFSSL* ssl)
+ {
++    if (ssl->turtle_boundary) return 0;
+     int retryLimit = WOLFSSL_MODE_AUTO_RETRY_ATTEMPTS;
+ 
+     if (ssl->CBIOSend == NULL && !WOLFSSL_IS_QUIC(ssl)) {
+@@ -14318,7 +14321,7 @@
+                     if (ret != 0)
+                         ERROR_OUT(ret, exit_ppc);
+ 
+-                    ret = CI_GetCacheEntryAndLock(fingerprint, CI_CET_CI_OBJECT, &entry, &ciCacheRow, TRUE);
++                    ret = CI_GetCacheEntryAndLock(ssl->ctx, fingerprint, CI_CET_CI_OBJECT, &entry, &ciCacheRow, TRUE);
+                     if (ret != 0) {
+                         return ret;
+                     }
+@@ -14362,7 +14365,7 @@
+                     
+                     /* Parse certificate hash & search in buffer */
+                     CICacheEntry *entry;
+-                    ret = CI_GetCacheEntryAndLock(input+args->idx, CI_CET_CI_OBJECT, &entry, &ciCacheRow, TRUE);
++                    ret = CI_GetCacheEntryAndLock(ssl->ctx, input+args->idx, CI_CET_CI_OBJECT, &entry, &ciCacheRow, TRUE);
+                     if (ret != 0) {
+                         return ret;
+                     }
+@@ -14694,7 +14697,8 @@
+             }
+             c24to32(input + args->idx, &listSz);
+             args->idx += OPAQUE24_LEN;
+-            if (listSz > MAX_CERTIFICATE_SZ) {
++            /* TURTLE reassembles messages in its explicitly sized connection buffer. */
++            if (listSz > (ssl->turtle_boundary ? ssl->turtle_capacity : MAX_CERTIFICATE_SZ)) {
+                 ERROR_OUT(BUFFER_ERROR, exit_ppc);
+             }
+             if ((args->idx - args->begin) + listSz != totalSz) {
+@@ -16148,7 +16152,7 @@
+                 #ifdef WOLFSSL_CACHED_INFO
+                 /* Unlock cache */
+                 if (ciCacheRow != (word32) -1)
+-                    CI_UnlockCacheRow(ciCacheRow);
++                    CI_UnlockCacheRow(ssl->ctx, ciCacheRow);
+                 #endif
+ 
+                 #ifdef WOLFSSL_TLS13
+@@ -16166,7 +16170,7 @@
+                 ssl->ssc_cert_cache_data.buffer = NULL;
+                 ssl->ssc_cert_cache_data.length = 0;
+                 if (ssl->ssc_cert_cache_row != (word32) -1) {
+-                    CI_UnlockCacheRow(ssl->ssc_cert_cache_row);
++                    CI_UnlockCacheRow(ssl->ctx, ssl->ssc_cert_cache_row);
+                     ssl->ssc_cert_cache_row = (word32) -1;
+                 }
+             }
+@@ -30082,7 +30086,7 @@
+ 
+             CICacheEntry *entry;
+ 
+-            ret = CI_GetCacheEntryAndLock(input + *inOutIdx, CI_CET_CI_OBJECT, &entry, &ciCacheRow, TRUE);
++            ret = CI_GetCacheEntryAndLock(ssl->ctx, input + *inOutIdx, CI_CET_CI_OBJECT, &entry, &ciCacheRow, TRUE);
+             if (ret != 0)
+                 return ret;
+             if (entry->data.buffer == NULL || entry->objectType != CACHED_INFO_TYPE_CERT_REQ) {
+@@ -30246,7 +30250,7 @@
+ 
+             /* Unlock row if any */
+             if (ciCacheRow != (word32)-1)
+-                CI_UnlockCacheRow(ciCacheRow);
++                CI_UnlockCacheRow(ssl->ctx, ciCacheRow);
+         }
+         #endif /* WOLFSSL_CACHED_INFO */
+ 
+--- a/src/ssl.c
++++ b/src/ssl.c
+@@ -6222,10 +6222,10 @@
+     int lock_valid;
+ } CICacheRow;
+ 
+-static WOLFSSL_GLOBAL CICacheRow CICache[CI_CACHE_ROWS];
+-
+-static WOLFSSL_GLOBAL wolfSSL_RwLock ci_cache_lock; /* CICache lock */
+-static WOLFSSL_GLOBAL int ci_cache_lock_valid = 0;
++
++
++
++
+ #define CI_CACHE_ROW_RD_LOCK(row)   wc_LockRwLock_Rd(&ci_cache_lock)
+ #define CI_CACHE_ROW_WR_LOCK(row)   wc_LockRwLock_Wr(&ci_cache_lock)
+ #define CI_CACHE_ROW_UNLOCK(row)    wc_UnLockRwLock(&ci_cache_lock);
+@@ -6270,14 +6270,67 @@
+ }
+ #endif /* WOLFSSL_CI_SMALL_CERT_CACHE */
+ 
+-static WOLFSSL_GLOBAL CICachePeerIndex *ciCachePeerIndex = NULL;
+-static WOLFSSL_GLOBAL wolfSSL_RwLock ci_cpi_lock; /* CICachePeerIndex lock */
+-static WOLFSSL_GLOBAL int ci_cpi_lock_valid = 0;
++
++
++
++typedef struct TurtleCiState {
++    CICacheRow rows[CI_CACHE_ROWS];
++    CICachePeerIndex *peers;
++    wolfSSL_RwLock cache_lock, peer_lock;
++} TurtleCiState;
++#define CICache (((TurtleCiState*)ctx->turtle_ci_state)->rows)
++#define ciCachePeerIndex (((TurtleCiState*)ctx->turtle_ci_state)->peers)
++#define ci_cache_lock (((TurtleCiState*)ctx->turtle_ci_state)->cache_lock)
++#define ci_cpi_lock (((TurtleCiState*)ctx->turtle_ci_state)->peer_lock)
++int TurtleCiCreate(WOLFSSL_CTX *ctx)
++{
++    TurtleCiState *state = (TurtleCiState*)XMALLOC(sizeof(*state), ctx->heap, DYNAMIC_TYPE_TLSX);
++    if (state == NULL) return MEMORY_E;
++    XMEMSET(state, 0, sizeof(*state));
++    if (wc_InitRwLock(&state->cache_lock) != 0) { XFREE(state, ctx->heap, DYNAMIC_TYPE_TLSX); return BAD_MUTEX_E; }
++    if (wc_InitRwLock(&state->peer_lock) != 0) { wc_FreeRwLock(&state->cache_lock); XFREE(state, ctx->heap, DYNAMIC_TYPE_TLSX); return BAD_MUTEX_E; }
++    ctx->turtle_ci_state = state;
++    return 0;
++}
++size_t TurtleCiBytes(WOLFSSL_CTX *ctx)
++{
++    TurtleCiState *state=(TurtleCiState*)ctx->turtle_ci_state;
++    CICachePeerIndex *peer;
++    int row,entry;
++    size_t bytes=state?sizeof(*state):0;
++    if (!state) return 0;
++    for(row=0;row<CI_CACHE_ROWS;++row) for(entry=0;entry<CI_CACHE_ENTRIES_PER_ROW;++entry)
++        if(state->rows[row].Entries[entry].data.buffer) bytes+=state->rows[row].Entries[entry].data.length;
++    for(peer=state->peers;peer;peer=peer->next) {
++        struct CICachePeerIndexEntry *item;bytes+=sizeof(*peer);
++        for(item=peer->entries;item;item=item->next) bytes+=sizeof(*item);
++    }
++    return bytes;
++}
++void TurtleCiDestroy(WOLFSSL_CTX *ctx)
++{
++    TurtleCiState *state = (TurtleCiState*)ctx->turtle_ci_state;
++    int row, entry;
++    if (state == NULL) return;
++    for (row=0; row<CI_CACHE_ROWS; ++row) for (entry=0; entry<CI_CACHE_ENTRIES_PER_ROW; ++entry)
++        XFREE(state->rows[row].Entries[entry].data.buffer, ctx->heap, DYNAMIC_TYPE_TLSX);
++    while (state->peers != NULL) {
++        CICachePeerIndex *peer=state->peers;
++        state->peers=peer->next;
++        while (peer->entries != NULL) {
++            struct CICachePeerIndexEntry *entry=peer->entries;
++            peer->entries=entry->next; XFREE(entry,ctx->heap,DYNAMIC_TYPE_TLSX);
++        }
++        XFREE(peer,ctx->heap,DYNAMIC_TYPE_TLSX);
++    }
++    wc_FreeRwLock(&state->cache_lock);wc_FreeRwLock(&state->peer_lock);
++    XFREE(state,ctx->heap,DYNAMIC_TYPE_TLSX);ctx->turtle_ci_state=NULL;
++}
+ #define CI_CPI_RD_LOCK()   wc_LockRwLock_Rd(&ci_cpi_lock)
+ #define CI_CPI_WR_LOCK()   wc_LockRwLock_Wr(&ci_cpi_lock)
+ #define CI_CPI_UNLOCK()    wc_UnLockRwLock(&ci_cpi_lock);
+ 
+-int CI_RemoveFromPeerIndex(word32 row, word32 rowIdx, byte alreadyLocked)
++int CI_RemoveFromPeerIndex(WOLFSSL_CTX *ctx, word32 row, word32 rowIdx, byte alreadyLocked)
+ {
+     CICachePeerIndex *currP = ciCachePeerIndex;
+     CICachePeerIndex *prevP = ciCachePeerIndex;
+@@ -6344,7 +6397,7 @@
+     return 0;
+ }
+ 
+-int CI_UpdatePeerIndex(const byte *peerId, byte entryType, byte objectType, word32 row, word32 idx, byte alreadyLocked)
++int CI_UpdatePeerIndex(WOLFSSL_CTX *ctx, const byte *peerId, byte entryType, byte objectType, word32 row, word32 idx, byte alreadyLocked)
+ {
+     /* Locking behavior: */
+     /* At the start: If alreadyLocked is false, a lock is obtained */
+@@ -6415,7 +6468,7 @@
+     return 0;
+ }
+ 
+-int CI_GetNextCacheObject(const byte *peerId, byte entryType, byte objectType, int *row, word32 *rowIdx, void **startEntry, byte *lockState)
++int CI_GetNextCacheObject(WOLFSSL_CTX *ctx, const byte *peerId, byte entryType, byte objectType, int *row, word32 *rowIdx, void **startEntry, byte *lockState)
+ {
+     /* Locking behavior: */
+     /* At the start: If lockState is false, a lock is obtained */
+@@ -6466,15 +6519,17 @@
+         entry = entry->next;
+     }
+ 
+-    if ((*lockState) && *row==-1)
++    if ((*lockState) && *row==-1) {
+         CI_CPI_UNLOCK();
++        *lockState = FALSE;
++    }
+ 
+     WOLFSSL_LEAVE("CI_GetNextCacheObject",0);
+     
+     return 0;
+ }
+ 
+-static void CI_DebugPrintCacheState(void)
++static void CI_DebugPrintCacheState(WOLFSSL_CTX *ctx)
+ {
+     #ifdef DEBUG_WOLFSSL
+     char tmp_str[100+(2*WC_SHA256_DIGEST_SIZE)];
+@@ -6502,7 +6557,7 @@
+     XMEMCPY(out, ticket, SSC_TICKET_LEN);
+ }
+ 
+-int CI_AddCacheEntry(byte *digest, CI_CACHE_ENTRY_TYPE entryType,
++int CI_AddCacheEntry(WOLFSSL_CTX *ctx, byte *digest, CI_CACHE_ENTRY_TYPE entryType,
+     TLSX_CACHED_INFO_TYPE objectType, buffer data,
+     const byte *peerId, byte isSmallCert)
+ {
+@@ -6571,7 +6626,7 @@
+             /* entry existed before, we kick it out of the cache */
+ 
+             /* remove digest from peer index (potentially multiple) */
+-            ret = CI_RemoveFromPeerIndex(row, idx, TRUE);
++            ret = CI_RemoveFromPeerIndex(ctx, row, idx, TRUE);
+             if (ret != 0) {
+                 CI_CPI_UNLOCK();
+                 CI_CACHE_ROW_UNLOCK(cacheRow);
+@@ -6600,12 +6655,16 @@
+         #endif /* WOLFSSL_CI_SMALL_CERT_CACHE */
+     }
+ 
++    /* Ownership transfers on insertion even when the value is already cached. */
++    if (overwrite && data.buffer != cacheEntry->data.buffer)
++        XFREE(data.buffer, ctx->heap, DYNAMIC_TYPE_TLSX);
++
+     /* Update peer index */
+-    CI_UpdatePeerIndex(peerId, entryType, objectType, row, idx, TRUE);
++    CI_UpdatePeerIndex(ctx, peerId, entryType, objectType, row, idx, TRUE);
+ 
+     WOLFSSL_MSG_EX("Selected row %d, index %d", row, idx);
+ 
+-    CI_DebugPrintCacheState();
++    CI_DebugPrintCacheState(ctx);
+ 
+     /* unlock inner first*/
+     CI_CPI_UNLOCK();
+@@ -6619,7 +6678,7 @@
+     return ret;
+ }
+ 
+-int CI_GetCacheDigestByIndex(int row, word32 rowIdx, byte *digest)
++int CI_GetCacheDigestByIndex(WOLFSSL_CTX *ctx, int row, word32 rowIdx, byte *digest)
+ {
+     /* NOTE: digest needs to be allocated before and span 32 bytes! */
+ 
+@@ -6638,7 +6697,7 @@
+     return 0;
+ }
+ 
+-int CI_GetCacheEntryAndLock(const byte *digest, byte entryType, CICacheEntry **entry, word32 *lockedRow, byte readonly)
++int CI_GetCacheEntryAndLock(WOLFSSL_CTX *ctx, const byte *digest, byte entryType, CICacheEntry **entry, word32 *lockedRow, byte readonly)
+ {
+     CICacheRow *cacheRow;
+     CICacheEntry *curr;
+@@ -6686,6 +6745,7 @@
+ 
+ int CI_RemoveCacheEntry(WOLFSSL *ssl, int row, word32 rowIdx, byte rowLockState)
+ {
++    WOLFSSL_CTX *ctx = ssl->ctx;
+     /* Locking behavior: Obtains row lock if rowLockState = false, lets it go afterwards if not held before */
+     /* NOTE: Calling without lock may be unsafe, as row and rowIdx may not be current anymore */
+ 
+@@ -6722,7 +6782,7 @@
+     XMEMSET(entry, 0x0, sizeof(CICacheEntry));
+ 
+     /* Also remove from CPI */
+-    CI_RemoveFromPeerIndex(row, rowIdx, FALSE);
++    CI_RemoveFromPeerIndex(ctx, row, rowIdx, FALSE);
+ 
+     if (!rowLockState)
+         CI_CACHE_ROW_UNLOCK(rowIdx);
+@@ -6730,14 +6790,14 @@
+     return 0;
+ }
+ 
+-void CI_UnlockCachePeerIndex()
++void CI_UnlockCachePeerIndex(WOLFSSL_CTX *ctx)
+ {
+     /* Just to make it public */
+     /* Use only if you know what you are doing! */
+     CI_CPI_UNLOCK();
+ }
+ 
+-void CI_UnlockCacheRow(word32 row)
++void CI_UnlockCacheRow(WOLFSSL_CTX *ctx, word32 row)
+ {
+     CICacheRow* cacheRow;
+ 
+@@ -6751,6 +6811,7 @@
+ #ifdef WOLFSSL_SSC
+ int CI_SSC_MakeTicket(WOLFSSL *ssl, byte objectType, byte isServer)
+ {
++    WOLFSSL_CTX *ctx = ssl->ctx;
+     int ret = 0;
+     byte *objDigest;
+ 
+@@ -6835,7 +6896,7 @@
+     WOLFSSL_MSG_EX("[SSC] Fingerprint started with: 0x%x%x%x%x", objDigest[0], objDigest[1], objDigest[2], objDigest[3]);
+ 
+     /* Add to cache */
+-    CI_AddCacheEntry(ticket, isServer ? CI_CET_SSC_OBJECT : CI_CET_SSC_TICKET,
++    CI_AddCacheEntry(ctx, ticket, isServer ? CI_CET_SSC_OBJECT : CI_CET_SSC_TICKET,
+         objectType, cacheData, isServer ? pseudoPeerId : ssl->ci_peer_id, 0);
+ 
+ 
+@@ -7036,47 +7097,9 @@
+ 
+     wc_UnLockMutex(&inits_count_mutex);
+ 
+-    #if defined(WOLFSSL_CACHED_INFO) || defined(WOLFSSL_SSC)
+-    if (ret == WOLFSSL_SUCCESS) {
+-        if (wc_InitRwLock(&ci_cache_lock) != 0) {
+-            WOLFSSL_MSG("Bad Init Mutex session");
+-            ret = BAD_MUTEX_E;
+-        }
+-        else {
+-            ci_cache_lock_valid = 1;
+-        }
+-    }
+-    if (ret == WOLFSSL_SUCCESS) {
+-        if (wc_InitRwLock(&ci_cpi_lock) != 0) {
+-            WOLFSSL_MSG("Bad Init Mutex session");
+-            ret = BAD_MUTEX_E;
+-        }
+-        else {
+-            ci_cpi_lock_valid = 1;
+-        }
+-    }
+-    #endif /* defined(WOLFSSL_CACHED_INFO) || defined(WOLFSSL_SSC) */
+-
+-    #if defined(WOLFSSL_CACHED_INFO) || defined(WOLFSSL_SSC)
+-    if (ret == WOLFSSL_SUCCESS) {
+-        if (wc_InitRwLock(&ci_cache_lock) != 0) {
+-            WOLFSSL_MSG("Bad Init Mutex session");
+-            ret = BAD_MUTEX_E;
+-        }
+-        else {
+-            ci_cache_lock_valid = 1;
+-        }
+-    }
+-    if (ret == WOLFSSL_SUCCESS) {
+-        if (wc_InitRwLock(&ci_cpi_lock) != 0) {
+-            WOLFSSL_MSG("Bad Init Mutex session");
+-            ret = BAD_MUTEX_E;
+-        }
+-        else {
+-            ci_cpi_lock_valid = 1;
+-        }
+-    }
+-    #endif /* defined(WOLFSSL_CACHED_INFO) || defined(WOLFSSL_SSC) */
++
++
++
+ 
+     if (ret != WOLFSSL_SUCCESS) {
+         initRefCount = 1; /* Force cleanup */
+@@ -10240,7 +10263,7 @@
+     /* Check that this cert is not cached yet */
+     CICacheEntry *existingEntry = NULL;
+     word32 lockedRow;
+-    if ((ret = CI_GetCacheEntryAndLock(hash, CI_CET_CI_OBJECT, &existingEntry, &lockedRow, TRUE)) != 0)
++    if ((ret = CI_GetCacheEntryAndLock(ctx, hash, CI_CET_CI_OBJECT, &existingEntry, &lockedRow, TRUE)) != 0)
+     {
+         XFREE(certData.buffer, ctx->heap, dynamic_buf_type);
+         return ret;
+@@ -10248,6 +10271,8 @@
+ 
+     if (existingEntry != NULL)
+     {
++        /* The lookup retains the cache lock even when insertion is skipped. */
++        CI_UnlockCacheRow(ctx, lockedRow);
+         /* Object is already cached, return without error */
+         WOLFSSL_MSG("[CI] Not adding cached server certificate message, was already existing");
+         XFREE(certData.buffer, ctx->heap, dynamic_buf_type);
+@@ -10464,7 +10489,7 @@
+         buffer vccBuffer;
+         vccBuffer.buffer = (byte *)smallCertChain;
+         vccBuffer.length = sizeof(CIValidatedCertChain);
+-        ret = CI_AddCacheEntry(hash, CI_CET_CI_OBJECT, CACHED_INFO_TYPE_CERT, vccBuffer, peerId, 1);
++        ret = CI_AddCacheEntry(ctx, hash, CI_CET_CI_OBJECT, CACHED_INFO_TYPE_CERT, vccBuffer, peerId, 1);
+ 
+         if (certData.buffer != NULL) {
+             XFREE(certData.buffer,ctx->heap,DYNAMIC_TYPE_FILE);
+@@ -10484,7 +10509,7 @@
+         WOLFSSL_MSG("Using unoptimized cert cache");
+         
+         /* Use the uncompressed cert. */
+-        ret = CI_AddCacheEntry(hash, CI_CET_CI_OBJECT, CACHED_INFO_TYPE_CERT, certData, peerId, 0);
++        ret = CI_AddCacheEntry(ctx, hash, CI_CET_CI_OBJECT, CACHED_INFO_TYPE_CERT, certData, peerId, 0);
+     }
+ 
+     if (ret != 0)
+@@ -10649,7 +10674,7 @@
+ 
+     /* We know this is a valid certificate message, simply use buffer */
+     wc_Sha256Hash(data.buffer, data.length, hash);
+-    CI_AddCacheEntry(hash, CI_CET_CI_OBJECT, CACHED_INFO_TYPE_CERT_REQ, data, peerId, 0);
++    CI_AddCacheEntry(ctx, hash, CI_CET_CI_OBJECT, CACHED_INFO_TYPE_CERT_REQ, data, peerId, 0);
+ 
+     char tmp_str[100];
+     XSPRINTF(tmp_str, "[CI] Loaded cached server certificate request message of size %ld!",sz);
+@@ -10754,7 +10779,7 @@
+ 
+     /* We know this is a valid certificate message, simply use buffer */
+     wc_Sha256Hash(data.buffer, data.length, hash);
+-    CI_AddCacheEntry(hash, CI_CET_SSC_OBJECT, CACHED_INFO_TYPE_CERT, data, pseudoPeerId, 0);
++    CI_AddCacheEntry(ctx, hash, CI_CET_SSC_OBJECT, CACHED_INFO_TYPE_CERT, data, pseudoPeerId, 0);
+ 
+     char tmp_str[100];
+     XSPRINTF(tmp_str, "[SSC] Loaded cached client certificate message of size %ld!",sz);
+@@ -15297,18 +15322,7 @@
+     inits_count_mutex_valid = 0;
+ #endif
+ 
+-    #if defined(WOLFSSL_CACHED_INFO) || defined(WOLFSSL_SSC)
+-    if ((ci_cache_lock_valid == 1) && (wc_UnLockRwLock(&ci_cache_lock) != 0)) {
+-        if (ret == WOLFSSL_SUCCESS)
+-            ret = BAD_MUTEX_E;
+-    }
+-    ci_cache_lock_valid = 0;
+-    if ((ci_cpi_lock_valid == 1) && (wc_UnLockRwLock(&ci_cpi_lock) != 0)) {
+-        if (ret == WOLFSSL_SUCCESS)
+-            ret = BAD_MUTEX_E;
+-    }
+-    ci_cpi_lock_valid = 0;
+-    #endif /* defined(WOLFSSL_CACHED_INFO) || defined(WOLFSSL_SSC) */
++
+ 
+ #ifdef OPENSSL_EXTRA
+     wolfSSL_RAND_Cleanup();
+--- a/src/tls.c
++++ b/src/tls.c
+@@ -12262,7 +12262,7 @@
+ 
+         while (row != -1) /* special value for "no more entries" */
+         {
+-            ret = CI_GetNextCacheObject(ssl->ci_peer_id, CI_CET_CI_OBJECT, type, &row, &rowIdx, &startEntry, &cpiLockState);
++            ret = CI_GetNextCacheObject(ssl->ctx, ssl->ci_peer_id, CI_CET_CI_OBJECT, type, &row, &rowIdx, &startEntry, &cpiLockState);
+             WOLFSSL_MSG_EX("Got row %d", row);
+             if (ret != 0) {
+                 /* assume lock is already let go (?) */
+@@ -12277,7 +12277,7 @@
+                     return MEMORY_E;
+                 }
+                 cid->type = type;
+-                ret = CI_GetCacheDigestByIndex(row, rowIdx, cid->hash_buf);
++                ret = CI_GetCacheDigestByIndex(ssl->ctx, row, rowIdx, cid->hash_buf);
+                 if (ret != 0) {
+                     return ret;
+                 }
+@@ -12697,7 +12697,7 @@
+     ServerSideCache_Data *listHead = NULL;
+     int ticketRow;
+     word32 ticketRowIdx;
+-    byte cpiLockState;
++    byte cpiLockState = FALSE;
+     void *cpiStartEntry = NULL;
+     byte cacheDigest[WC_SHA256_DIGEST_SIZE];
+ 
+@@ -12731,7 +12731,7 @@
+         if (ssl->ctx->cert_msg_hash != NULL) {
+ 
+             /* Check whether we have a ticket for this type and peer */
+-            if ((ret = CI_GetNextCacheObject(
++            if ((ret = CI_GetNextCacheObject(ssl->ctx, 
+                 ssl->ci_peer_id, 
+                 CI_CET_SSC_TICKET, 
+                 type, 
+@@ -12747,7 +12747,7 @@
+             if (cpiLockState)
+             {
+                 /* We only want to obtain one entry only. Release lock immediately if still held */
+-                CI_UnlockCachePeerIndex();
++                CI_UnlockCachePeerIndex(ssl->ctx);
+             }
+             
+             if (ticketRow != -1)
+@@ -12760,7 +12760,7 @@
+                     return MEMORY_E;
+                 }
+                 data->type = type;
+-                if ((ret = CI_GetCacheDigestByIndex(ticketRow, ticketRowIdx, cacheDigest))!=0) {
++                if ((ret = CI_GetCacheDigestByIndex(ssl->ctx, ticketRow, ticketRowIdx, cacheDigest))!=0) {
+                     TLSX_ServerSideCache_Free(data, ssl->heap);
+                     return ret;
+                 }
+@@ -13058,7 +13058,7 @@
+                     XMEMCPY(paddedTicket,input+offset+iOffset,SSC_TICKET_LEN);
+                     
+                     /* find in cache */
+-                    ret = CI_GetCacheEntryAndLock(paddedTicket, CI_CET_SSC_OBJECT, &entry, &lockedCacheRow, TRUE);
++                    ret = CI_GetCacheEntryAndLock(ssl->ctx, paddedTicket, CI_CET_SSC_OBJECT, &entry, &lockedCacheRow, TRUE);
+                     if (ret!=0) {
+                         WOLFSSL_MSG("[SSC] Failed to query cache for cert ticket");
+                         return ret;
+--- a/src/tls13.c
++++ b/src/tls13.c
+@@ -3221,6 +3221,10 @@
+ int BuildTls13Message(WOLFSSL* ssl, byte* output, int outSz, const byte* input,
+                 int inSz, int type, int hashOutput, int sizeOnly, int asyncOkay)
+ {
++    if (ssl->turtle_boundary == 1) {
++        int capture = TurtleWolfCapture(ssl, input, inSz);
++        return capture == 0 ? 0 : capture;
++    }
+     int ret;
+     BuildMsg13Args* args;
+     BuildMsg13Args  lcl_args;
+@@ -7147,7 +7151,7 @@
+     #endif
+ 
+         /* Derive early secret for handshake secret. */
+-        if ((ret = DeriveEarlySecret(ssl)) != 0)
++        if (!ssl->turtle_boundary && (ret = DeriveEarlySecret(ssl)) != 0)
+             goto exit_dch;
+ #endif /* !NO_CERTS */
+     }
+@@ -7486,6 +7490,7 @@
+         return ret;
+ #endif
+ 
++    if (!ssl->turtle_boundary) {
+     /* Derive the handshake secret now that we are at first message to be
+      * encrypted under the keys.
+      */
+@@ -7507,6 +7512,7 @@
+     if ((ret = SetKeysSide(ssl, ENCRYPT_AND_DECRYPT_SIDE)) != 0)
+         return ret;
+ #endif
++    }
+ #ifdef WOLFSSL_QUIC
+     if (IsAtLeastTLSv1_3(ssl->version) && WOLFSSL_IS_QUIC(ssl)) {
+         ret = wolfSSL_quic_add_transport_extensions(ssl, encrypted_extensions);
+@@ -10651,7 +10657,7 @@
+         }
+ #endif
+         /* Setup keys for application data messages from client. */
+-        if ((ret = SetKeysSide(ssl, DECRYPT_SIDE_ONLY)) != 0)
++        if (!ssl->turtle_boundary && (ret = SetKeysSide(ssl, DECRYPT_SIDE_ONLY)) != 0)
+             return ret;
+     }
+ 
+@@ -10823,6 +10829,8 @@
+         ssl->buffers.outputBuffer.length += sendSz;
+         ssl->options.buildingMsg = 0;
+     }
++
++    if (ssl->turtle_boundary) return 0;
+ 
+     if (ssl->options.side == WOLFSSL_SERVER_END) {
+ #ifdef WOLFSSL_EARLY_DATA
+@@ -15062,3 +15070,94 @@
+ #endif /* !WOLFCRYPT_ONLY */
+ 
+ #endif /* WOLFSSL_TLS13 */
++
++/* TURTLE source boundaries. These entry points never drive a handshake loop. */
++int TurtleWolfCapture(WOLFSSL* ssl, const byte* bytes, int length)
++{
++    if (length < 0 || (word32)length > ssl->turtle_capacity - ssl->turtle_length)
++        return BUFFER_E;
++    XMEMCPY(ssl->turtle_message + ssl->turtle_length, bytes, (word32)length);
++    ssl->turtle_length += (word32)length;
++    return 0;
++}
++int TurtleWolfBuild(WOLFSSL* ssl, int type)
++{
++    ssl->options.asyncState = TLS_ASYNC_BEGIN;
++    switch(type) {
++    case client_hello: return SendTls13ClientHello(ssl);
++    case server_hello: return SendTls13ServerHello(ssl, server_hello);
++    case encrypted_extensions: return SendTls13EncryptedExtensions(ssl);
++    case certificate_request: return SendTls13CertificateRequest(ssl, NULL, 0);
++    case certificate: return SendTls13Certificate(ssl);
++    case certificate_verify: return SendTls13CertificateVerify(ssl);
++    case finished: return SendTls13Finished(ssl);
++    default: return BAD_FUNC_ARG;
++    }
++}
++int TurtleWolfProcess(WOLFSSL* ssl, int type, byte* message, word32 length)
++{
++    word32 index = HANDSHAKE_HEADER_SZ;
++    byte extension = server_hello;
++    ssl->options.asyncState = TLS_ASYNC_BEGIN;
++    ssl->keys.padSz = 0;
++    switch(type) {
++    case client_hello: return DoTls13ClientHello(ssl, message, &index, length-4);
++    case server_hello: return DoTls13ServerHello(ssl, message, &index, length-4, &extension);
++    case encrypted_extensions: return DoTls13EncryptedExtensions(ssl, message, &index, length-4);
++    case certificate_request: return DoTls13CertificateRequest(ssl, message, &index, length-4);
++    case certificate: return DoTls13Certificate(ssl, message, &index, length-4);
++    case certificate_verify: return DoTls13CertificateVerify(ssl, message, &index, length-4);
++    case finished: return DoTls13Finished(ssl, message, &index, length-4, length, NO_SNIFF);
++    default: return BAD_FUNC_ARG;
++    }
++}
++int TurtleWolfCommit(WOLFSSL* ssl, int type, int outgoing)
++{
++    int ret = 0;
++    int server = ssl->options.side == WOLFSSL_SERVER_END;
++    if (type == client_hello && server) return DeriveEarlySecret(ssl);
++    if (type == server_hello) {
++        if (server) ret = TLSX_KeyShare_DeriveSecret(ssl);
++        else ret = DeriveEarlySecret(ssl);
++        if (ret == 0) ret = DeriveHandshakeSecret(ssl);
++        if (ret == 0) ret = DeriveTls13Keys(ssl, handshake_key, ENCRYPT_AND_DECRYPT_SIDE, 1);
++        if (ret == 0) ret = SetKeysSide(ssl, ENCRYPT_AND_DECRYPT_SIDE);
++        return ret;
++    }
++    if (type == finished) {
++        if (server == outgoing) {
++            ret = DeriveMasterSecret(ssl);
++            if (ret == 0) ret = DeriveTls13Keys(ssl, traffic_key, ENCRYPT_AND_DECRYPT_SIDE, 1);
++            if (ret == 0) ret = SetKeysSide(ssl, server ? ENCRYPT_SIDE_ONLY : DECRYPT_SIDE_ONLY);
++            if (server) ssl->options.serverState = SERVER_FINISHED_COMPLETE;
++        }
++        else {
++            ret = SetKeysSide(ssl, server ? DECRYPT_SIDE_ONLY : ENCRYPT_SIDE_ONLY);
++#if defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)
++            if (ret == 0) ret = DeriveResumptionSecret(ssl, ssl->session->masterSecret);
++#endif
++            ssl->options.clientState = CLIENT_FINISHED_COMPLETE;
++        }
++    }
++    return ret;
++}
++
++int TurtleCiFinish(WOLFSSL* ssl)
++{
++    int ret=0;
++#ifdef WOLFSSL_SSC
++    if (ssl->options.side == WOLFSSL_SERVER_END) {
++        if (ssl->ssc_peer_support && ssl->options.verifyPeer)
++            ret=CI_SSC_MakeTicket(ssl, CI_CET_SSC_OBJECT, TRUE);
++    }
++    else if (ssl->ssc_peer_support && ssl->options.sendVerify)
++        ret=CI_SSC_MakeTicket(ssl, CACHED_INFO_TYPE_CERT, FALSE);
++#endif
++#ifdef WOLFSSL_CACHED_INFO
++    if (ret == 0 && ssl->options.side == WOLFSSL_CLIENT_END && !ssl->ci_cert_cache_hit_c && ssl->buffers.ciServerCertBuffer.buffer) {
++        ret=CI_AddServerCertChain(ssl->ctx,ssl->ci_peer_id,ssl->buffers.ciServerCertBuffer,DYNAMIC_TYPE_TLSX);
++        if(ret==0) {ssl->buffers.ciServerCertBuffer.buffer=NULL;ssl->buffers.ciServerCertBuffer.length=0;}
++    }
++#endif
++    return ret;
++}

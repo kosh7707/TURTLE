@@ -1,0 +1,12 @@
+{
+  "contract": "turtle-message-study-plan/1",
+  "seed": 20261112,
+  "batches": 2,
+  "samples": 3,
+  "cases": [
+    {"client": "openssl", "server": "openssl"},
+    {"client": "mbedtls", "server": "openssl"},
+    {"client": "wolfssl", "server": "openssl"}
+  ],
+  "options": {"connections": 3, "warmups": 0, "scenario": "client-request", "depth": "black-box"}
+}

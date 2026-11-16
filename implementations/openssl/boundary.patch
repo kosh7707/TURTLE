@@ -1,0 +1,124 @@
+--- a/ssl/ssl_local.h
++++ b/ssl/ssl_local.h
+@@ -1244,6 +1244,7 @@
+ struct ssl_connection_st {
+     /* type identifier and common data */
+     struct ssl_st ssl;
++    int turtle_boundary;
+ 
+     /*
+      * The actual end user's SSL object. Could be different to this one for
+--- a/ssl/statem/statem_local.h
++++ b/ssl/statem/statem_local.h
+@@ -570,3 +570,6 @@
+ int tls_parse_stoc_server_cert_type(SSL_CONNECTION *s, PACKET *pkt,
+                                     unsigned int context,
+                                     X509 *x, size_t chainidx);
++
++MSG_PROCESS_RETURN turtle_openssl_finished_post(SSL_CONNECTION *s, int was_first);
++int turtle_openssl_server_hello_post(SSL_CONNECTION *s);
+--- a/ssl/statem/statem_lib.c
++++ b/ssl/statem/statem_lib.c
+@@ -835,7 +835,6 @@
+ MSG_PROCESS_RETURN tls_process_finished(SSL_CONNECTION *s, PACKET *pkt)
+ {
+     size_t md_len;
+-    SSL *ssl = SSL_CONNECTION_GET_SSL(s);
+     int was_first = SSL_IS_FIRST_HANDSHAKE(s);
+     int ok;
+ 
+@@ -913,6 +912,13 @@
+         s->s3.previous_server_finished_len = md_len;
+     }
+ 
++    if (s->turtle_boundary) return MSG_PROCESS_FINISHED_READING;
++    return turtle_openssl_finished_post(s, was_first);
++}
++
++MSG_PROCESS_RETURN turtle_openssl_finished_post(SSL_CONNECTION *s, int was_first)
++{
++    SSL *ssl = SSL_CONNECTION_GET_SSL(s);
+     /*
+      * In TLS1.3 we also have to change cipher state and do any final processing
+      * of the initial server flight (if we are a client)
+--- a/ssl/statem/statem_clnt.c
++++ b/ssl/statem/statem_clnt.c
+@@ -1797,36 +1797,7 @@
+      * In TLSv1.3 we have some post-processing to change cipher state, otherwise
+      * we're done with this message
+      */
+-    if (SSL_CONNECTION_IS_TLS13(s)) {
+-        if (!ssl->method->ssl3_enc->setup_key_block(s)
+-                || !tls13_store_handshake_traffic_hash(s)) {
+-            /* SSLfatal() already called */
+-            goto err;
+-        }
+-        /*
+-         * If we're not doing early-data and we're not going to send a dummy CCS
+-         * (i.e. no middlebox compat mode) then we can change the write keys
+-         * immediately. Otherwise we have to defer this until after all possible
+-         * early data is written. We could just always defer until the last
+-         * moment except QUIC needs it done at the same time as the read keys
+-         * are changed. Since QUIC doesn't do TLS early data or need middlebox
+-         * compat this doesn't cause a problem.
+-         */
+-        if (SSL_IS_QUIC_HANDSHAKE(s)
+-                || (s->early_data_state == SSL_EARLY_DATA_NONE
+-                    && (s->options & SSL_OP_ENABLE_MIDDLEBOX_COMPAT) == 0)) {
+-            if (!ssl->method->ssl3_enc->change_cipher_state(s,
+-                    SSL3_CC_HANDSHAKE | SSL3_CHANGE_CIPHER_CLIENT_WRITE)) {
+-                /* SSLfatal() already called */
+-                goto err;
+-                    }
+-        }
+-        if (!ssl->method->ssl3_enc->change_cipher_state(s,
+-                    SSL3_CC_HANDSHAKE | SSL3_CHANGE_CIPHER_CLIENT_READ)) {
+-            /* SSLfatal() already called */
+-            goto err;
+-        }
+-    }
++    if (!s->turtle_boundary && !turtle_openssl_server_hello_post(s)) goto err;
+ 
+     OPENSSL_free(extensions);
+     return MSG_PROCESS_CONTINUE_READING;
+@@ -4213,3 +4184,40 @@
+     s->early_data_state = SSL_EARLY_DATA_FINISHED_WRITING;
+     return CON_FUNC_SUCCESS;
+ }
++
++int turtle_openssl_server_hello_post(SSL_CONNECTION *s)
++{
++    SSL *ssl = SSL_CONNECTION_GET_SSL(s);
++    if (SSL_CONNECTION_IS_TLS13(s)) {
++        if (!ssl->method->ssl3_enc->setup_key_block(s)
++                || !tls13_store_handshake_traffic_hash(s)) {
++            /* SSLfatal() already called */
++            return 0;
++        }
++        /*
++         * If we're not doing early-data and we're not going to send a dummy CCS
++         * (i.e. no middlebox compat mode) then we can change the write keys
++         * immediately. Otherwise we have to defer this until after all possible
++         * early data is written. We could just always defer until the last
++         * moment except QUIC needs it done at the same time as the read keys
++         * are changed. Since QUIC doesn't do TLS early data or need middlebox
++         * compat this doesn't cause a problem.
++         */
++        if (SSL_IS_QUIC_HANDSHAKE(s)
++                || (s->early_data_state == SSL_EARLY_DATA_NONE
++                    && (s->options & SSL_OP_ENABLE_MIDDLEBOX_COMPAT) == 0)) {
++            if (!ssl->method->ssl3_enc->change_cipher_state(s,
++                    SSL3_CC_HANDSHAKE | SSL3_CHANGE_CIPHER_CLIENT_WRITE)) {
++                /* SSLfatal() already called */
++                return 0;
++                    }
++        }
++        if (!ssl->method->ssl3_enc->change_cipher_state(s,
++                    SSL3_CC_HANDSHAKE | SSL3_CHANGE_CIPHER_CLIENT_READ)) {
++            /* SSLfatal() already called */
++            return 0;
++        }
++    }
++
++    return 1;
++}

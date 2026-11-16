@@ -1,0 +1,12 @@
+{
+  "contract": "turtle-message-study-plan/1",
+  "seed": 20261112,
+  "batches": 1,
+  "samples": 3,
+  "cases": [
+    {"client": "bithac-baseline", "server": "bithac-cached"},
+    {"client": "bithac-cached", "server": "bithac-cached"},
+    {"client": "bithac-cached", "server": "bithac-baseline"}
+  ],
+  "options": {"connections": 3, "warmups": 0, "scenario": "client-request", "mutual_auth": true, "depth": "black-box"}
+}

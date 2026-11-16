@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
-"""별도 실행의 perf.data를 보존하고 엔드포인트·측정 구간별 함수/모듈 표본 비중을 계산합니다."""
-import argparse
-from collections import defaultdict
-import csv
-import hashlib
-import json
-import os
+"""별도 수집 실행의 perf.data·실행 바이너리·심볼 출처와 구간별 CPU 표본을 보존합니다."""
+import argparse,hashlib,json,os,re,shutil,subprocess
 from pathlib import Path
-from raw_record import read_tls_records, lifetime_span
-import re
-import shutil
-import subprocess
-
-
+from collections import defaultdict
+from run import run
 SAMPLE = re.compile(r'^\s*(\d+)/(\d+)\s+(\d+)\.(\d+):\s+(\d+)\s+(\S+):\s+([0-9a-fA-F]+)\s+(.+)$')
+
+
 PERF_VDSO = re.compile(r'/tmp/perf-vdso\.so-[A-Za-z0-9]+')
 
 
@@ -108,7 +101,7 @@ def binary_provenance(root, perf):
                 expected[match[2]] = match[1].lower()
             elif line.strip():
                 other.append(line)
-        manifest = {'schema': 1, 'buildid_list_returncode': code, 'unparsed': other,
+        manifest = {'contract': 'turtle-message-symbols/1', 'buildid_list_returncode': code, 'unparsed': other,
                     'perf_data_sha256': hashlib.sha256((root / 'perf.data').read_bytes()).hexdigest(),
                     'binaries': copy_binaries(root, expected)}
         destination.write_text(json.dumps(manifest, indent=2) + '\n')
@@ -152,140 +145,58 @@ def preserve_unresolved_symbols(samples, binaries):
             sample['symbol_status'] = 'unpreserved_virtual_object'
 
 
-def analyze(root, perf):
-    manifest = json.loads((root / 'profile-manifest.json').read_text())
-    data = root / 'perf.data'
-    if not data.exists() or data.stat().st_size == 0:
-        summary = {'type': 'turtle-cpu-profile', 'schema': 1, 'status': 'missing',
-                   'reason': 'perf_data_missing', 'record_returncode': manifest.get('returncode')}
-        (root / 'cpu-profile.json').write_text(json.dumps(summary, indent=2) + '\n')
-        return 1
-    binaries = binary_provenance(root, perf)
-    # An explicit, possibly incomplete symfs prevents stale live binaries from
-    # silently supplying symbols after a rebuild. Unknown samples remain data.
-    (root / 'symbols').mkdir(exist_ok=True)
-    code = invoke([perf, 'script', '-i', data, '--symfs', root / 'symbols', '--ns', '--show-lost-events',
-                   '-F', 'pid,tid,time,event,period,ip,sym,dso'], root / 'perf.script.txt')
-    attributes_code = invoke([perf, 'evlist', '-i', data, '-v'], root / 'perf.events.txt')
-    invoke([perf, 'report', '-i', data, '--stdio', '--header-only'], root / 'perf.header.txt')
-    samples, other = parse_samples((root / 'perf.script.txt').read_text())
-    preserve_unresolved_symbols(samples, binaries)
-    windows, failures = [], []
-    for raw in sorted((root / 'run').glob('sample-*/*.jsonl')):
-        if raw.stem not in ('client', 'server'):
-            continue
-        records = read_tls_records(raw)
-        header, events = records[0], records[1:]
-        if not header['valid']:
-            failures.append({'source': str(raw.relative_to(root)), 'reason': header['invalid_reason']})
-            continue
-        if not header['config'].get('cpu_profile', False):
-            failures.append({'source': str(raw.relative_to(root)), 'reason': 'separate_profile_marker_missing'})
-            continue
-        pid = header['pid']
-        local = [s for s in samples if s['pid'] == pid and s['tid'] == pid]
-        by_sequence = {e['sequence']: e for e in events}
-        name, begin, end = lifetime_span(header, events)
-        spans = [(name, None, begin, end)]
-        for connection in header['connections']:
-            if connection['start_sequence'] is not None:
-                spans.append(('primary', connection['index'], by_sequence[connection['start_sequence']],
-                              by_sequence[connection['end_sequence']]))
-        for name, index, begin, end in spans:
-            selection = [s for s in local if begin['monotonic_ns'] <= s['monotonic_ns'] <= end['monotonic_ns']]
-            windows.append({'source': str(raw.relative_to(root)), 'role': header['role'], 'pid': pid,
-                            'tid': pid, 'connection': index, 'window': name,
-                            'begin_monotonic_ns': begin['monotonic_ns'], 'end_monotonic_ns': end['monotonic_ns'],
-                            'elapsed_ns': end['monotonic_ns'] - begin['monotonic_ns'],
-                            'thread_cpu_ns': end['thread_cpu_ns'] - begin['thread_cpu_ns'],
-                            'thread_cpu_scope': 'thread-user-plus-kernel', **distribution(selection)})
-    files = {str(data): hashlib.sha256(data.read_bytes()).hexdigest()}
-    for entry in binaries['binaries']:
-        if entry['status'] == 'available':
-            files[entry['path']] = entry['sha256']
-    complete = (binaries['status'] == 'available' and not manifest.get('returncode') and
-                not code and not attributes_code and windows and samples and
-                not other and not failures)
-    summary = {'type': 'turtle-cpu-profile', 'schema': 1,
-               'status': 'available' if complete else 'missing',
-               'record_returncode': manifest.get('returncode'), 'script_returncode': code,
-               'sampling_event': manifest['event'], 'frequency_hz': manifest['frequency_hz'],
-               'clock': 'CLOCK_MONOTONIC via perf record --clockid mono',
-               'process_scope': 'fresh endpoint PIDs, main TID only; local runner samples excluded from windows',
-               'cpu_scope': 'task follows scheduler; no per-core attribution',
-               'event_attributes_file': 'perf.events.txt', 'unparsed_or_lost_records': other,
-               'binary_provenance': binaries,
-               'tool_warnings': {p.name: p.read_text() for p in root.glob('*.stderr') if p.stat().st_size},
-               'windows': windows, 'failed_endpoints': failures, 'artifact_sha256': files,
-               'limitations': ['비중은 관측 표본의 period 가중치이며 총 CPU 시간이나 총 사이클이 아닙니다.',
-                              '짧은 연결 구간은 표본이 없을 수 있으며 이를 0으로 표현하지 않습니다.',
-                              '알 수 없는 함수 표본도 분모와 원자료에 남습니다.',
-                              '저장·build ID 확인이 없는 vDSO 등 가상 객체의 함수 이름은 unknown으로 유지합니다.',
-                              'symbols/에는 build ID가 일치한 실행 파일을 보존합니다. 별도 debug-info 파일·커널 심볼은 보장하지 않습니다.',
-                              '호출 스택·커널 재전송 tracepoint는 수집하지 않습니다.',
-                              '이 실행의 경과시간은 표본 계측 부담을 포함합니다. 일반 시간 실행과 합치지 않습니다.']}
-    (root / 'cpu-profile.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n')
-    with (root / 'cpu-functions.csv').open('w', newline='') as output:
-        writer = csv.DictWriter(output, fieldnames=['source', 'role', 'pid', 'window', 'connection',
-                                                   'module', 'symbol', 'samples', 'period_weight', 'period_fraction'])
-        writer.writeheader()
-        for window in windows:
-            for function in window['functions']:
-                writer.writerow({**{k: window[k] for k in ('source', 'role', 'pid', 'window', 'connection')},
-                                 **function})
-    print(f'{len(samples)} samples, {len(windows)} endpoint windows, status={summary["status"]}')
-    return int(not complete)
+def analyze(root,perf):
+    root=Path(root)
+    manifest=json.loads((root/'profile.json').read_text())
+    if manifest.get('contract')!='turtle-message-cpu-collection/1':raise ValueError('unsupported CPU collection')
+    roles={}
+    for role in ('client','server'):
+        data=root/role
+        if not (data/'perf.data').is_file() or not (data/'perf.data').stat().st_size:
+            roles[role]=dict(status='missing',reason='perf.data unavailable');continue
+        binaries=binary_provenance(data,perf)
+        (data/'symbols').mkdir(exist_ok=True)
+        code=invoke([perf,'script','-i',data/'perf.data','--symfs',data/'symbols','--ns','--show-lost-events','-F','pid,tid,time,event,period,ip,sym,dso'],data/'perf.script.txt')
+        invoke([perf,'evlist','-i',data/'perf.data','-v'],data/'perf.events.txt')
+        invoke([perf,'report','-i',data/'perf.data','--stdio','--header-only'],data/'perf.header.txt')
+        samples,other=parse_samples((data/'perf.script.txt').read_text());preserve_unresolved_symbols(samples,binaries)
+        endpoint=json.loads((root/'run'/role/'manifest.json').read_text())
+        if not endpoint['observation']['cpu_samples']=='separate-collection-requested':raise ValueError('CPU collection marker absent')
+        events=[json.loads(line) for line in (root/'run'/role/'events.jsonl').read_text().splitlines()]
+        local=[s for s in samples if s['pid']==endpoint['pid'] and s['tid']==endpoint['pid']]
+        windows=[]
+        for e in events:
+            if e['begin'] is None or e['end'] is None:continue
+            first,last=e['begin']['monotonic_ns'],e['end']['monotonic_ns']
+            windows.append(dict(kind=e['kind'],connection_id=e['connection_id'],message_id=e['message_id'],record_id=e['record_id'],begin_ns=first,end_ns=last,
+                                distribution=distribution([s for s in local if first<=s['monotonic_ns']<last])))
+        roles[role]=dict(status='available' if code==0 and samples and not other and binaries['status']=='available' else 'missing',
+                         windows=windows,sample_count=len(samples),unparsed_or_lost=other,binaries=binaries,main_thread=endpoint['pid'],all_main_thread=distribution(local))
+    report=dict(contract='turtle-message-cpu-report/1',collection=manifest,roles=roles,
+                semantics='sample-period fractions; overlapping parent/child windows are separate views; not exact function call durations')
+    (root/'cpu-report.json').write_text(json.dumps(report,indent=2)+'\n')
+    return report
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('run', 'analyze'))
-    parser.add_argument('--perf', type=Path)
-    parser.add_argument('--build', type=Path, default=Path('build'))
-    parser.add_argument('--pki', type=Path, default=Path('pki/default'))
-    parser.add_argument('--client')
-    parser.add_argument('--client-bin', type=Path)
-    parser.add_argument('--server')
-    parser.add_argument('--server-bin', type=Path)
-    parser.add_argument('--group', default='secp256r1')
-    parser.add_argument('--samples', type=int, default=3)
-    parser.add_argument('--event', choices=('cycles:u', 'cpu-clock:u', 'cycles', 'cpu-clock'), default='cycles:u')
-    parser.add_argument('--frequency', type=int, default=997)
-    parser.add_argument('--no-affinity', action='store_true')
-    parser.add_argument('--output', type=Path, required=True)
-    args = parser.parse_args()
-    perf = args.perf or shutil.which('perf')
-    if perf is None:
-        parser.error('--perf에 perf 실행 파일을 지정하거나 PATH에 준비해야 합니다')
-    if shutil.which('readelf') is None:
-        parser.error('수집 바이너리 build ID 대조에 binutils의 readelf가 필요합니다')
-    perf = Path(perf).resolve()
-    root, build, pki = args.output.resolve(), args.build.resolve(), args.pki.resolve()
-    if args.action == 'run':
-        if args.samples < 1 or not 1 <= args.frequency <= 100000:
-            parser.error('samples >= 1, frequency 1..100000이 필요합니다')
-        root.mkdir(parents=True, exist_ok=False)
-        argv = [perf, 'record', '-e', args.event, '-F', args.frequency, '--clockid', 'mono',
-                '--no-buildid-cache', '-o', root / 'perf.data', '--', build / 'turtle-local',
-                '--group', args.group, '--pki', pki,
-                '--adapter-dir', build / 'adapters', '--mutual-auth', '--scenario', 'client-request',
-                '--samples', args.samples, '--connections', 1, '--warmups', 0,
-                '--mode', 'timing', '--cpu-profile', '--no-perf', '--output', root / 'run']
-        for option in ('client', 'server', 'client_bin', 'server_bin'):
-            value = getattr(args, option)
-            if value is not None:
-                argv += ['--' + option.replace('_', '-'), value]
-        if args.no_affinity:
-            argv += ['--no-affinity']
-        manifest = {'schema': 1, 'event': args.event, 'frequency_hz': args.frequency,
-                    'command': list(map(str, argv)), 'kernel': os.uname().release,
-                    'performance_experiment': False, 'call_graph': False}
-        invoke([perf, '--version'], root / 'perf.version.txt')
-        (root / 'profile-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-        manifest['returncode'] = invoke(argv, root / 'record.stdout')
-        (root / 'profile-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    return analyze(root, perf)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('action',choices=['run','analyze']);p.add_argument('--perf',default=shutil.which('perf'));p.add_argument('--build',default='build-message');p.add_argument('--pki',default='pki/default');p.add_argument('--output',required=True);p.add_argument('--client',default='openssl');p.add_argument('--server',default='openssl');p.add_argument('--group',default='P-256');p.add_argument('--connections',type=int,default=20);p.add_argument('--event',choices=['cycles:u','cpu-clock:u'],default='cycles:u');p.add_argument('--frequency',type=int,default=997)
+    a=p.parse_args();root=Path(a.output).resolve()
+    if not a.perf:p.error('perf path is required')
+    perf=str(Path(a.perf).resolve())
+    if a.action=='run':
+        root.mkdir(parents=True,exist_ok=False)
+        manifest=dict(contract='turtle-message-cpu-collection/1',event=a.event,frequency_hz=a.frequency,clock='CLOCK_MONOTONIC',kernel=os.uname().release,ordinary_performance_sample=False,collection_overhead=dict(status='not-collected',separate_collector_cpu_ns=None,endpoint_instrumentation='perf sampling active; no overhead subtraction'),prefixes={},success=False)
+        for role in ('client','server'):
+            (root/role).mkdir()
+            manifest['prefixes'][role]=[perf,'record','-e',a.event,'-F',str(a.frequency),'--clockid','mono','--no-buildid-cache','-o',str(root/role/'perf.data'),'--']
+        invoke([perf,'--version'],root/'perf.version.txt')
+        try:
+            run(a.build,a.pki,root/'run',a.client,a.server,prefixes=manifest['prefixes'],group=a.group,connections=a.connections,depth='white-box',mutual_auth=True,cpu_samples=True)
+            manifest['success']=True
+        except Exception as error:manifest['failure']=str(error)
+        (root/'profile.json').write_text(json.dumps(manifest,indent=2)+'\n')
+    report=analyze(root,perf)
+    return 0 if all(r['status']=='available' for r in report['roles'].values()) else 1
 
 
-if __name__ == '__main__':
-    raise SystemExit(main())
+if __name__=='__main__':raise SystemExit(main())

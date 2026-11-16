@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 정상 TLS 시험용 로컬 CA와 P-256 인증서를 만듭니다.
 set -euo pipefail
-out=${1:-build/pki}
+out=${1:-pki/default}
 algorithm=${2:-ecdsa}
 chain_length=${3:-2}
 case "$algorithm" in ecdsa|rsa|ed25519) ;; *) echo "algorithm: ecdsa, rsa, ed25519" >&2; exit 2;; esac
@@ -68,6 +68,13 @@ for role in server client; do
     usage=serverAuth; serial=3
     if [[ $role == client ]]; then usage=clientAuth; serial=4; fi
     printf '%s\n' '[extensions]' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature' "extendedKeyUsage=$usage" 'subjectAltName=DNS:localhost,IP:127.0.0.1' 'subjectKeyIdentifier=hash' 'authorityKeyIdentifier=keyid,issuer' > "$out/$role.ext"
+    python3 - "$out/$role.ext" "${CERT_PADDING:-0}" <<'PY_PADDING'
+import pathlib,sys
+size=int(sys.argv[2])
+if not 0<=size<=65536: raise ValueError('CERT_PADDING must be 0..65536')
+if size:
+    with pathlib.Path(sys.argv[1]).open('a') as f:f.write('1.3.6.1.4.1.55555.1=ASN1:UTF8String:'+('P'*size)+'\n')
+PY_PADDING
     sign "$role" "$issuer" "$serial"
     cat "$out/$role.pem" "$chain_file" > "$out/$role-chain.pem"
     if ((chain_length > 1)); then

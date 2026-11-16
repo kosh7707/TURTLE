@@ -1,0 +1,291 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2411,6 +2411,21 @@
+     add_library(wolfssl STATIC ${LIB_SOURCES})
+ endif()
+ 
++# TURTLE comparison: enable optimization only in the two ML-KEM translation units.
++# Assembly and CPUID support are compiled identically in both builds. AES, ECC,
++# SHA-256 and the generic SHA-3 objects keep the same build definitions.
++option(TURTLE_MLKEM_AVX2 "Use upstream ML-KEM AVX2 dispatch" OFF)
++if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
++    message(FATAL_ERROR "This ML-KEM comparison pair is x86_64 only")
++endif()
++enable_language(ASM)
++target_sources(wolfssl PRIVATE wolfcrypt/src/wc_mlkem_asm.S wolfcrypt/src/sha3_asm.S)
++set(_turtle_mlkem_flags USE_INTEL_SPEEDUP HAVE_INTEL_AVX1 HAVE_INTEL_AVX2)
++if(NOT TURTLE_MLKEM_AVX2)
++    list(APPEND _turtle_mlkem_flags WC_MLKEM_NO_ASM)
++endif()
++set_source_files_properties(wolfcrypt/src/wc_mlkem.c wolfcrypt/src/wc_mlkem_poly.c
++    PROPERTIES COMPILE_DEFINITIONS "${_turtle_mlkem_flags}")
+ add_library(wolfssl::wolfssl ALIAS wolfssl)
+ 
+ if (NOT "$ENV{ARIA_DIR}" STREQUAL "")
+--- a/src/tls.c
++++ b/src/tls.c
+@@ -8390,6 +8390,28 @@
+ }
+ 
+ #ifdef WOLFSSL_HAVE_MLKEM
++/* Full KEM API spans and actual polynomial dispatch use the connection callback. */
++static void turtle_kem_span(WOLFSSL* ssl, int op, int end, int type, int result)
++{
++    if (end && result == 0) {
++        if (op >= 6 && op <= 8) ssl->turtle_kem[op-6]++;
++        if (op >= 9 && op <= 11 && type == 2) ssl->turtle_kem[3]++;
++    }
++}
++static void turtle_kem_poly(void* context, int op, int end, int backend)
++{
++    turtle_kem_span((WOLFSSL*)context, op, end, backend, 0);
++}
++static void turtle_kem_attach(WOLFSSL* ssl, KyberKey* key)
++{
++#ifdef OPENSSL_EXTRA
++    key->turtle_trace = turtle_kem_poly;
++    key->turtle_trace_ctx = ssl;
++#endif
++}
++#endif
++
++#ifdef WOLFSSL_HAVE_MLKEM
+ #if defined(WOLFSSL_MLKEM_CACHE_A) && \
+     !defined(WOLFSSL_TLSX_PQC_MLKEM_STORE_PRIV_KEY)
+     /* Store KyberKey object rather than private key bytes in key share entry.
+@@ -8611,7 +8633,10 @@
+     }
+ 
+     if (ret == 0) {
++        turtle_kem_attach(ssl, kem);
++        turtle_kem_span(ssl, 6, 0, 0, 0);
+         ret = wc_KyberKey_MakeKey(kem, ssl->rng);
++        turtle_kem_span(ssl, 6, 1, 0, ret);
+         if (ret != 0) {
+             WOLFSSL_MSG("Kyber keygen failure");
+         }
+@@ -9582,8 +9607,11 @@
+ #endif
+ 
+     if (ret == 0) {
++        turtle_kem_attach(ssl, kem);
++        turtle_kem_span(ssl, 8, 0, 0, 0);
+         ret = wc_KyberKey_Decapsulate(kem, ssOutput,
+                                       keyShareEntry->ke, ctSz);
++        turtle_kem_span(ssl, 8, 1, 0, ret);
+         if (ret != 0) {
+             WOLFSSL_MSG("wc_KyberKey decapsulation failure.");
+             ret = BAD_FUNC_ARG;
+@@ -10281,8 +10309,11 @@
+         ret = wc_KyberKey_DecodePublicKey(kemKey, clientData, pubSz);
+     }
+     if (ret == 0) {
++        turtle_kem_attach(ssl, kemKey);
++        turtle_kem_span(ssl, 7, 0, 0, 0);
+         ret = wc_KyberKey_Encapsulate(kemKey, ciphertext,
+                                       ssOutput, ssl->rng);
++        turtle_kem_span(ssl, 7, 1, 0, ret);
+         if (ret != 0) {
+             WOLFSSL_MSG("wc_KyberKey encapsulation failure.");
+         }
+--- a/wolfcrypt/src/wc_mlkem.c
++++ b/wolfcrypt/src/wc_mlkem.c
+@@ -206,6 +206,8 @@
+         key->devId = devId;
+     #endif
+         key->flags = 0;
++        key->turtle_trace = NULL;
++        key->turtle_trace_ctx = NULL;
+ 
+         /* Zero out all data. */
+         XMEMSET(&key->prf, 0, sizeof(key->prf));
+@@ -504,7 +506,7 @@
+         /* Generate key pair from random data.
+          * Alg 13: Steps 16-18.
+          */
+-        mlkem_keygen(s, t, e, a, k);
++        mlkem_keygen(s, t, e, a, k, key);
+ #else
+         /* Generate noise using PRF.
+          * Alg 13: Steps 8-11: generate s
+@@ -790,7 +792,7 @@
+ 
+         /* Perform encapsulation maths.
+          *   Steps 18-19, 21: calculate u and v */
+-        mlkem_encapsulate(key->pub, u, v, a, y, e1, e2, mu, k);
++        mlkem_encapsulate(key->pub, u, v, a, y, e1, e2, mu, k, key);
+     }
+ #else /* WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM */
+     if (ret == 0) {
+@@ -1254,7 +1256,7 @@
+ 
+         /* Decapsulate the cipher text into polynomial.
+          * Step 6: w <- v' - InvNTT(s_hat_trans o NTT(u')) */
+-        mlkem_decapsulate(key->priv, w, u, v, k);
++        mlkem_decapsulate(key->priv, w, u, v, k, key);
+ 
+         /* Convert the polynomial into a array of bytes (message).
+          * Step 7: m <- ByteEncode_1(Compress_1(w)) */
+--- a/wolfcrypt/src/wc_mlkem_poly.c
++++ b/wolfcrypt/src/wc_mlkem_poly.c
+@@ -99,6 +99,13 @@
+ 
+ /* Declared in wc_mlkem.c to stop compiler optimizer from simplifying. */
+ extern volatile sword16 mlkem_opt_blocker;
++
++static void turtle_poly_span(const MlKemKey* key, int op, int end, int backend)
++{
++    if (key->turtle_trace != NULL)
++        key->turtle_trace(key->turtle_trace_ctx, op, end, backend);
++}
++
+ 
+ #if defined(USE_INTEL_SPEEDUP) || (defined(__aarch64__) && \
+     defined(WOLFSSL_ARMASM))
+@@ -1266,7 +1273,7 @@
+  * @param  [in]       a  Random values in an array of vectors of polynomials.
+  * @param  [in]       k  Number of polynomials in vector.
+  */
+-void mlkem_keygen(sword16* s, sword16* t, sword16* e, const sword16* a, int k)
++void mlkem_keygen(sword16* s, sword16* t, sword16* e, const sword16* a, int k, const MlKemKey* turtle_key)
+ {
+     int i;
+ 
+@@ -1352,7 +1359,7 @@
+  */
+ void mlkem_encapsulate(const sword16* t, sword16* u , sword16* v,
+     const sword16* a, sword16* y, const sword16* e1, const sword16* e2,
+-    const sword16* m, int k)
++    const sword16* m, int k, const MlKemKey* turtle_key)
+ {
+     int i;
+ 
+@@ -1439,7 +1446,7 @@
+  * @param  [in]   k  Number of polynomials in vector.
+  */
+ void mlkem_decapsulate(const sword16* s, sword16* w, sword16* u,
+-    const sword16* v, int k)
++    const sword16* v, int k, const MlKemKey* turtle_key)
+ {
+     int i;
+ 
+@@ -1859,19 +1866,23 @@
+  * @param  [in]       a  Random values in an array of vectors of polynomials.
+  * @param  [in]       k  Number of polynomials in vector.
+  */
+-void mlkem_keygen(sword16* s, sword16* t, sword16* e, const sword16* a, int k)
++void mlkem_keygen(sword16* s, sword16* t, sword16* e, const sword16* a, int k, const MlKemKey* turtle_key)
+ {
+ #ifdef USE_INTEL_SPEEDUP
+     if ((IS_INTEL_AVX2(cpuid_flags)) && (SAVE_VECTOR_REGISTERS2() == 0)) {
+         /* Alg 13: Steps 16-18 */
++        turtle_poly_span(turtle_key, 9, 0, 2);
+         mlkem_keygen_avx2(s, t, e, a, k);
++        turtle_poly_span(turtle_key, 9, 1, 2);
+         RESTORE_VECTOR_REGISTERS();
+     }
+     else
+ #endif
+     {
+         /* Alg 13: Steps 16-18 */
++        turtle_poly_span(turtle_key, 9, 0, 1);
+         mlkem_keygen_c(s, t, e, a, k);
++        turtle_poly_span(turtle_key, 9, 1, 1);
+     }
+ }
+ 
+@@ -2053,17 +2064,21 @@
+  */
+ void mlkem_encapsulate(const sword16* pub, sword16* u, sword16* v,
+     const sword16* a, sword16* y, const sword16* e1, const sword16* e2,
+-    const sword16* m, int k)
++    const sword16* m, int k, const MlKemKey* turtle_key)
+ {
+ #ifdef USE_INTEL_SPEEDUP
+     if (IS_INTEL_AVX2(cpuid_flags) && (SAVE_VECTOR_REGISTERS2() == 0)) {
++        turtle_poly_span(turtle_key, 10, 0, 2);
+         mlkem_encapsulate_avx2(pub, u, v, a, y, e1, e2, m, k);
++        turtle_poly_span(turtle_key, 10, 1, 2);
+         RESTORE_VECTOR_REGISTERS();
+     }
+     else
+ #endif
+     {
++        turtle_poly_span(turtle_key, 10, 0, 1);
+         mlkem_encapsulate_c(pub, u, v, a, y, e1, e2, m, k);
++        turtle_poly_span(turtle_key, 10, 1, 1);
+     }
+ }
+ 
+@@ -2245,17 +2260,21 @@
+  * @param  [in]   k   Number of polynomials in vector.
+  */
+ void mlkem_decapsulate(const sword16* s, sword16* w, sword16* u,
+-    const sword16* v, int k)
++    const sword16* v, int k, const MlKemKey* turtle_key)
+ {
+ #ifdef USE_INTEL_SPEEDUP
+     if (IS_INTEL_AVX2(cpuid_flags) && (SAVE_VECTOR_REGISTERS2() == 0)) {
++        turtle_poly_span(turtle_key, 11, 0, 2);
+         mlkem_decapsulate_avx2(s, w, u, v, k);
++        turtle_poly_span(turtle_key, 11, 1, 2);
+         RESTORE_VECTOR_REGISTERS();
+     }
+     else
+ #endif
+     {
++        turtle_poly_span(turtle_key, 11, 0, 1);
+         mlkem_decapsulate_c(s, w, u, v, k);
++        turtle_poly_span(turtle_key, 11, 1, 1);
+     }
+ }
+ 
+--- a/wolfssl/internal.h
++++ b/wolfssl/internal.h
+@@ -5830,6 +5830,7 @@
+ 
+ /* wolfSSL ssl type */
+ struct WOLFSSL {
++    unsigned long long turtle_kem[4];
+     int turtle_boundary;
+     byte *turtle_message;
+     word32 turtle_capacity, turtle_length;
+--- a/wolfssl/wolfcrypt/wc_mlkem.h
++++ b/wolfssl/wolfcrypt/wc_mlkem.h
+@@ -110,6 +110,9 @@
+ 
+ /* ML-KEM key. */
+ struct MlKemKey {
++    /* Borrowed per-key trace context; never global. No secret bytes are emitted. */
++    void (*turtle_trace)(void*, int, int, int);
++    void* turtle_trace_ctx;
+     /* Type of key: WC_ML_KEM_512, WC_ML_KEM_768, WC_ML_KEM_1024 */
+     int type;
+     /* Dynamic memory allocation hint. */
+@@ -152,7 +155,7 @@
+ #ifndef WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM
+ WOLFSSL_LOCAL
+ void mlkem_keygen(sword16* priv, sword16* pub, sword16* e, const sword16* a,
+-    int kp);
++    int kp, const MlKemKey* turtle_key);
+ #else
+ WOLFSSL_LOCAL
+ int mlkem_keygen_seeds(sword16* priv, sword16* pub, MLKEM_PRF_T* prf,
+@@ -162,7 +165,7 @@
+ WOLFSSL_LOCAL
+ void mlkem_encapsulate(const sword16* pub, sword16* bp, sword16* v,
+     const sword16* at, sword16* sp, const sword16* ep, const sword16* epp,
+-    const sword16* m, int kp);
++    const sword16* m, int kp, const MlKemKey* turtle_key);
+ #else
+ WOLFSSL_LOCAL
+ int mlkem_encapsulate_seeds(const sword16* pub, MLKEM_PRF_T* prf, sword16* bp,
+@@ -171,7 +174,7 @@
+ #endif
+ WOLFSSL_LOCAL
+ void mlkem_decapsulate(const sword16* priv, sword16* mp, sword16* bp,
+-    const sword16* v, int kp);
++    const sword16* v, int kp, const MlKemKey* turtle_key);
+ 
+ WOLFSSL_LOCAL
+ int mlkem_gen_matrix(MLKEM_PRF_T* prf, sword16* a, int kp, byte* seed,

@@ -1,0 +1,10 @@
+{
+  "contract": "turtle-message-network-plan/1",
+  "paths": {
+    "tls_c2s": {"delay_ms": 5, "loss_percent": 0, "rate_bps": 1000000},
+    "tls_s2c": {"delay_ms": 7, "loss_percent": 0, "rate_bps": 2000000}
+  },
+  "initial_cwnd": {"client": 4, "server": 5},
+  "kernel_events": true,
+  "targeted_drop": {"tls_c2s": 0, "tls_s2c": null}
+}

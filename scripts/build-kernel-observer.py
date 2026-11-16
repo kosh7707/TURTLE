@@ -18,7 +18,7 @@ HEADERS = {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--fetch-headers', action='store_true')
-    parser.add_argument('--output', type=Path, default=Path('build/kernel-observer.bpf.o'))
+    parser.add_argument('--output', type=Path, default=Path('build-message/kernel-observer.bpf.o'))
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     headers = root / '.deps/src/libbpf-headers-1.6.3'
@@ -35,7 +35,7 @@ def main():
     command = ['clang', '-target', 'bpf', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
                '-I', str(headers), '-I', f'/usr/include/{multiarch}', '-c', str(source), '-o', str(args.output)]
     subprocess.run(command, check=True)
-    manifest = {'type': 'turtle-kernel-observer-build', 'schema': 1,
+    manifest = {'contract': 'turtle-message-kernel-build/1',
                 'libbpf_headers_version': '1.6.3', 'headers_sha256': HEADERS,
                 'source_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
                 'object_sha256': hashlib.sha256(args.output.read_bytes()).hexdigest(),
