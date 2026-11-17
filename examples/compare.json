@@ -1,0 +1,22 @@
+{
+  "baseline": "openssl",
+  "repetitions": 30,
+  "seed": 0,
+  "network": "netem",
+  "configurations": [
+    {
+      "id": "openssl",
+      "server": {"binary": "out/build/native/turtle-openssl", "args": ["--cert", "out/certificates/server.crt", "--key", "out/certificates/server.key", "--groups", "X25519MLKEM768"]},
+      "client": {"binary": "out/build/native/turtle-openssl", "args": ["--ca", "out/certificates/server.crt", "--groups", "X25519MLKEM768"]},
+      "inputs": ["out/certificates/server.crt", "out/certificates/server.key"],
+      "netem": {"mtu": 1500, "client_to_server": {"delay_ms": 2, "loss_pct": 0, "rate_mbit": 100}, "server_to_client": {"delay_ms": 2, "loss_pct": 0, "rate_mbit": 100}}
+    },
+    {
+      "id": "wolfssl",
+      "server": {"binary": "out/build/native/turtle-wolfssl", "args": ["--cert", "out/certificates/server.crt", "--key", "out/certificates/server.key", "--groups", "X25519MLKEM768"]},
+      "client": {"binary": "out/build/native/turtle-wolfssl", "args": ["--ca", "out/certificates/server.crt", "--groups", "X25519MLKEM768"]},
+      "inputs": ["out/certificates/server.crt", "out/certificates/server.key"],
+      "netem": {"mtu": 1500, "client_to_server": {"delay_ms": 2, "loss_pct": 0, "rate_mbit": 100}, "server_to_client": {"delay_ms": 2, "loss_pct": 0, "rate_mbit": 100}}
+    }
+  ]
+}

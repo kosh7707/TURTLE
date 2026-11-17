@@ -1,0 +1,3 @@
+#pragma once
+#define TURTLE_SOURCE_SHA256 "@turtle_source_sha256@"
+#define TURTLE_COMPILER "@CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@"

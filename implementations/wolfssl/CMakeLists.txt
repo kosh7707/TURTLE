@@ -1,0 +1,20 @@
+find_path(WOLFSSL_INCLUDE_DIR wolfssl/ssl.h HINTS "${WOLFSSL_ROOT_DIR}/include" REQUIRED)
+find_library(WOLFSSL_LIBRARY NAMES wolfssl HINTS "${WOLFSSL_ROOT_DIR}/lib" REQUIRED)
+find_package(Threads REQUIRED)
+add_library(turtle_wolfssl_native UNKNOWN IMPORTED)
+set_target_properties(turtle_wolfssl_native PROPERTIES
+    IMPORTED_LOCATION "${WOLFSSL_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${WOLFSSL_INCLUDE_DIR}")
+set(TURTLE_WOLFSSL_CONFIG_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/configure.cpp"
+    CACHE FILEPATH "wolfSSL configuration source")
+add_library(turtle-wolfssl_implementation STATIC implementation.cpp "${TURTLE_WOLFSSL_CONFIG_SOURCE}")
+target_include_directories(turtle-wolfssl_implementation PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(turtle-wolfssl_implementation PRIVATE cxx_std_20)
+target_link_libraries(turtle-wolfssl_implementation PRIVATE turtle::contract turtle_wolfssl_native Threads::Threads m)
+add_executable(turtle-wolfssl main.cpp)
+target_link_libraries(turtle-wolfssl PRIVATE turtle::endpoint turtle-wolfssl_implementation)
+set_target_properties(turtle-wolfssl PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+foreach(target IN ITEMS turtle-wolfssl turtle-wolfssl_implementation)
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
+endforeach()

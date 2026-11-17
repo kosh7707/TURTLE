@@ -1,1 +1,12 @@
 /.vs/
+/.deps/
+/AGENTS.md
+/docs/temp/
+/docs/references/
+/build/
+/build-tests/
+
+__pycache__/
+*.pyc
+
+/out/
