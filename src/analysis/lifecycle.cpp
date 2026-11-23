@@ -169,6 +169,55 @@ void timing(const Task &task, Endpoint &ep) {
           elapsed(begin, verified.at("end"), clock);
   }
 }
+
+Json measurement_rows(const Json &role_report, const std::string &role,
+                      const std::string &purpose, bool eligible,
+                      bool ordinary) {
+  Json rows = Json::array();
+  auto append = [&](const std::string &name, Json metric, const char *group,
+                    const std::string &scope, bool sample) {
+    const bool valid = eligible && sample && available(metric);
+    Json exclusion = nullptr;
+    if (!valid) {
+      if (!eligible)
+        exclusion = "ineligible_attempt";
+      else if (purpose != "measurement")
+        exclusion = purpose;
+      else if (!sample)
+        exclusion = "separate_perf_collection";
+      else
+        exclusion = metric.at("reason");
+    }
+    const char *unit = "count";
+    if (name.ends_with("_ns"))
+      unit = "ns";
+    else if (name.ends_with("bytes"))
+      unit = "bytes";
+    metric.update({{"metric", name},
+                   {"role", role},
+                   {"group", group},
+                   {"scope", scope},
+                   {"unit", unit},
+                   {"valid_sample", valid},
+                   {"excluded_reason", std::move(exclusion)}});
+    rows.push_back(std::move(metric));
+  };
+
+  for (const auto &[name, metric] : role_report.at("metrics").items())
+    append(name, metric, "metrics", "", ordinary);
+  const auto operations =
+      role_report.at("counters").value("operations", Json::object());
+  for (const auto &[scope, metrics] : operations.items()) {
+    if (metrics.empty())
+      continue;
+    const bool sample = purpose == "measurement" &&
+                        available(metrics.at("cycles")) &&
+                        available(metrics.at("instructions"));
+    for (const auto &[name, metric] : metrics.items())
+      append(name, metric, "counter_metrics", scope, sample);
+  }
+  return rows;
+}
 } // namespace
 Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
   Task t(config);
@@ -350,34 +399,7 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
                {"event_links", ep.links},
                {"cpu_profile", cpu},
                {"counters", counters_report}});
-  Json rows = Json::array();
-  auto row = [&](const std::string &name, const Json &m, std::string group,
-                 std::string scope, bool sample) {
-    const bool valid = eligible && sample && available(m);
-    auto r = m;
-    r.update({{"metric", name},
-              {"role", t.role},
-              {"group", group},
-              {"scope", scope},
-              {"unit", name.ends_with("_ns")     ? "ns"
-                       : name.ends_with("bytes") ? "bytes"
-                                                 : "count"},
-              {"valid_sample", valid},
-              {"excluded_reason", valid       ? Json(nullptr)
-                                  : !eligible ? Json("ineligible_attempt")
-                                  : purpose != "measurement" ? Json(purpose)
-                                  : !sample ? Json("separate_perf_collection")
-                                            : m.at("reason")}});
-    rows.push_back(std::move(r));
-  };
-  for (const auto &[name, m] : ep.metrics.items())
-    row(name, m, "metrics", "", ordinary);
-  const auto operations = counters_report.value("operations", Json::object());
-  for (const auto &[scope, metrics] : operations.items())
-    for (const auto &[name, m] : metrics.items())
-      row(name, m, "counter_metrics", scope,
-          purpose == "measurement" && available(metrics.at("cycles")) &&
-              available(metrics.at("instructions")));
+  auto rows = measurement_rows(role, t.role, purpose, eligible, ordinary);
   Json reasons = task_errors;
   for (const auto &m : {membership, metric_errors})
     for (const auto &r : m)

@@ -324,6 +324,13 @@ void presend_order(const std::filesystem::path &dir, const std::string &role,
             "named_copy_orders_whole_greeting_and_finished_not_response");
   }
 }
+const Json &metric_row(const Json &report, const char *name) {
+  for (const auto &row : report.at("measurements"))
+    if (row.at("group") == "metrics" && row.at("metric") == name)
+      return row;
+  throw std::runtime_error(std::string("missing metric row: ") + name);
+}
+
 void lifecycle(const std::filesystem::path &root) {
   using turtle::artifact::load;
   using turtle::artifact::save;
@@ -440,6 +447,18 @@ void lifecycle(const std::filesystem::path &root) {
               warm.at("measurements").begin(), warm.at("measurements").end(),
               [](const Json &r) { return r.at("valid_sample") == true; }),
           "warmup_must_not_emit_valid_rows");
+  const auto &wall = metric_row(sample, "scenario_wall_ns");
+  require(wall.at("valid_sample") == true && wall.at("role") == "client" &&
+              wall.at("unit") == "ns" && wall.at("scope") == "" &&
+              wall.at("excluded_reason").is_null(),
+          "ordinary_timing_row");
+  const auto &bytes = metric_row(sample, "retransmitted_send_bytes");
+  require(bytes.at("valid_sample") == false && bytes.at("unit") == "bytes" &&
+              bytes.at("excluded_reason") == "tcp_evidence_unavailable",
+          "missing_metric_keeps_its_own_reason");
+  require(metric_row(warm, "retransmitted_send_bytes").at("excluded_reason") ==
+              "warmup",
+          "warmup_precedes_metric_unavailability");
   require(sample.at("roles")
                       .at("client")
                       .at("metrics")
@@ -458,6 +477,9 @@ void lifecycle(const std::filesystem::path &root) {
   require(r.at("success") == true && r.at("eligible") == false &&
               r.at("required_metrics_valid") == false,
           "required_hook_missing_not_task_failure");
+  require(metric_row(r, "retransmitted_send_bytes").at("excluded_reason") ==
+              "ineligible_attempt",
+          "ineligible_precedes_warmup_and_metric_unavailability");
   // A corrupted warmup must not authorize valid measurement samples on replay.
   auto raw = load(root / "attempts/0/client/endpoint.json");
   raw["scenario"]["end_event"] = 4;

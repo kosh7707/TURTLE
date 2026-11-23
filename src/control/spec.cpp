@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <map>
 #include <set>
 #include <unistd.h>
 namespace turtle::control {
@@ -46,6 +47,87 @@ void validate_endpoint(Json &ep) {
     string_arg(v);
   }
 }
+Json resolve_application(Json app) {
+  static const std::map<std::string, std::string> defaults{
+      {"greeting", "helo"}, {"request", "ping"}, {"response", "pong"}};
+  require(app.is_object(), "invalid_application");
+  for (const auto &field : app.items())
+    require(defaults.contains(field.key()),
+            "unknown_application_field:" + field.key());
+  for (const auto &[key, fallback] : defaults) {
+    auto value = string_arg(app.value(key, Json(fallback)));
+    require(!value.empty() && value.size() <= 16384,
+            "application_size_out_of_range");
+    app[key] = std::move(value);
+  }
+  return app;
+}
+void validate_netem(const Json &netem) {
+  require(netem.is_object(), "invalid_netem_settings");
+  const auto mtu = artifact::integer(netem.value("mtu", Json(1500)));
+  require(mtu >= 576 && mtu <= 65535, "invalid_netem_mtu");
+  for (auto direction : {"client_to_server", "server_to_client"}) {
+    const auto rule = netem.value(direction, Json::object());
+    require(rule.is_object(), "invalid_netem_direction");
+    for (auto key : {"delay_ms", "loss_pct", "rate_mbit"}) {
+      auto n = rule.value(key, 0.0);
+      require(std::isfinite(n) && n >= 0 &&
+                  (std::string_view(key) != "loss_pct" || n <= 100),
+              "invalid_netem_value");
+    }
+    require(artifact::integer(rule.value("limit", Json(10000))) > 0 &&
+                artifact::integer(rule.value("seed", Json(0))) <= UINT32_MAX,
+            "invalid_netem_limit_or_seed");
+  }
+}
+void resolve_measurement(Json &config) {
+  static const std::set<std::string> allowed{
+      "scenario_wall_ns", "records",       "public_io",  "headers",
+      "capture",          "perf_counters", "cpu_samples"};
+  auto options = config.value("measurement", Json::object());
+  require(options.is_object(), "invalid_measurement_options");
+  for (auto key : {"capture", "perf_counters"})
+    require(options.value(key, Json(false)).is_boolean(),
+            "invalid_measurement_options");
+  if (options.contains("cpu_samples"))
+    profiling::validate_settings(options.at("cpu_samples"));
+
+  std::set<std::string> selected;
+  for (auto key : {"required_metrics", "optional_metrics"}) {
+    auto list = config.value(key, Json::array());
+    require(list.is_array(), "metric_list_required");
+    for (const auto &entry : list) {
+      auto name = entry.get<std::string>();
+      require(allowed.contains(name) && selected.insert(name).second,
+              "unknown_or_duplicate_metric:" + name);
+    }
+    config[key] = std::move(list);
+  }
+  require(!has(config.at("optional_metrics"), "scenario_wall_ns"),
+          "scenario_wall_ns_is_required");
+  if (selected.insert("scenario_wall_ns").second)
+    config["required_metrics"].push_back("scenario_wall_ns");
+
+  // Keep explicit order; inferred metrics follow in recording/observer order.
+  auto add_optional = [&](const char *name) {
+    if (selected.insert(name).second)
+      config["optional_metrics"].push_back(name);
+  };
+  if (config.at("recording") == "detailed")
+    for (auto name : {"records", "public_io", "headers"})
+      add_optional(name);
+  for (auto name : {"capture", "perf_counters"})
+    if (options.value(name, false))
+      add_optional(name);
+  if (options.contains("cpu_samples"))
+    add_optional("cpu_samples");
+
+  if (selected.contains("cpu_samples") && !options.contains("cpu_samples"))
+    options["cpu_samples"] = Json::object();
+  for (auto key : {"perf_counters", "capture"})
+    options[key] = selected.contains(key);
+  config["measurement"] = std::move(options);
+}
 bool netem_permissions() {
   // Netns mount/creation and veth/qdisc configuration require both
   // capabilities.
@@ -76,9 +158,6 @@ Json resolve_spec(Json spec) {
           "invalid_repetitions_or_timeout");
   choice(spec, "network", "loopback", {"loopback", "netem"});
   std::set<std::string> ids;
-  static const std::set<std::string> metrics{
-      "scenario_wall_ns", "records",       "public_io",  "headers",
-      "capture",          "perf_counters", "cpu_samples"};
   for (auto &c : configs) {
     auto id = string_arg(c.at("id"));
     require(!id.empty() && ids.insert(id).second,
@@ -92,35 +171,9 @@ Json resolve_spec(Json spec) {
     c["warmups"] = artifact::integer(c.value("warmups", Json(warmups)));
     for (auto key : {"app_chunk", "io_chunk"})
       c[key] = artifact::integer(c.value(key, Json(0)));
-    auto app = c.value("application", Json::object());
-    require(app.is_object(), "invalid_application");
-    for (const auto &[k, v] : app.items())
-      require(k == "greeting" || k == "request" || k == "response",
-              "unknown_application_field:" + k);
-    for (const auto &[key, fallback] : std::map<std::string, std::string>{
-             {"greeting", "helo"}, {"request", "ping"}, {"response", "pong"}}) {
-      auto s = string_arg(app.value(key, Json(fallback)));
-      require(!s.empty() && s.size() <= 16384, "application_size_out_of_range");
-      app[key] = s;
-    }
-    c["application"] = app;
-    const auto netem = c.value("netem", Json::object());
-    require(netem.is_object(), "invalid_netem_settings");
-    const auto mtu = artifact::integer(netem.value("mtu", Json(1500)));
-    require(mtu >= 576 && mtu <= 65535, "invalid_netem_mtu");
-    for (auto direction : {"client_to_server", "server_to_client"}) {
-      auto rule = netem.value(direction, Json::object());
-      require(rule.is_object(), "invalid_netem_direction");
-      for (auto k : {"delay_ms", "loss_pct", "rate_mbit"}) {
-        auto n = rule.value(k, 0.0);
-        require(std::isfinite(n) && n >= 0 &&
-                    (std::string_view(k) != "loss_pct" || n <= 100),
-                "invalid_netem_value");
-      }
-      require(artifact::integer(rule.value("limit", Json(10000))) > 0 &&
-                  artifact::integer(rule.value("seed", Json(0))) <= UINT32_MAX,
-              "invalid_netem_limit_or_seed");
-    }
+    c["application"] =
+        resolve_application(c.value("application", Json::object()));
+    validate_netem(c.value("netem", Json::object()));
     auto inputs = c.value("inputs", Json::array());
     require(inputs.is_array(), "invalid_inputs");
     for (const auto &path : inputs)
@@ -131,44 +184,7 @@ Json resolve_spec(Json spec) {
       require((k == "group" || k == "cipher") && !string_arg(v).empty(),
               "invalid_expected_negotiation");
     c["expected"] = expected;
-    auto m = c.value("measurement", Json::object());
-    require(m.is_object(), "invalid_measurement_options");
-    for (auto key : {"capture", "perf_counters"})
-      require(m.value(key, Json(false)).is_boolean(),
-              "invalid_measurement_options");
-    if (m.contains("cpu_samples"))
-      profiling::validate_settings(m.at("cpu_samples"));
-    std::set<std::string> seen;
-    for (auto key : {"required_metrics", "optional_metrics"}) {
-      auto list = c.value(key, Json::array());
-      require(list.is_array(), "metric_list_required");
-      for (const auto &entry : list) {
-        auto name = entry.get<std::string>();
-        require(metrics.contains(name) && seen.insert(name).second,
-                "unknown_or_duplicate_metric:" + name);
-      }
-      c[key] = list;
-    }
-    if (!has(c.at("required_metrics"), "scenario_wall_ns")) {
-      require(!has(c.at("optional_metrics"), "scenario_wall_ns"),
-              "scenario_wall_ns_is_required");
-      c["required_metrics"].push_back("scenario_wall_ns");
-    }
-    for (auto key : {"records", "public_io", "headers", "capture",
-                     "perf_counters", "cpu_samples"}) {
-      std::string name(key);
-      bool on = name == "cpu_samples" ? m.contains(key)
-                : name == "perf_counters" || name == "capture"
-                    ? m.value(key, false)
-                    : c.at("recording") == "detailed";
-      if (on && !requested(c, name))
-        c["optional_metrics"].push_back(name);
-    }
-    if (requested(c, "cpu_samples") && !m.contains("cpu_samples"))
-      m["cpu_samples"] = Json::object();
-    m["perf_counters"] = requested(c, "perf_counters");
-    m["capture"] = requested(c, "capture");
-    c["measurement"] = m;
+    resolve_measurement(c);
     c["io_path"] = "raw_tls_tcp";
   }
   auto baseline =
