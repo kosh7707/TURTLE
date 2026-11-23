@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import random
 import statistics
-from presentation import write_report
+from presentation import write_report, write_lifecycle_report
 
 
 def load(path):
@@ -58,7 +58,7 @@ def write_csv(path, rows):
 def regenerate(source, destination):
     source, destination = Path(source).resolve(), Path(destination).resolve()
     manifest = load(source / "manifest.json")
-    if manifest["schema"] != "turtle.manifest.v2":
+    if manifest["schema"] not in ("turtle.manifest.v2", "turtle.manifest.v3"):
         raise ValueError("unsupported manifest")
     spec = manifest["spec"]
     baseline = spec["baseline"]
@@ -66,16 +66,32 @@ def regenerate(source, destination):
     if type(count) is not int or count < 1:
         raise ValueError("bootstrap_samples must be positive")
     samples, states, units = defaultdict(list), defaultdict(Counter), {}
-    attempts, profiles, sources = [], [], {}
+    attempts, diagnostics, profiles, sources = [], [], [], {}
     for attempt in manifest["attempts"]:
         path = source / attempt["directory"] / "analysis.json"
         item = load(path)
         if item["schema"] != "turtle.attempt-report.v4":
             raise ValueError("C++ v4 analysis required: " + str(path))
         sources[str(path.relative_to(source))] = hashlib.sha256(path.read_bytes()).hexdigest()
-        attempts.append({**attempt, **{k: item[k] for k in (
+        purpose = attempt.get("purpose", "measurement")
+        if item.get("purpose", purpose) != purpose:
+            raise ValueError("attempt purpose mismatch: " + str(path))
+        summary = {**attempt, **{k: item[k] for k in (
             "success", "ordinary_timing_sample", "invalid_reasons", "phase_complete", "phase_invalid_reasons",
-            "network_complete", "network_invalid_reasons", "perf_complete", "perf_invalid_reasons")}})
+            "network_complete", "network_invalid_reasons", "perf_complete", "perf_invalid_reasons")}}
+        for key in ("configuration_matches", "required_metrics_valid", "eligible"):
+            if key in item:
+                summary[key] = item[key]
+        for role, data in item["roles"].items():
+            profile = data.get("cpu_profile", {})
+            if profile.get("requested"):
+                profiles.append({"configuration": attempt["configuration"], "directory": attempt["directory"],
+                                 "role": role, **{k: profile.get(k) for k in ("availability", "reason", "sample_count", "scenario")},
+                                 "phases": profile.get("phases", []), "calls": profile.get("calls", [])})
+        if purpose != "measurement":
+            diagnostics.append(summary)
+            continue
+        attempts.append(summary)
         for row in item["measurements"]:
             key = attempt["configuration"], row["group"], row["role"], row["scope"], row["metric"]
             if key in units and units[key] != row["unit"]:
@@ -85,12 +101,6 @@ def regenerate(source, destination):
             states[key]["available" if row["valid_sample"] else row["excluded_reason"]] += 1
             if row["valid_sample"]:
                 samples[key].append(row["value"])
-        for role, data in item["roles"].items():
-            profile = data.get("cpu_profile", {})
-            if profile.get("requested"):
-                profiles.append({"configuration": attempt["configuration"], "directory": attempt["directory"],
-                                 "role": role, **{k: profile.get(k) for k in ("availability", "reason", "sample_count", "scenario")},
-                                 "phases": profile.get("phases", []), "calls": profile.get("calls", [])})
     rng = random.Random(seed)
     groups = {key: [] for key in ("metrics", "phase_metrics", "counter_metrics")}
     for key in sorted(samples):
@@ -106,7 +116,7 @@ def regenerate(source, destination):
         elif group == "counter_metrics":
             row["scope"] = scope
         groups[group].append(row)
-    result = {"schema": "turtle.comparison.v4", "baseline": baseline, "attempts": attempts, **groups,
+    result = {"schema": "turtle.comparison.v4", "baseline": baseline, "attempts": attempts, "diagnostics": diagnostics, **groups,
               "cpu_profiles": profiles, "analysis_sha256": sources,
               "statistics": {"population": "cpp_valid_sample_process_observations", "quantile": "linear_n_minus_one",
                              "bootstrap": "independent_process_samples_percentile", "bootstrap_samples": count, "bootstrap_seed": seed}}
@@ -125,7 +135,10 @@ def regenerate(source, destination):
                                  "role": profile['role'], "scope_kind": kind, "scope": scope,
                                  "availability": section['availability'], "reason": section['reason'], **function})
     write_csv(destination / "cpu_report.csv", cpu_rows)
-    write_report(destination, manifest, result)
+    if manifest["schema"] == "turtle.manifest.v3":
+        write_lifecycle_report(destination, manifest, result)
+    else:
+        write_report(destination, manifest, result)
     return result
 
 

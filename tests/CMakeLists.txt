@@ -7,7 +7,7 @@ option(TURTLE_TEST_OPENSSL "Run real OpenSSL integration" OFF)
 option(TURTLE_TEST_WOLFSSL "Run wolfSSL and cross-library integration" OFF)
 option(TURTLE_TEST_NETEM "Run actual namespaces and libpcap (requires privileges)" OFF)
 option(TURTLE_TEST_PERF "Run actual counters and stock perf" OFF)
-set(TURTLE_PERF_EXECUTABLE "" CACHE FILEPATH "Python-free perf executable")
+set(TURTLE_PERF_EXECUTABLE "" CACHE FILEPATH "Stock perf record/script executable")
 set(TURTLE_OPENSSL_ALTERNATE "" CACHE FILEPATH "Same adapter built against another OpenSSL")
 add_executable(framing framing.cpp)
 target_include_directories(framing PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src")
@@ -30,13 +30,33 @@ if(TURTLE_TEST_OPENSSL)
     if(TURTLE_TEST_WOLFSSL)
         list(APPEND implementations wolfssl)
     endif()
+    add_executable(partial_request partial-request.cpp)
+    target_link_libraries(partial_request PRIVATE turtle_process)
+    foreach(i IN LISTS implementations)
+        if(TARGET turtle-${i})
+            set(endpoint_${i} "$<TARGET_FILE:turtle-${i}>")
+        else()
+            set(endpoint_${i} "${TURTLE_BINARY_DIR}/turtle-${i}")
+        endif()
+        add_test(NAME partial_request_${i} COMMAND partial_request "${OPENSSL_CLI}" "${endpoint_${i}}"
+            "${CMAKE_CURRENT_BINARY_DIR}/artifacts/partial_request_${i}")
+    endforeach()
+    add_test(NAME lifecycle_gates COMMAND tls_integration gates
+        "${TURTLE_BINARY_DIR}/turtle" "${OPENSSL_CLI}" "${endpoint_openssl}" "${endpoint_openssl}" classical
+        "${CMAKE_CURRENT_BINARY_DIR}/artifacts/lifecycle_gates")
+    add_test(NAME retry_lineage COMMAND tls_integration retry
+        "${TURTLE_BINARY_DIR}/turtle" "${OPENSSL_CLI}" "${endpoint_openssl}" "${endpoint_openssl}" classical
+        "${CMAKE_CURRENT_BINARY_DIR}/artifacts/retry_lineage")
+    add_test(NAME recording_cost COMMAND tls_integration overhead
+        "${TURTLE_BINARY_DIR}/turtle" "${OPENSSL_CLI}" "${endpoint_openssl}" "${endpoint_openssl}" classical
+        "${CMAKE_CURRENT_BINARY_DIR}/artifacts/recording_cost")
     foreach(client IN LISTS implementations)
         foreach(server IN LISTS implementations)
             foreach(profile classical hybrid mldsa chain partial)
                 set(name "tls_${client}_${server}_${profile}")
                 add_test(NAME "${name}" COMMAND tls_integration loopback
                     "${TURTLE_BINARY_DIR}/turtle" "${OPENSSL_CLI}"
-                    "${TURTLE_BINARY_DIR}/turtle-${client}" "${TURTLE_BINARY_DIR}/turtle-${server}"
+                    "${endpoint_${client}}" "${endpoint_${server}}"
                     "${profile}" "${CMAKE_CURRENT_BINARY_DIR}/artifacts/${name}")
                 set_tests_properties("${name}" PROPERTIES TIMEOUT 180)
             endforeach()
@@ -52,11 +72,11 @@ if(TURTLE_TEST_OPENSSL)
     endif()
     if(TURTLE_TEST_NETEM)
         add_test(NAME actual_netem COMMAND tls_integration netem "${TURTLE_BINARY_DIR}/turtle" "${OPENSSL_CLI}"
-            "${TURTLE_BINARY_DIR}/turtle-openssl" "${TURTLE_BINARY_DIR}/turtle-openssl" chain
+            "${endpoint_openssl}" "${endpoint_openssl}" chain
             "${CMAKE_CURRENT_BINARY_DIR}/artifacts/netem")
         set_tests_properties(actual_netem PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)
         add_test(NAME interrupted_netem COMMAND tls_integration interrupt "${TURTLE_BINARY_DIR}/turtle" "${OPENSSL_CLI}"
-            "${TURTLE_BINARY_DIR}/turtle-openssl" "${TURTLE_BINARY_DIR}/turtle-openssl" classical
+            "${endpoint_openssl}" "${endpoint_openssl}" classical
             "${CMAKE_CURRENT_BINARY_DIR}/artifacts/interrupted")
         set_tests_properties(interrupted_netem PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
     endif()
@@ -68,7 +88,7 @@ if(TURTLE_TEST_OPENSSL)
             foreach(mode counter sample cycles)
                 add_test(NAME "perf_${implementation}_${mode}" COMMAND tls_integration "${mode}"
                     "${TURTLE_BINARY_DIR}/turtle" "${OPENSSL_CLI}"
-                    "${TURTLE_BINARY_DIR}/turtle-${implementation}" "${TURTLE_BINARY_DIR}/turtle-${implementation}" chain
+                    "${endpoint_${implementation}}" "${endpoint_${implementation}}" chain
                     "${CMAKE_CURRENT_BINARY_DIR}/artifacts/perf_${implementation}_${mode}" "${TURTLE_PERF_EXECUTABLE}")
                 set_tests_properties("perf_${implementation}_${mode}" PROPERTIES TIMEOUT 240 RUN_SERIAL TRUE)
             endforeach()

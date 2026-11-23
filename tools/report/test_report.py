@@ -35,7 +35,8 @@ class Report(unittest.TestCase):
             self.assertEqual(first, second)
             for path in (root / 'first').iterdir():
                 self.assertEqual(path.read_bytes(), (root / 'second' / path.name).read_bytes())
-            self.assertEqual(len(first['attempts']), len(manifest['attempts']))
+            self.assertEqual(len(first['attempts']), sum(a.get("purpose", "measurement") == "measurement" for a in manifest['attempts']))
+            self.assertEqual(len(first['attempts']) + len(first["diagnostics"]), len(manifest["attempts"]))
             self.assertTrue(all(row['valid_samples'] <= row['attempts'] for row in first['metrics']))
             self.assertFalse(any(data.rglob('*.pcap')))
             self.assertFalse(any(data.rglob('events.jsonl')))

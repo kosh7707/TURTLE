@@ -19,9 +19,15 @@ def digest(path):
         return hashlib.file_digest(file, 'sha256').hexdigest()
 
 
-def entries(component):
+def entries(component, only=()):
     data = json.loads(MANIFEST.read_text())
-    return [row for row in data['sources'] if component == 'all' or row['component'] == component]
+    rows = [row for row in data['sources'] if component == 'all' or row['component'] == component]
+    if only:
+        names = set(only)
+        rows = [r for r in rows if r['name'] + '@' + r['version'] in names]
+        if len(rows) != len(names):
+            raise ValueError('unknown name@version for selected component')
+    return rows
 
 
 def verified(cache, entry):
@@ -31,9 +37,9 @@ def verified(cache, entry):
     return path
 
 
-def fetch(cache, component):
+def fetch(cache, component, only=()):
     cache.mkdir(parents=True, exist_ok=True)
-    for entry in entries(component):
+    for entry in entries(component, only):
         destination = cache / entry['archive']
         if not destination.exists():
             with tempfile.NamedTemporaryFile(dir=cache, delete=False) as file:
@@ -51,9 +57,9 @@ def fetch(cache, component):
         print('verified:', entry['archive'], flush=True)
 
 
-def prepare(cache, workspace, component, jobs, target, toolchain):
+def prepare(cache, workspace, component, jobs, target, toolchain, only=()):
     workspace.mkdir(parents=True, exist_ok=True)
-    for entry in entries(component):
+    for entry in entries(component, only):
         archive = verified(cache, entry)
         root = workspace / (entry['name'] + '-' + entry['version'])
         source, build, install = (root / name for name in ('source', 'build', 'install'))
@@ -114,6 +120,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('fetch', 'prepare'))
     parser.add_argument('component', choices=('framework', 'tls', 'perf', 'all'))
+    parser.add_argument('--only', action='append', default=[], metavar='NAME@VERSION',
+                        help='prepare only this exact manifest entry (repeatable)')
     parser.add_argument('--cache', type=Path, default=ROOT / '.deps/cache')
     parser.add_argument('--workspace', type=Path, default=ROOT / '.deps/prepared')
     parser.add_argument('--jobs', type=int, default=4)
@@ -121,10 +129,10 @@ def main():
     parser.add_argument('--toolchain', type=Path)
     args = parser.parse_args()
     if args.action == 'fetch':
-        fetch(args.cache.resolve(), args.component)
+        fetch(args.cache.resolve(), args.component, args.only)
     else:
         toolchain = args.toolchain.resolve() if args.toolchain else (ROOT / 'cmake/linux-arm64.cmake' if args.target else None)
-        prepare(args.cache.resolve(), args.workspace.resolve(), args.component, args.jobs, args.target, toolchain)
+        prepare(args.cache.resolve(), args.workspace.resolve(), args.component, args.jobs, args.target, toolchain, args.only)
 
 
 if __name__ == '__main__':

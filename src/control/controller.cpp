@@ -2,9 +2,12 @@
 #include "analysis/analysis.hpp"
 #include "build_info.hpp"
 #include "control/network.hpp"
+#include "control/spec.hpp"
 #include "profiling/profiling.hpp"
 #include <algorithm>
+#include <charconv>
 #include <ctime>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -17,57 +20,60 @@
 namespace turtle::control {
 using artifact::Json;
 namespace fs = std::filesystem;
-Json run_pair(const Json &config, const fs::path &directory,
-              const std::string &run_id,
+namespace {
+unsigned parse_unsigned(std::string_view s, unsigned limit,
+                        const char *reason) {
+  unsigned n{};
+  auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), n);
+  if (ec != std::errc{} || end != s.data() + s.size() || !n || n > limit)
+    throw std::runtime_error(reason);
+  return n;
+}
+Json run_pair(const Json &config, const fs::path &root, const Json &attempt,
               const std::map<std::string, Args> &prefixes,
-              const std::string &host, double timeout, int cancel) {
-  auto root = fs::absolute(directory);
-  fs::create_directories(root);
+              const std::string &host, double timeout, int cancel,
+              const std::function<void(unsigned)> &before_connect) {
   std::map<std::string, std::unique_ptr<Child>> children;
   Json commands = Json::object(), codes = Json::object(), error = nullptr;
   std::map<std::string, std::string> controls;
   auto end = deadline(timeout);
-  auto measurement = config.value("measurement", Json::object());
-  bool profile = measurement.contains("cpu_samples");
+  const auto &measurement = config.at("measurement");
+  const std::string purpose = attempt.at("purpose");
+  unsigned listen_port = 0;
   auto launch = [&](const std::string &role, unsigned port) {
     auto target = root / role;
     fs::create_directory(target);
-    auto ep = config.at(role);
+    const auto &ep = config.at(role);
+    bool measured = config.at("measured_role") == role;
+    bool profile = measured && purpose == "profile";
     Args args = prefixes.contains(role) ? prefixes.at(role) : Args{};
     if (profile) {
       auto p = profiling::prepare(target, measurement.at("cpu_samples"));
       args.insert(args.end(), p.begin(), p.end());
     }
-    Args rest = {ep.at("binary"),
-                 "--role",
-                 role,
-                 "--host",
-                 host,
-                 "--port",
-                 std::to_string(port),
-                 "--output",
-                 target.string(),
-                 "--run-id",
-                 run_id,
-                 "--controlled",
-                 "--timeout",
-                 std::to_string(std::max(1, static_cast<int>(timeout))),
-                 "--io-chunk",
-                 config.value("io_chunk", Json(0)).dump()};
+    Args flags = {"--host",
+                  host,
+                  "--port",
+                  std::to_string(port),
+                  "--output",
+                  target.string(),
+                  "--run-id",
+                  attempt.at("run_id"),
+                  "--controlled",
+                  "--timeout",
+                  std::to_string(static_cast<unsigned>(std::ceil(timeout)))};
+    if (measured && purpose != "capability" && !profile &&
+        measurement.at("perf_counters") == true &&
+        !attempt.at("unavailable_metrics").contains("perf_counters"))
+      flags.push_back("--perf-counters");
+    if (profile)
+      flags.push_back("--cpu-samples");
+    auto rest = endpoint_args(config, role, purpose, std::move(flags));
     args.insert(args.end(), rest.begin(), rest.end());
-    if (measurement.value("perf_counters", false))
-      args.push_back("--perf-counters");
+    auto env = ep.value("env", Environment{});
     if (profile)
-      args.push_back("--cpu-samples");
-    args.push_back("--");
-    for (const auto &a : ep.value("args", Json::array()))
-      args.push_back(a.get<std::string>());
-    Environment env = profile ? profiling::environment(target) : Environment{};
-    auto environment_options = ep.value("env", Json::object());
-    for (const auto &[k, v] : environment_options.items())
-      env[k] = v.get<std::string>();
-    if (profile)
-      env["DEBUGINFOD_URLS"] = "";
+      for (const auto &[k, v] : profiling::environment(target))
+        env[k] = v;
     commands[role] = args;
     children[role] = std::make_unique<Child>(args, env, target / "stderr.log");
   };
@@ -81,16 +87,30 @@ Json run_pair(const Json &config, const fs::path &directory,
   try {
     launch("server", 0);
     auto listen = line("server", "LISTEN ");
-    auto port = std::stoul(listen.substr(7));
-    if (port > 65535)
-      throw std::runtime_error("invalid_listen_port");
-    launch("client", static_cast<unsigned>(port));
+    listen_port = parse_unsigned(std::string_view(listen).substr(7), 65535,
+                                 "invalid_listen_port");
+    before_connect(listen_port);
+    launch("client", listen_port);
     line("server", "READY");
     line("client", "READY");
-    for (auto role : {"server", "client"}) {
-      children.at(role)->send("START\n");
-      children.at(role)->close_input();
+    if (purpose == "capability") {
+      // Both pauses belong exclusively to the capability connection. While
+      // server is held after its first write, the client must decrypt helo.
+      children.at("client")->send("START\n");
+      line("client", "PAUSED");
+      children.at("server")->send("START\n");
+      auto s = line("server", "PRESEND ");
+      auto count = parse_unsigned(std::string_view(s).substr(8), UINT_MAX,
+                                  "invalid_presend_count");
+      children.at("client")->send("RESUME " + std::to_string(count) + "\n");
+      line("client", "GREETING");
+      children.at("server")->send("CONTINUE\n");
+    } else {
+      for (auto role : {"server", "client"})
+        children.at(role)->send("START\n");
     }
+    for (auto &[role, p] : children)
+      p->close_input();
     for (auto &[role, p] : children) {
       codes[role] = p->wait(end, cancel);
       if (codes.at(role) != 0)
@@ -111,7 +131,9 @@ Json run_pair(const Json &config, const fs::path &directory,
     if (fs::exists(root / role / "profile.json"))
       profiling::finish(root / role, codes.at(role).get<int>());
   }
-  Json result = {{"run_id", run_id},
+  Json result = {{"run_id", attempt.at("run_id")},
+                 {"purpose", purpose},
+                 {"server_port", listen_port},
                  {"error", error},
                  {"commands", commands},
                  {"measurement", measurement},
@@ -119,7 +141,6 @@ Json run_pair(const Json &config, const fs::path &directory,
   artifact::save(root / "processes.json", result);
   return result;
 }
-namespace {
 Json provenance(const Json &spec, const std::string &self) {
   utsname os{};
   if (uname(&os))
@@ -143,12 +164,25 @@ Json provenance(const Json &spec, const std::string &self) {
   for (const auto &c : spec.at("configurations")) {
     for (auto role : {"client", "server"}) {
       std::string path = c.at(role).at("binary");
-      p["binaries"][path] = {{"sha256", digest(path)},
-                             {"dynamic_libraries", command({"ldd", path})}};
+      if (!p["binaries"].contains(path)) {
+        try {
+          p["binaries"][path] = {{"sha256", digest(path)},
+                                 {"dynamic_libraries", command({"ldd", path})}};
+        } catch (const std::exception &e) {
+          p["binaries"][path] = {{"reason", e.what()}};
+        }
+      }
     }
-    for (const auto &path : c.value("inputs", Json::array()))
-      p["inputs_sha256"][path.get<std::string>()] =
-          digest(path.get<std::string>());
+    for (const auto &input : c.value("inputs", Json::array())) {
+      auto path = input.get<std::string>();
+      if (!p["inputs_sha256"].contains(path)) {
+        try {
+          p["inputs_sha256"][path] = digest(path);
+        } catch (const std::exception &) {
+          p["inputs_sha256"][path] = nullptr;
+        }
+      }
+    }
   }
   for (auto name : {"OPENSSL_CONF", "OPENSSL_MODULES", "LD_LIBRARY_PATH",
                     "LD_PRELOAD", "TZ"})
@@ -180,127 +214,236 @@ std::uint64_t bounded(std::mt19937_64 &rng, std::uint64_t bound) {
       return x % bound;
   }
 }
-} // namespace
-int execute(const fs::path &spec_path, const fs::path &output,
-            const std::string &self, int cancel) {
-  auto spec = artifact::load(spec_path);
-  auto &configs = spec.at("configurations");
-  if (!configs.is_array() || configs.empty())
-    throw std::runtime_error("configurations_required");
-  std::set<std::string> ids;
-  for (auto &c : configs) {
-    auto id = c.at("id").get<std::string>();
-    if (!ids.insert(id).second)
-      throw std::runtime_error("configuration_ids_not_unique");
-    for (auto role : {"client", "server"})
-      c[role]["binary"] = executable(c.at(role).at("binary"));
-    auto m = c.value("measurement", Json::object());
-    if (!m.is_object() || !m.value("perf_counters", Json(false)).is_boolean())
-      throw std::runtime_error("invalid_measurement_options");
-    if (m.contains("cpu_samples")) {
-      m["cpu_samples"] = profiling::settings(m.at("cpu_samples"));
-      c["measurement"] = m;
-    }
-  }
-  auto reps = artifact::integer(spec.value("repetitions", Json(30))),
-       seed = artifact::integer(spec.value("seed", Json(0)));
-  auto network = spec.value("network", std::string("netem")),
-       baseline =
-           spec.value("baseline", configs[0].at("id").get<std::string>());
-  double timeout = spec.value("timeout_seconds", 30.0);
-  if (!reps || !ids.contains(baseline) ||
-      (network != "netem" && network != "loopback") || timeout <= 0 ||
-      !std::isfinite(timeout))
-    throw std::runtime_error("invalid_run_spec");
-  spec.update({{"repetitions", reps},
-               {"seed", seed},
-               {"network", network},
-               {"baseline", baseline}});
-  auto root = fs::absolute(output);
-  if (fs::exists(root))
-    throw std::runtime_error("output_must_be_new");
-  fs::create_directories(root);
-  std::mt19937_64 rng(seed);
+Json schedule(const Json &spec, const Json &checks) {
   Json order = Json::array();
-  for (std::uint64_t repeat = 0; repeat < reps; ++repeat) {
+  for (const auto &c : spec.at("configurations")) {
+    auto add = [&](const char *purpose, std::uint64_t i) {
+      order.push_back(
+          {{"configuration", c.at("id")}, {"purpose", purpose}, {"repeat", i}});
+    };
+    if (server_first(c))
+      add("capability", 0);
+    for (std::uint64_t i = 0; i < artifact::integer(c.at("warmups")); ++i)
+      add("warmup", i);
+    const auto &features = checks.at("configurations")
+                               .at(c.at("id").get<std::string>())
+                               .at("features");
+    if (requested(c, "cpu_samples") &&
+        features.at("cpu_samples").at("availability") == "available")
+      add("profile", 0);
+  }
+  std::mt19937_64 rng(artifact::integer(spec.at("seed")));
+  for (std::uint64_t repeat = 0;
+       repeat < artifact::integer(spec.at("repetitions")); ++repeat) {
     std::vector<std::string> block;
-    for (const auto &c : configs)
+    for (const auto &c : spec.at("configurations"))
       block.push_back(c.at("id"));
     for (std::size_t i = block.size(); i > 1; --i)
       std::swap(block[i - 1], block[bounded(rng, i)]);
     for (const auto &id : block)
-      order.push_back({{"repeat", repeat}, {"configuration", id}});
+      order.push_back({{"configuration", id},
+                       {"purpose", "measurement"},
+                       {"repeat", repeat}});
   }
-  auto execution_id = identifier();
-  Json manifest = {{"schema", "turtle.manifest.v2"},
-                   {"execution_id", execution_id},
-                   {"started_utc", utc()},
-                   {"spec", spec},
-                   {"provenance", provenance(spec, self)},
-                   {"order_algorithm", "mt19937_64_fisher_yates_rejection_v1"},
-                   {"order", order},
-                   {"attempts", Json::array()},
-                   {"status", "running"}};
+  return order;
+}
+// Record hashes after close; analysis outputs can be regenerated independently.
+Json evidence(const fs::path &root) {
+  Args args{"sha256sum", "--zero", "--"};
+  for (const auto &entry : fs::recursive_directory_iterator(root)) {
+    if (entry.is_regular_file() && !entry.is_symlink())
+      args.push_back(entry.path().string());
+  }
+  Json files = Json::object();
+  if (args.size() == 3)
+    return files;
+  auto r = command(args);
+  if (r.at("returncode") != 0)
+    throw std::runtime_error("artifact_hash_failed");
+  const auto &rows = r.at("stdout").get_ref<const std::string &>();
+  for (std::size_t pos = 0; pos < rows.size();) {
+    auto end = rows.find('\0', pos);
+    if (end == std::string::npos || end <= pos + 66)
+      throw std::runtime_error("invalid_artifact_hash");
+    files[fs::path(rows.substr(pos + 66, end - pos - 66))
+              .lexically_relative(root)
+              .generic_string()] = rows.substr(pos, 64);
+    pos = end + 1;
+  }
+  return files;
+}
+Json perform(const fs::path &root, const Json &spec, const Json &c,
+             const Json &a, const std::string &self, int cancel) {
+  const bool netem = spec.at("network") == "netem";
+  const std::string role = c.at("measured_role");
+  std::map<std::string, Args> prefixes;
+  std::unique_ptr<Topology> topology;
+  Json network = {{"availability", "available"}, {"topology", "loopback"}};
+  if (netem) {
+    topology = std::make_unique<Topology>(
+        root, c.value("netem", Json::object()), cancel);
+    topology->start();
+    for (auto r : {"client", "server"})
+      prefixes[r] = topology->prefix(r);
+  }
+  Capture capture(root, role);
+  const auto &unavailable = a.at("unavailable_metrics");
+  bool enabled = requested(c, "capture") && !unavailable.contains("capture") &&
+                 a.at("purpose") != "capability";
+  auto collect = [&](unsigned port) {
+    if (!enabled)
+      return;
+    try {
+      capture.start(netem ? prefixes.at(role) : Args{}, self,
+                    netem ? "eth0" : "lo", port, cancel);
+    } catch (const std::exception &e) {
+      const auto &req = c.at("required_metrics");
+      if (std::find(req.begin(), req.end(), "capture") != req.end() ||
+          std::string_view(e.what()) == "interrupted")
+        throw;
+    }
+  };
+  auto r =
+      run_pair(c, root, a, prefixes, netem ? Topology::server_ip : "127.0.0.1",
+               spec.at("timeout_seconds"), cancel, collect);
+  auto health = capture.finish();
+  if (unavailable.contains("capture"))
+    health = {{"availability", "unsupported"},
+              {"reason", unavailable.at("capture")}};
+  if (topology) {
+    topology->finish();
+    network = artifact::load(root / "network.json");
+  }
+  network.update({{"client_ip", netem ? Topology::client_ip : "127.0.0.1"},
+                  {"server_ip", netem ? Topology::server_ip : "127.0.0.1"},
+                  {"capture", {{role, health}}}});
+  artifact::save(root / "network.json", network);
+  if (topology && (!network.contains("cleanup_errors") ||
+                   !network.at("cleanup_errors").empty()))
+    throw std::runtime_error("network_cleanup_failed");
+  return r.at("error");
+}
+} // namespace
+
+int check(const fs::path &path) {
+  auto r = preflight(resolve_spec(artifact::load(path)));
+  std::cout << r.dump(2) << '\n';
+  return r.at("ready") == true ? 0 : 1;
+}
+int execute(const fs::path &spec_path, const fs::path &output,
+            const std::string &self, int cancel) {
+  auto spec = artifact::load(spec_path);
+  if (spec.contains("retry_of"))
+    throw std::runtime_error("use_retry_command_for_linked_attempts");
+  return execute_spec(std::move(spec), output, self, cancel);
+}
+int execute_spec(Json spec, const fs::path &output, const std::string &self,
+                 int cancel) {
+  spec = resolve_spec(std::move(spec));
+  auto root = fs::absolute(output);
+  if (fs::exists(root) || !fs::create_directories(root))
+    throw std::runtime_error("output_must_be_new");
+  auto checks = preflight(spec, cancel);
+  artifact::save(root / "check.json", checks);
+  auto order = schedule(spec, checks);
+  auto batch = identifier();
+  Json manifest = {
+      {"schema", "turtle.manifest.v3"},
+      {"execution_id", batch},
+      {"started_utc", utc()},
+      {"spec", spec},
+      {"provenance", provenance(spec, self)},
+      {"preflight", "check.json"},
+      {"order_algorithm", "diagnostics_then_seeded_measurement_blocks_v1"},
+      {"order", order},
+      {"attempts", Json::array()},
+      {"blocked", Json::object()},
+      {"status", "running"}};
+  std::map<std::string, Json> configs;
+  for (const auto &c : spec.at("configurations")) {
+    auto id = c.at("id").get<std::string>();
+    configs[id] = c;
+    const auto &check = checks.at("configurations").at(id);
+    if (check.at("ready") != true)
+      manifest["blocked"][id] = {{"stage", "preflight"},
+                                 {"reason", check.at("reasons")}};
+  }
   artifact::save(root / "manifest.json", manifest);
-  bool interrupted = false;
+  bool interrupted = false, failed = !manifest.at("blocked").empty();
   for (std::size_t i = 0; i < order.size(); ++i) {
     pollfd stop{cancel, POLLIN, 0};
     if (cancel >= 0 && ::poll(&stop, 1, 0) > 0) {
       interrupted = true;
       break;
     }
-    const auto &scheduled = order[i];
-    auto it = std::find_if(configs.begin(), configs.end(), [&](const Json &c) {
-      return c.at("id") == scheduled.at("configuration");
-    });
+    auto a = order.at(i);
+    auto id = a.at("configuration").get<std::string>();
+    if (manifest.at("blocked").contains(id))
+      continue;
+    const auto &c = configs.at(id);
     std::ostringstream suffix;
     suffix << std::setw(5) << std::setfill('0') << i;
     auto relative = "attempts/" + suffix.str();
-    auto target = root / relative;
-    fs::create_directories(target);
-    auto a = scheduled;
-    a.update({{"directory", relative},
-              {"run_id", execution_id + ":" + suffix.str()},
-              {"error", nullptr}});
+    auto dir = root / relative;
+    a.update({{"run_id", batch + ":" + suffix.str()},
+              {"directory", relative},
+              {"error", nullptr},
+              {"unavailable_metrics", Json::object()}});
+    if (spec.contains("retry_of") && a.at("purpose") == "measurement")
+      a["retry_of"] = spec.at("retry_of");
+    for (const auto &[k, v] :
+         checks.at("configurations").at(id).at("features").items())
+      if (requested(c, k) && v.at("availability") != "available")
+        a["unavailable_metrics"][k] = v.at("reason");
     manifest["attempts"].push_back(a);
     artifact::save(root / "manifest.json", manifest);
     try {
-      Json result;
-      if (network == "netem") {
-        Topology topology(target, it->value("netem", Json::object()), self,
-                          cancel);
-        topology.start();
-        topology.start_capture();
-        result = run_pair(*it, target, a.at("run_id"),
-                          {{"client", topology.prefix("client")},
-                           {"server", topology.prefix("server")}},
-                          Topology::server_ip, timeout, cancel);
-        topology.finish();
-      } else {
-        artifact::save(
-            target / "network.json",
-            {{"availability", "not_collected"}, {"topology", "loopback"}});
-        result = run_pair(*it, target, a.at("run_id"), {}, "127.0.0.1", timeout,
-                          cancel);
-      }
-      a["error"] = result.at("error");
+      fs::create_directories(dir);
+      a["error"] = perform(dir, spec, c, a, self, cancel);
+      a["artifacts_sha256"] = evidence(dir);
     } catch (const std::exception &e) {
       a["error"] = e.what();
     }
+    Json diagnostic;
+    try {
+      diagnostic = analysis::assess(dir, c, a);
+    } catch (const std::exception &e) {
+      // A failed collector or unwritable assessment must not leave the
+      // manifest at "running" or cause another connection to replace this ID.
+      a["assessment_error"] = e.what();
+      if (a.at("error").is_null())
+        a["error"] = e.what();
+      diagnostic = {{"eligible", false},
+                    {"invalid_reasons", Json::array({e.what()})}};
+    }
+    bool eligible = diagnostic.at("eligible");
+    bool diagnostic_required =
+        a.at("purpose") != "profile" ||
+        std::find(c.at("required_metrics").begin(),
+                  c.at("required_metrics").end(),
+                  "cpu_samples") != c.at("required_metrics").end();
+    if (!eligible && diagnostic_required) {
+      failed = true;
+      if (a.at("purpose") != "measurement")
+        manifest["blocked"][id] = {
+            {"stage", a.at("purpose")},
+            {"run_id", a.at("run_id")},
+            {"reason", diagnostic.at("invalid_reasons")}};
+    }
     manifest["attempts"].back() = a;
     artifact::save(root / "manifest.json", manifest);
-    std::cout << i + 1 << '/' << order.size() << ' '
-              << scheduled.at("configuration").get<std::string>() << ": "
-              << (a.at("error").is_null() ? "scenario complete"
-                                          : a.at("error").dump())
-              << '\n'
-              << std::flush;
+    std::cout << i + 1 << '/' << order.size() << ' ' << id << ' '
+              << a.at("purpose").get<std::string>() << ": "
+              << (eligible ? "ok" : diagnostic.at("invalid_reasons").dump())
+              << std::endl;
     if (a.at("error") == "interrupted") {
       interrupted = true;
       break;
     }
   }
-  manifest["status"] = interrupted ? "interrupted" : "complete";
+  manifest["status"] = interrupted ? "interrupted"
+                       : failed    ? "failed"
+                                   : "complete";
   manifest["finished_utc"] = utc();
   artifact::save(root / "manifest.json", manifest);
   return analysis::regenerate(root) ? 0 : 1;

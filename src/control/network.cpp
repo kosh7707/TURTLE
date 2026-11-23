@@ -20,10 +20,8 @@ std::string identifier() {
   }
   return r;
 }
-Topology::Topology(std::filesystem::path root, Json settings, std::string exe,
-                   int cancel)
-    : root_(std::move(root)), settings_(std::move(settings)),
-      executable_(std::move(exe)), cancel_(cancel) {
+Topology::Topology(std::filesystem::path root, Json settings, int cancel)
+    : root_(std::move(root)), settings_(std::move(settings)), cancel_(cancel) {
   auto id = identifier().substr(0, 10);
   for (auto role : {"client", "middle", "server"})
     names_[role] = "tu-" + id + "-" + role[0];
@@ -127,42 +125,57 @@ void Topology::start() {
   state_["availability"] = "available";
   artifact::save(root_ / "network.json", state_);
 }
-void Topology::start_capture() {
-  for (auto role : {"client", "server"}) {
-    auto a = prefix(role);
-    a.insert(a.end(),
-             {executable_, "__capture", "eth0",
-              (root_ / (std::string(role) + ".pcap")).string(),
-              (root_ / (std::string(role) + ".capture.json")).string()});
-    auto child = std::make_unique<Child>(
-        a, Environment{}, root_ / (std::string(role) + ".capture.log"));
-    captures_[role] = std::move(child);
-    if (captures_.at(role)->line(deadline(10), cancel_) != "READY")
+Capture::Capture(std::filesystem::path root, std::string role)
+    : root_(std::move(root)), role_(std::move(role)),
+      state_({{"availability", "not_collected"}}) {}
+void Capture::start(Args args, const std::string &exe,
+                    const std::string &interface, unsigned port, int cancel) {
+  args.insert(args.end(), {exe, "__capture", interface,
+                           (root_ / (role_ + ".pcap")).string(),
+                           (root_ / (role_ + ".capture.json")).string(),
+                           std::to_string(port)});
+  state_ = {{"availability", "missing"},
+            {"interface", interface},
+            {"server_port", port}};
+  try {
+    child_ = std::make_unique<Child>(args, Environment{},
+                                     root_ / (role_ + ".capture.log"));
+    if (child_->line(deadline(10), cancel) != "READY")
       throw std::runtime_error("capture_not_ready");
+    state_["ready_before_connect"] = true;
+  } catch (const std::exception &e) {
+    state_["reason"] = e.what();
+    if (child_) {
+      child_->stop();
+      child_.reset();
+    }
+    throw;
   }
+}
+Json Capture::finish() {
+  if (child_) {
+    try {
+      child_->send("STOP\n");
+      child_->close_input();
+      int code = child_->wait(deadline(5));
+      state_.update(artifact::load(root_ / (role_ + ".capture.json")));
+      state_["returncode"] = code;
+      if (code)
+        state_["availability"] = "missing";
+    } catch (const std::exception &e) {
+      child_->stop();
+      state_["availability"] = "missing";
+      state_["reason"] = e.what();
+    }
+    child_.reset();
+  }
+  return state_;
 }
 void Topology::finish() noexcept {
   if (finished_)
     return;
   finished_ = true;
   state_["cleanup_errors"] = Json::array();
-  for (auto &[role, p] : captures_) {
-    try {
-      p->send("STOP\n");
-      p->close_input();
-      int code = p->wait(deadline(5));
-      auto status = artifact::load(root_ / (role + ".capture.json"));
-      status["returncode"] = code;
-      if (code)
-        status["availability"] = "missing";
-      state_["capture"][role] = status;
-    } catch (const std::exception &e) {
-      p->stop();
-      state_["capture"][role] = {{"availability", "missing"},
-                                 {"reason", e.what()}};
-    }
-  }
-  captures_.clear();
   try {
     state_["after"] = snapshot(true);
   } catch (const std::exception &e) {

@@ -54,7 +54,9 @@ Json counter_delta(const Json &begin, const Json &end,
   for (auto f : {"time_enabled_ns", "time_running_ns"})
     r[f] = measurement(deltas.at(f));
   for (auto f : {"cycles", "instructions"}) {
-    r[std::string(f) + "_raw"] = measurement(deltas.at(f));
+    r[std::string(f) + "_raw"] =
+        running ? measurement(deltas.at(f))
+                : measurement(nullptr, "missing", "counter_zero_running_time");
     r[f] = measurement(complete ? deltas.at(f) : Json(nullptr),
                        complete ? "available" : "missing",
                        complete ? Json(nullptr)
@@ -134,6 +136,28 @@ Json counters(const std::filesystem::path &root, const Endpoint &ep) {
     if (result["operations"].contains("prepare"))
       result["operations"]["first_use"] = add(Json::array(
           {result["operations"]["prepare"], result["operations"]["scenario"]}));
+    if (ep.summary.at("schema") == "turtle.endpoint.v4") {
+      const Json *first = nullptr, *last = nullptr;
+      for (const auto &event : ep.events) {
+        if (event.at("kind") != "call")
+          continue;
+        if (!first && (event.at("operation") == "handshake" ||
+                       event.at("operation") == "server_first"))
+          first = &event;
+        if (event.at("operation") == "handshake" && event.at("success") == true)
+          last = &event;
+      }
+      if (first && last)
+        result["operations"]["handshake"] = counter_delta(
+            snapshots.at(integer(first->at("id")) - 1).at("begin"),
+            snapshots.at(integer(last->at("id")) - 1).at("end"), availability,
+            reason);
+      result["complete"] = result.at("operations")
+                               .at("scenario")
+                               .at("cycles")
+                               .at("availability") == "available";
+      return result;
+    }
     for (const auto &phase : ep.phases.value("rows", Json::array())) {
       const auto &refs = phase.at("interval_event_boundaries");
       auto point = [&](const char *edge) -> const Json & {

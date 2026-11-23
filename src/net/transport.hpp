@@ -19,11 +19,14 @@ Socket accept(const Socket&);
 Socket connect(const char* host, std::uint16_t port);
 class Connection {
 public:
-    Connection(Socket socket, measure::Recorder&, std::size_t chunk, unsigned timeout);
-    turtle_transport transport() noexcept { return framer_.transport(); }
-    bool at_record_boundary() const noexcept { return framer_.at_record_boundary(); }
+    Connection(Socket socket, measure::Recorder&, std::size_t chunk, unsigned timeout, bool probe = false);
+    turtle_transport transport() noexcept { return stream_.transport(); }
+    void wait(bool writing) const;
+    std::uint64_t queued(std::uint64_t expected) const;
+    std::uint64_t submitted() const noexcept { return stream_.probe_sent(); }
 private:
     Socket socket_;
-    frame::Framer framer_;
+    frame::Stream stream_;
+    unsigned timeout_;
 };
 }

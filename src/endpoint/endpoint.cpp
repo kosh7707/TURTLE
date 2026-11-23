@@ -20,6 +20,7 @@ turtle::run::Options options(int argc, char** argv) {
             while (++i < argc) o.arguments.push_back(argv[i]);
             break;
         }
+        if (key == "--check") { o.check = true; continue; }
         if (key == "--controlled") { o.controlled = true; continue; }
         if (key == "--perf-counters") { o.perf_counters = true; continue; }
         if (key == "--cpu-samples") { o.cpu_samples = true; continue; }
@@ -30,6 +31,15 @@ turtle::run::Options options(int argc, char** argv) {
             o.role = value == "client" ? TURTLE_CLIENT : TURTLE_SERVER;
             role = true;
         } else if (key == "--host") o.host = value;
+        else if (key == "--scenario" && value.size() == 2 && value[0] == 'S' && value[1] >= '0' && value[1] <= '4') o.scenario = value;
+        else if (key == "--auth" && (value == "server" || value == "mtls")) o.auth = value;
+        else if (key == "--measured-role" && (value == "client" || value == "server")) o.measured_role = value;
+        else if (key == "--recording" && (value == "off" || value == "basic" || value == "detailed")) o.recording = value;
+        else if (key == "--purpose" && (value == "warmup" || value == "measurement" || value == "capability" || value == "profile")) o.purpose = value;
+        else if (key == "--app-chunk") o.app_chunk = number(value);
+        else if (key == "--request") o.request = value;
+        else if (key == "--response") o.response = value;
+        else if (key == "--greeting") o.greeting = value;
         else if (key == "--output") o.output = value;
         else if (key == "--run-id") o.run_id = value;
         else if (key == "--io-chunk") o.chunk = number(value);
@@ -43,14 +53,16 @@ turtle::run::Options options(int argc, char** argv) {
             o.timeout = static_cast<unsigned>(n);
         } else throw std::runtime_error("unknown_option");
     }
-    if (!o.controlled) throw std::runtime_error("controlled_execution_required");
-    if (!role || o.output.empty()) throw std::runtime_error("role_and_output_required");
+    for (const auto* payload : {&o.request, &o.greeting, &o.response})
+        if (payload->empty() || payload->size() > 16384) throw std::runtime_error("invalid_payload_length");
+    if (!o.check && !o.controlled) throw std::runtime_error("controlled_execution_required");
+    if (!role || (!o.check && o.output.empty())) throw std::runtime_error("role_and_output_required");
     return o;
 }
 }
 extern "C" int turtle_endpoint_main(const turtle_implementation* api, int argc, char** argv) {
     try {
-        if (!api || !api->name || !api->prepare || !api->release || !api->handshake || !api->read || !api->write)
+        if (!api || !api->name || !api->prepare || !api->release || !api->handshake || !api->read || !api->write || !api->query)
             throw std::runtime_error("incomplete_function_table");
         return turtle::run::run(*api, options(argc, argv));
     } catch (const std::exception& e) {

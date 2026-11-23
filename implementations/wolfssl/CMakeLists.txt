@@ -1,3 +1,9 @@
+cmake_minimum_required(VERSION 3.20)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(turtle_wolfssl_adapter LANGUAGES C CXX)
+    find_package(TURTLE CONFIG REQUIRED)
+endif()
+
 find_path(WOLFSSL_INCLUDE_DIR wolfssl/ssl.h HINTS "${WOLFSSL_ROOT_DIR}/include" REQUIRED)
 find_library(WOLFSSL_LIBRARY NAMES wolfssl HINTS "${WOLFSSL_ROOT_DIR}/lib" REQUIRED)
 find_package(Threads REQUIRED)

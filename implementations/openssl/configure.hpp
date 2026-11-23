@@ -23,7 +23,16 @@ inline bool parse(Configuration& c, turtle_role role, int argc, const char* cons
         else if (key == "--groups") c.groups = argv[i + 1];
         else return false;
     }
-    return role == TURTLE_SERVER ? c.certificate && c.private_key : c.trusted_certificate != nullptr;
+    // The full-1RTT profile advertises one named group and sends its key
+    // share. A list/tuple with a different preferred share could cause HRR
+    // and must not silently enter this comparison class.
+    const std::string_view group(c.groups);
+    if (group.empty() || OPENSSL_strcasecmp(c.groups, "DEFAULT") == 0 ||
+        OPENSSL_strcasecmp(c.groups, "DEFAULT_SUITE_B") == 0 || group.find_first_not_of(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != group.npos)
+        return false;
+    return (c.certificate != nullptr) == (c.private_key != nullptr) &&
+           (role == TURTLE_SERVER ? c.certificate != nullptr : c.trusted_certificate != nullptr);
 }
 bool configure(SSL_CTX*, const Configuration&);
 }

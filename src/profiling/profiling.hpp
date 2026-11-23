@@ -3,6 +3,8 @@
 namespace turtle::profiling {
 using artifact::Json;
 process::Environment environment(const std::filesystem::path &);
+void validate_settings(const Json &);
+Json probe(const Json &, int cancel_fd);
 Json settings(const Json &);
 process::Args prepare(const std::filesystem::path &, const Json &);
 void finish(const std::filesystem::path &, int);

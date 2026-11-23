@@ -212,3 +212,27 @@ def write_report(root, manifest, report):
             html.append("<pre><code>" + escape(args[0]) + "</code></pre>")
     (root / "report.md").write_text("\n\n".join(markdown) + "\n")
     (root / "report.html").write_text("\n".join(html) + "\n</html>\n")
+
+
+def write_lifecycle_report(root, manifest, report):
+    """Single-sided lifecycle measurements must never be labeled as legacy four-phase data."""
+    lines = ["# TURTLE — 측정 결과", "",
+             "예열·선송신 능력 시험·함수 프로파일은 아래 반복 수, 성공 수, 지연 분포에서 제외했다.", "",
+             "| 구성 | 측정 역할 | 과업 / 인증 | 본 측정 | 과업 성공 | 유효 지연 표본 | 중앙값 (ns) |",
+             "|---|---|---|---:|---:|---:|---:|"]
+    timings = {(r["configuration"], r["role"]): r for r in report["metrics"]
+               if r["metric"] == "scenario_wall_ns"}
+    for config in manifest["spec"]["configurations"]:
+        key, role = config["id"], config["measured_role"]
+        attempts = [a for a in report["attempts"] if a["configuration"] == key]
+        metric = timings.get((key, role), {})
+        fields = (key, role, config["scenario"] + " / " + config["auth"], len(attempts),
+                  sum(a["success"] for a in attempts), metric.get("valid_samples", 0),
+                  metric.get("median") if metric.get("median") is not None else "미관측")
+        lines.append("| " + " | ".join(str(f).replace("|", r"\|").replace("\n", " ") for f in fields) + " |")
+    lines += ["", f'진단 시도: {len(report["diagnostics"])}. 중단된 구성: {len(manifest.get("blocked", {}))}.',
+              "시도별 원자료와 제외 사유: manifest.json, 각 시도의 analysis.json, report.json."]
+    text = "\n".join(lines) + "\n"
+    (root / "report.md").write_text(text)
+    (root / "report.html").write_text("<!doctype html><html lang='ko'><meta charset='utf-8'>"
+                                      "<title>TURTLE</title><pre>" + escape(text) + "</pre></html>\n")

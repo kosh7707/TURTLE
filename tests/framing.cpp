@@ -5,86 +5,88 @@
 #include <stdexcept>
 #include <vector>
 using Bytes = std::vector<unsigned char>;
-void check(bool value) { if (!value) throw std::runtime_error("framing invariant failed"); }
+void check(bool value) { if (!value) throw std::runtime_error("raw transport invariant failed"); }
 struct Device {
     Bytes bytes;
-    std::size_t read_offset = 0, chunk = 1;
+    std::size_t cursor = 0, chunk = 1;
+    bool retry = true;
     static std::ptrdiff_t send(void* opaque, const void* data, std::size_t n) {
         auto& s = *static_cast<Device*>(opaque);
+        if (s.retry) { s.retry = false; return TURTLE_WANT_WRITE; }
         n = std::min(n, s.chunk);
         const auto* p = static_cast<const unsigned char*>(data);
         s.bytes.insert(s.bytes.end(), p, p + n);
-        return static_cast<std::ptrdiff_t>(n);
+        return n;
     }
     static std::ptrdiff_t receive(void* opaque, void* data, std::size_t n) {
         auto& s = *static_cast<Device*>(opaque);
-        n = std::min({n, s.chunk, s.bytes.size() - s.read_offset});
-        std::memcpy(data, s.bytes.data() + s.read_offset, n);
-        s.read_offset += n;
-        return static_cast<std::ptrdiff_t>(n);
+        n = std::min({n, s.chunk, s.bytes.size() - s.cursor});
+        std::memcpy(data, s.bytes.data() + s.cursor, n);
+        s.cursor += n;
+        return n;
     }
 };
 int main() {
     using namespace turtle;
+    using namespace turtle::measure;
     const Bytes tls{22,3,3,0,3,1,2,3, 20,3,3,0,1,1, 23,3,3,0,7,1,2,3,4,5,6,7};
-    const Bytes wire{'T','U',0,1,22,3,3,0,3,1,2,3, 'T','U',0,2,20,3,3,0,1,1,
-                     'T','U',0,3,23,3,3,0,7,1,2,3,4,5,6,7};
-    for (std::size_t call_chunk : {1,2,3,4,5,7,17,64}) {
-        for (std::size_t raw_chunk : {1,2,3,5,17,64}) {
-            Device device{{}, 0, raw_chunk};
-            measure::Recorder rec;
-            frame::Framer send({&device, Device::receive, Device::send}, rec);
-            auto tx = send.transport();
-            {
-                measure::Scope call(rec, measure::Operation::handshake);
-                for (std::size_t pos = 0; pos < tls.size();) {
-                    const auto n = std::min(call_chunk, tls.size()-pos);
-                    check(tx.send(tx.state, tls.data()+pos, n) == static_cast<std::ptrdiff_t>(n));
-                    pos += n;
-                    // 첫 헤더 한 바이트도 콜백 반환 전에 제출되어야 한다.
-                    if (pos == 1) check(device.bytes == Bytes({'T','U',0,1,22}));
-                }
-                call.succeeded();
-            }
-            check(device.bytes == wire && send.at_record_boundary() && rec.complete());
-            measure::Recorder received;
-            frame::Framer receiver({&device, Device::receive, Device::send}, received);
-            auto rx = receiver.transport();
-            Bytes actual(tls.size());
-            {
-                measure::Scope call(received, measure::Operation::handshake);
-                std::size_t pos = 0;
-                while (pos < actual.size()) {
-                    const auto n = rx.receive(rx.state, actual.data()+pos, std::min(call_chunk, actual.size()-pos));
-                    check(n > 0);
-                    pos += static_cast<std::size_t>(n);
-                }
-                unsigned char last = 0;
-                check(rx.receive(rx.state, &last, 1) == 0);
-                call.succeeded();
-            }
-            check(actual == tls && receiver.at_record_boundary() && received.complete());
-            check(device.read_offset == wire.size());
-            const auto original = received.stream(measure::Layer::tls, measure::Direction::receive);
-            check(std::equal(original.begin(), original.end(), tls.begin(), tls.end()));
+    for (std::size_t chunk : {1,2,3,5,8,64}) {
+        Device device{{}, 0, chunk};
+        Recorder rec(512);
+        frame::Stream stream({&device, Device::receive, Device::send}, rec, 0, true);
+        auto t = stream.transport();
+        const auto call = rec.begin(Kind::call, Operation::handshake);
+        // Split headers and coalesced records must not change wire bytes, nor
+        // suppress partial successes or convert readiness waits into failures.
+        check(t.send(t.state, tls.data(), tls.size()) == TURTLE_WANT_WRITE);
+        check(rec.total(Layer::wire, Direction::send) == 0);
+        for (std::size_t pos = 0; pos < tls.size();) {
+            auto size = tls.size() - pos;
+            t.observe(t.state, TURTLE_BIO_BEGIN, 1, nullptr, size, 0);
+            auto n = t.send(t.state, tls.data() + pos, size);
+            t.observe(t.state, TURTLE_BIO_END, 1, nullptr, size, n);
+            check(n > 0);
+            const auto& socket = rec.events().back();
+            const auto& bio = rec.event(socket.parent);
+            check(socket.kind == Kind::socket && bio.kind == Kind::transport);
+            check(socket.wire_begin == pos && socket.wire_end == pos + n &&
+                  socket.wire_begin == bio.wire_begin && socket.wire_end == bio.wire_end &&
+                  bio.call_id == call && bio.transferred == n);
+            pos += n;
         }
+        check(device.bytes == tls && stream.probe_sent() == tls.size());
+        Bytes actual(tls.size());
+        for (std::size_t pos = 0; pos < actual.size();) {
+            auto n = t.receive(t.state, actual.data() + pos, actual.size() - pos);
+            check(n > 0);
+            pos += n;
+        }
+        check(actual == tls && rec.complete());
+        auto captured = rec.stream(Layer::wire, Direction::receive);
+        check(std::equal(captured.begin(), captured.end(), tls.begin(), tls.end()));
+        rec.end(call, true);
     }
-    frame::Sequence sequence;
-    for (unsigned i = 1; i <= 65535; ++i) check(sequence.next() == i);
-    check(sequence.next() == 0 && sequence.next() == 0);
-    {
-        measure::Recorder rec(400000); // 번호 범위 시험은 사건 한도보다 먼저 번호를 소진한다.
-        Device device{{}, 0, 64};
-        frame::Framer framer({&device, Device::receive, Device::send}, rec);
-        const auto tx = framer.transport();
-        Bytes many;
-        for (unsigned i = 0; i < 65536; ++i) many.insert(many.end(), {20,3,3,0,1,1});
-        measure::Scope call(rec, measure::Operation::handshake);
-        check(tx.send(tx.state, many.data(), many.size()) == -1);
-        check(std::strcmp(rec.reason(), "record_number_exhausted") == 0);
-        check(device.bytes.size() == 65535 * 10);
-        const auto last = device.bytes.size() - 10;
-        check(device.bytes[last+2] == 255 && device.bytes[last+3] == 255);
+    // Diagnostics may be incomplete, but observation overflow must never change
+    // a network return value, lose the stream cursor, or splice across a gap.
+    Recorder small(1);
+    Device device{{}, 0, 128, false};
+    frame::Stream stream({&device, Device::receive, Device::send}, small);
+    auto t = stream.transport();
+    small.begin(Kind::call, Operation::write);
+    check(t.send(t.state, tls.data(), tls.size()) == static_cast<ptrdiff_t>(tls.size()));
+    check(!small.complete() && small.total(Layer::wire, Direction::send) == tls.size());
+    Recorder overflow(4);
+    Bytes oversized(Recorder::stream_capacity + 1, 'x');
+    overflow.capture(Direction::send, oversized.data(), oversized.size());
+    overflow.capture(Direction::send, tls.data(), tls.size());
+    check(!overflow.complete() && overflow.stream(Layer::wire, Direction::send).empty() &&
+          overflow.total(Layer::wire, Direction::send) == oversized.size() + tls.size());
+    for (auto mode : {Mode::off, Mode::basic, Mode::peer}) {
+        Recorder silent(16, false, mode);
+        frame::Stream raw({&device, Device::receive, Device::send}, silent);
+        auto bare = raw.transport();
+        check(!bare.observe && bare.send(bare.state, tls.data(), tls.size()) == static_cast<ptrdiff_t>(tls.size()));
+        check(silent.events().empty() && silent.stream(Layer::wire, Direction::send).empty());
     }
-    std::cout << "incremental framing, partial submission, deframing, sequence exhaustion passed\n";
+    std::cout << "raw wire identity, split/coalesced socket and public I/O ranges, readiness, and no-recording paths passed\n";
 }

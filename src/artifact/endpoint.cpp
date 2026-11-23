@@ -41,8 +41,8 @@ const char *name(Kind k) {
     return "transport";
   case Kind::socket:
     return "socket";
-  case Kind::frame:
-    return "frame";
+  case Kind::header: return "header";
+  case Kind::message: return "message";
   }
   return "unknown";
 }
@@ -56,6 +56,8 @@ const char *name(Operation op) {
     return "application_read";
   case Operation::write:
     return "application_write";
+  case Operation::server_first: return "server_first";
+  case Operation::verify: return "content_verify";
   case Operation::shutdown:
     return "shutdown";
   case Operation::none:
@@ -94,7 +96,8 @@ void write(const std::string &directory, const measure::Recorder &recorder,
        {"scenario",
         {{"begin", counter_stamp(r.begin)}, {"end", counter_stamp(r.end)}}},
        {"events", Json::array()}});
-  std::ofstream events(root / "events.jsonl");
+  std::ofstream events;
+  if (recorder.calls()) events.open(root / "events.jsonl");
   for (const auto &e : recorder.events()) {
     counters["events"].push_back({{"id", e.id},
                                   {"begin", counter_stamp(e.begin)},
@@ -120,18 +123,29 @@ void write(const std::string &directory, const measure::Recorder &recorder,
         {"begin", stamp(e.begin)},
         {"end", stamp(e.end)},
         {"duration", duration(e.begin, e.end)}};
+    j["plaintext_begin"] = e.plaintext_begin;
+    j["plaintext_end"] = e.plaintext_end;
+    if (e.kind == Kind::socket) j["errno"] = e.error_number;
+    if (e.source) j["source"] = e.source;
+    if (e.kind == Kind::header) j["header"] = e.header;
+    if (e.kind == Kind::message) j["message_type"] = e.message_type;
     events << j.dump() << '\n';
   }
-  events.close();
-  if (!events)
-    throw std::runtime_error("events_write_failed");
-  save(root / "counters.json", counters);
+  if (recorder.calls()) {
+    events.close();
+    if (!events) throw std::runtime_error("events_write_failed");
+  }
+  if (r.role == r.measured_role) save(root / "counters.json", counters);
   Json out = identity;
   out.update(
-      {{"schema", "turtle.endpoint.v3"},
+      {{"schema", "turtle.endpoint.v4"},
        {"connection_id", r.connection_id},
        {"implementation", r.implementation},
-       {"status", r.scenario_complete && r.scenario_observations_complete
+       {"purpose", r.purpose}, {"measured_role", r.measured_role},
+       {"recording", r.recording}, {"auth", r.auth},
+       {"application", {{"request_bytes", r.request_bytes}, {"greeting_bytes", r.greeting_bytes}, {"response_bytes", r.response_bytes}}},
+       {"capability", {{"client_paused", r.client_paused}, {"server_presend", r.server_presend}, {"server_submitted", r.server_submitted}, {"queued_before_resume", r.queued_before_resume}}},
+       {"status", r.scenario_complete
                       ? "ok"
                       : "invalid"},
        {"invalid_reason",
@@ -140,38 +154,46 @@ void write(const std::string &directory, const measure::Recorder &recorder,
                                   ? Json(nullptr)
                                   : Json(r.observation_reason)},
        {"shutdown", r.shutdown},
+       {"shutdown_reason", r.shutdown_reason.empty() ? Json(nullptr) : Json(r.shutdown_reason)},
        {"observations_complete", recorder.complete()},
        {"clock",
         {{"wall", "CLOCK_MONOTONIC"}, {"cpu", "CLOCK_THREAD_CPUTIME_ID"}}},
        {"collection",
-        {{"framing", "TU-u16be"},
+        {{"framing", "none"},
          {"decryption", false},
-         {"message_callbacks", false},
+         {"detailed", recorder.detailed()},
          {"stream_capacity", Recorder::stream_capacity},
          {"event_capacity", Recorder::event_capacity},
          {"io_chunk", r.chunk},
          {"tcp_nodelay", true},
          {"perf_counters", c.requested()},
          {"cpu_samples", r.cpu_samples},
-         {"ordinary_timing_sample", !c.requested() && !r.cpu_samples},
-         {"counters_file", "counters.json"}}},
+         {"ordinary_timing_sample", r.role == r.measured_role && r.purpose == "measurement" &&
+                                   r.scenario_complete && !c.requested() && !r.cpu_samples},
+         {"counters_file", r.role == r.measured_role ? Json("counters.json") : Json(nullptr)}}},
        {"negotiated",
         {{"version", r.version},
          {"resumed", r.resumed < 0 ? Json(nullptr) : Json(r.resumed != 0)},
          {"profile", static_cast<unsigned>(r.profile)},
+         {"record_policy", r.record_policy},
+         {"peer_verified", r.peer_verified < 0 ? Json(nullptr) : Json(r.peer_verified == 1)},
          {"cipher", optional(r.cipher, r.version != 0)},
          {"group", optional(r.group, r.version != 0)}}},
        {"scenario",
-        {{"complete", r.scenario_complete},
+        {{"complete", r.scenario_complete}, {"name", r.scenario},
+         {"observations_complete", r.scenario_observations_complete},
+         {"content_verified", r.content_verified}, {"plaintext_received", r.plaintext_received}, {"plaintext_sent", r.plaintext_sent},
+         {"begin_event", r.begin_event ? Json(r.begin_event) : Json(nullptr)},
+         {"end_event", r.end_event ? Json(r.end_event) : Json(nullptr)},
          {"begin", stamp(r.begin)},
          {"end", stamp(r.end)},
          {"duration", duration(r.begin, r.end)},
-         {"tls_send_bytes", r.scenario_tls_send},
-         {"tls_receive_bytes", r.scenario_tls_receive},
-         {"wire_send_bytes", r.scenario_wire_send},
-         {"wire_receive_bytes", r.scenario_wire_receive}}},
+         {"tls_send_bytes", recorder.detailed() ? Json(r.scenario_tls_send) : Json(nullptr)},
+         {"tls_receive_bytes", recorder.detailed() ? Json(r.scenario_tls_receive) : Json(nullptr)},
+         {"wire_send_bytes", recorder.detailed() ? Json(r.scenario_wire_send) : Json(nullptr)},
+         {"wire_receive_bytes", recorder.detailed() ? Json(r.scenario_wire_receive) : Json(nullptr)}}},
        {"streams", Json::object()}});
-  for (auto layer : {Layer::tls, Layer::wire})
+  if (recorder.detailed()) for (auto layer : {Layer::tls, Layer::wire})
     for (auto direction : {Direction::receive, Direction::send}) {
       auto key = std::string(layer == Layer::tls ? "tls_" : "wire_") +
                  (direction == Direction::send ? "send" : "receive");

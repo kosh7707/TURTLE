@@ -1,6 +1,7 @@
 #include "profiling/profiling.hpp"
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <fstream>
 #include <regex>
 #include <set>
@@ -43,25 +44,60 @@ bool virtual_module(const std::string &s) {
          s == "[vdso32]" || s == "[vdsox32]";
 }
 } // namespace
-Json settings(const Json &options) {
+void validate_settings(const Json &options) {
   if (!options.is_object())
     throw std::runtime_error("cpu_samples_requires_settings_object");
   auto event = options.value("event", std::string("cycles:u"));
   auto frequency = integer(options.value("frequency_hz", Json(997)));
+  auto perf = options.value("perf", std::string("perf"));
   if ((event != "cycles:u" && event != "cpu-clock:u") || frequency < 1 ||
-      frequency > 100000)
-    throw std::runtime_error("invalid_perf_event_or_frequency");
-  auto perf = process::executable(options.value("perf", std::string("perf")));
-  std::ifstream file(perf, std::ios::binary);
-  std::array<char, 4> magic{};
-  file.read(magic.data(), magic.size());
-  if (!file || magic != std::array<char, 4>{'\x7f', 'E', 'L', 'F'})
-    throw std::runtime_error("native_perf_executable_required");
-  auto deps = process::command({"ldd", perf});
-  if (deps.at("stdout").get<std::string>().find("libpython") !=
-      std::string::npos)
-    throw std::runtime_error("perf_links_libpython");
-  return {{"perf", perf}, {"event", event}, {"frequency_hz", frequency}};
+      frequency > 100000 || perf.empty() ||
+      perf.find('\0') != std::string::npos)
+    throw std::runtime_error("invalid_perf_settings");
+}
+Json settings(const Json &options) {
+  validate_settings(options);
+  return {
+      {"perf", process::executable(options.value("perf", std::string("perf")))},
+      {"event", options.value("event", std::string("cycles:u"))},
+      {"frequency_hz", options.value("frequency_hz", Json(997))}};
+}
+Json probe(const Json &options, int cancel) {
+  try {
+    auto chosen = settings(options);
+    // Test the requested event, not merely presence of an executable. No TLS
+    // process participates and this disposable recording is never analyzed.
+    auto pattern = (fs::temp_directory_path() / "turtle-perf-XXXXXX").string();
+    if (!::mkdtemp(pattern.data()))
+      throw std::runtime_error("perf_probe_tempdir_failed");
+    struct Scratch {
+      fs::path path;
+      ~Scratch() {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+      }
+    } scratch{pattern};
+    auto output = (scratch.path / "probe.data").string();
+    auto r = process::command(
+        {chosen.at("perf"), "record", "-q", "-e", chosen.at("event"), "-F",
+         chosen.at("frequency_hz").dump(), "--strict-freq", "--clockid", "mono",
+         "--no-inherit", "--no-buildid-cache", "-o", output, "--", "true"},
+        10, environment(scratch.path), cancel);
+    if (r.at("returncode") != 0)
+      throw std::runtime_error("perf_record_probe_failed:" +
+                               r.at("stderr").get<std::string>());
+    auto decode =
+        process::command({chosen.at("perf"), "script", "-i", output, "--ns",
+                          "-F", "pid,tid,time,event,period,ip,sym,dso"},
+                         10, environment(scratch.path), cancel);
+    if (decode.at("returncode") != 0)
+      throw std::runtime_error("perf_script_probe_failed:" +
+                               decode.at("stderr").get<std::string>());
+    chosen.update({{"availability", "available"}, {"reason", nullptr}});
+    return chosen;
+  } catch (const std::exception &e) {
+    return {{"availability", "unsupported"}, {"reason", e.what()}};
+  }
 }
 process::Args prepare(const fs::path &root, const Json &options) {
   auto c = settings(options);

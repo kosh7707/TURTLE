@@ -346,6 +346,8 @@ Json attempt(const std::filesystem::path &root, Json error) {
 }
 bool regenerate(const std::filesystem::path &root) {
   auto manifest = artifact::load(root / "manifest.json");
+  if (manifest.at("schema") == "turtle.manifest.v3")
+    return regenerate_lifecycle(root, manifest);
   if (manifest.at("schema") != "turtle.manifest.v2")
     throw std::runtime_error("unsupported_manifest_schema");
   bool valid = manifest.at("status") == "complete" &&

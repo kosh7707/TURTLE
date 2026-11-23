@@ -7,46 +7,76 @@ extern "C" {
 #endif
 
 typedef enum turtle_role { TURTLE_CLIENT, TURTLE_SERVER } turtle_role;
-enum { TURTLE_TLS13 = 0x0304 };
-/* 구현자가 선택한 실행 조건의 선언이다. 암호화 메시지의 내용 검사 결과가 아니다.
- * SERVER_AUTH_1RTT: 인증서 기반 서버 인증, 클라이언트 인증/0-RTT/재개/HRR 없음,
- * 핸드셰이크 호출 중 응용 데이터와 세션 티켓 없음. 호환용 CCS는 허용한다.
- * 조건을 보장하지 않는 구현은 UNSPECIFIED를 반환한다. */
+enum { TURTLE_TLS13 = 0x0304, TURTLE_WANT_READ = -2, TURTLE_WANT_WRITE = -3 };
+/* Declared full certificate handshake policy; never an inference from a record
+ * number. No resumption, HRR, client early data or session tickets. */
 typedef enum turtle_handshake_profile {
     TURTLE_PROFILE_UNSPECIFIED = 0,
-    TURTLE_PROFILE_SERVER_AUTH_1RTT = 1
+    TURTLE_PROFILE_SERVER_AUTH_1RTT = 1,
+    TURTLE_PROFILE_MTLS_1RTT = 2
 } turtle_handshake_profile;
-/* 동기식, 호출 스레드 전용이다. 양수는 진행, 0은 EOF, -1은 실패다.
- * 부분 진행을 허용한다. state와 버퍼는 빌려 쓰며 소켓을 소유하지 않는다.
- * send가 반환하기 전에 그 호출에서 만든 프레임 출력을 소켓에 제출한다. */
+typedef enum turtle_hook {
+    TURTLE_BIO_BEGIN, TURTLE_BIO_END, TURTLE_IO_BEGIN, TURTLE_IO_END,
+    TURTLE_RECORD_HEADER, TURTLE_HANDSHAKE_MESSAGE
+} turtle_hook;
+
+/* Synchronous, calling-thread-only borrowed transport. Positive transfer counts
+ * may be partial. Zero denotes EOF, -1 failure, WANT_* a readiness wait.
+ * The optional observer must not change the TLS result. BEGIN/END delimit a
+ * library I/O call, not a syscall. size is the requested count, processed is
+ * zero on entry and the actual count/error on exit; data is NULL. Header and
+ * message data are borrowed only for the callback (do not retain pointers).
+ * sending=1 means outgoing. Absence of an optional hook is not zero events. */
 typedef struct turtle_transport {
     void* state;
     ptrdiff_t (*receive)(void*, void*, size_t);
     ptrdiff_t (*send)(void*, const void*, size_t);
+    void (*observe)(void* state, turtle_hook, int sending, const void* data,
+                    size_t size, ptrdiff_t processed);
+    int mutual_auth;            /* policy: 0 server auth only, 1 mutual auth */
 } turtle_transport;
-
+enum { TURTLE_UNPADDED_APPLICATION_TAIL = 1 };
 typedef struct turtle_handshake_info {
-    uint16_t version;             /* 표시 문자열이 아닌 정규화한 버전 */
-    int resumed;                  /* 0: 전체, 1: 재개, -1: 알 수 없음 */
-    const char* cipher;            /* NULL: 미지원. release까지 유효하다. */
-    const char* group;             /* NULL: 미지원. release까지 유효하다. */
+    uint16_t version;
+    int resumed;                /* 0 full; 1 resumed; -1 unknown */
+    const char* cipher;          /* borrowed until release; NULL unsupported */
+    const char* group;
     turtle_handshake_profile profile;
+    int peer_verified;          /* 1 authenticated; 0 not verified; -1 unknown */
+    /* Local sender policy for bounded successful tasks: no padding, empty app
+     * records or post-handshake messages before shutdown. Both peers must
+     * attest before an analyzer uses this to locate a Finished boundary. */
+    int record_policy;          /* TURTLE_UNPADDED_APPLICATION_TAIL or 0 unknown */
 } turtle_handshake_info;
-/* 소스 계약이며 바이너리 플러그인 ABI가 아니다. 모든 함수는 동기식이다.
- * prepare는 컨텍스트 하나와 연결 하나를 소유한 상태를 반환한다.
- * 실패하면 자체 자원을 정리하고 NULL을 반환한다. argv는 해석 없이 전달한다.
- * transport/argv 수명은 release까지다. release는 I/O 없이 모두 해제한다.
- * handshake는 성공 시 info를 채우고 1, 실패 시 0을 반환한다.
- * shutdown은 선택적이다(NULL 허용). 성공 1/실패 0이며 시나리오 밖에서 호출한다.
- * 준비 중 네트워크 I/O와 별도 작업 스레드에서 전송 호출은 허용하지 않는다. */
+
+/* Source contract (not a binary plugin ABI). prepare creates one connection;
+ * failure returns NULL after cleaning up. argv and transport live until release.
+ * prepare/release must not do network I/O. The framework owns all buffers.
+ * handshake may return 1 only after enforcing the configured peer authentication
+ * policy, including required client verification on a mutual-auth server. This
+ * permits serving a verified request immediately, without querying mid-task.
+ * TLS operations may return WANT_READ or
+ * WANT_WRITE; retry the SAME operation with the same buffer and length after
+ * readiness. Only a positive transfer advances the plaintext offset. read=0
+ * means EOF, not progress. Other nonpositive values are fatal.
+ * query returns 1 and fills the negotiated/authentication result on the live
+ * connection after the measured interval. shutdown is optional and outside it.
+ * Optional server_first replaces the INITIAL server handshake step in S2/S4:
+ * it drives the server flight and submits the supplied greeting before client
+ * authentication is complete. A positive return counts submitted plaintext.
+ * After the whole greeting is written, call handshake to completion and verify
+ * the peer before serving requests. Never send secrets via server_first. */
 typedef struct turtle_implementation {
     const char* name;
     void* (*prepare)(turtle_role, int argc, const char* const* argv, turtle_transport);
     void (*release)(void*);
-    int (*handshake)(void*, turtle_handshake_info*);
+    int (*handshake)(void*);
     ptrdiff_t (*read)(void*, void*, size_t);
     ptrdiff_t (*write)(void*, const void*, size_t);
     int (*shutdown)(void*);
+    int (*query)(void*, turtle_handshake_info*);
+    ptrdiff_t (*server_first)(void*, const void*, size_t);
+    unsigned hooks;             /* supported observer events, 1u << turtle_hook */
 } turtle_implementation;
 #ifdef __cplusplus
 }

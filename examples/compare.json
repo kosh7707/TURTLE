@@ -6,16 +6,22 @@
   "configurations": [
     {
       "id": "openssl",
+      "scenario": "S3", "auth": "server", "measured_role": "client",
+      "expected": {"group": "X25519MLKEM768"},
+      "recording": "detailed", "required_metrics": ["capture", "records"],
       "server": {"binary": "out/build/native/turtle-openssl", "args": ["--cert", "out/certificates/server.crt", "--key", "out/certificates/server.key", "--groups", "X25519MLKEM768"]},
-      "client": {"binary": "out/build/native/turtle-openssl", "args": ["--ca", "out/certificates/server.crt", "--groups", "X25519MLKEM768"]},
-      "inputs": ["out/certificates/server.crt", "out/certificates/server.key"],
+      "client": {"binary": "out/build/native/turtle-openssl", "args": ["--ca", "out/certificates/ca.crt", "--groups", "X25519MLKEM768"]},
+      "inputs": ["out/certificates/ca.crt", "out/certificates/server.crt", "out/certificates/server.key"],
       "netem": {"mtu": 1500, "client_to_server": {"delay_ms": 2, "loss_pct": 0, "rate_mbit": 100}, "server_to_client": {"delay_ms": 2, "loss_pct": 0, "rate_mbit": 100}}
     },
     {
       "id": "wolfssl",
+      "scenario": "S3", "auth": "server", "measured_role": "client",
+      "expected": {"group": "X25519MLKEM768"},
+      "recording": "detailed", "required_metrics": ["capture", "records"],
       "server": {"binary": "out/build/native/turtle-wolfssl", "args": ["--cert", "out/certificates/server.crt", "--key", "out/certificates/server.key", "--groups", "X25519MLKEM768"]},
-      "client": {"binary": "out/build/native/turtle-wolfssl", "args": ["--ca", "out/certificates/server.crt", "--groups", "X25519MLKEM768"]},
-      "inputs": ["out/certificates/server.crt", "out/certificates/server.key"],
+      "client": {"binary": "out/build/native/turtle-wolfssl", "args": ["--ca", "out/certificates/ca.crt", "--groups", "X25519MLKEM768"]},
+      "inputs": ["out/certificates/ca.crt", "out/certificates/server.crt", "out/certificates/server.key"],
       "netem": {"mtu": 1500, "client_to_server": {"delay_ms": 2, "loss_pct": 0, "rate_mbit": 100}, "server_to_client": {"delay_ms": 2, "loss_pct": 0, "rate_mbit": 100}}
     }
   ]

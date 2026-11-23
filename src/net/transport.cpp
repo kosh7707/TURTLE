@@ -2,6 +2,10 @@
 #include <cerrno>
 #include <stdexcept>
 #include <utility>
+#include <chrono>
+#include <thread>
+#include <poll.h>
+#include <sys/ioctl.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
@@ -17,12 +21,14 @@ sockaddr_in address(const char* host, std::uint16_t port) {
     return result;
 }
 std::ptrdiff_t receive(void* state, void* out, std::size_t size) {
-    const auto n = ::recv(static_cast<Socket*>(state)->get(), out, size, 0);
-    return n < 0 && errno == EINTR ? -2 : n;
+    const auto n = ::recv(static_cast<Socket*>(state)->get(), out, size, MSG_DONTWAIT);
+    if (n < 0 && errno == EINTR) return frame::interrupted;
+    return n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) ? static_cast<ptrdiff_t>(TURTLE_WANT_READ) : n;
 }
 std::ptrdiff_t send(void* state, const void* in, std::size_t size) {
-    const auto n = ::send(static_cast<Socket*>(state)->get(), in, size, MSG_NOSIGNAL);
-    return n < 0 && errno == EINTR ? -2 : n;
+    const auto n = ::send(static_cast<Socket*>(state)->get(), in, size, MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (n < 0 && errno == EINTR) return frame::interrupted;
+    return n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) ? static_cast<ptrdiff_t>(TURTLE_WANT_WRITE) : n;
 }
 }
 Socket::~Socket() { if (descriptor_ >= 0) ::close(descriptor_); }
@@ -54,12 +60,28 @@ Socket connect(const char* host, std::uint16_t number) {
             ::connect(result.get(), reinterpret_cast<const sockaddr*>(&remote), sizeof(remote)) == 0, "connect_failed");
     return result;
 }
-Connection::Connection(Socket socket, measure::Recorder& recorder, std::size_t chunk, unsigned seconds)
-    : socket_(std::move(socket)), framer_({&socket_, receive, send}, recorder, chunk) {
+Connection::Connection(Socket socket, measure::Recorder& recorder, std::size_t chunk, unsigned seconds, bool probe)
+    : socket_(std::move(socket)), stream_({&socket_, receive, send}, recorder, chunk, probe), timeout_(seconds) {
     const timeval timeout{static_cast<time_t>(seconds), 0};
     const int one = 1;
     require(::setsockopt(socket_.get(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0 &&
             ::setsockopt(socket_.get(), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0 &&
             ::setsockopt(socket_.get(), IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) == 0, "socket_options_failed");
+}
+void Connection::wait(bool writing) const {
+    pollfd fd{socket_.get(), static_cast<short>(writing ? POLLOUT : POLLIN), 0};
+    int ready;
+    do { ready = ::poll(&fd, 1, static_cast<int>(timeout_ * 1000)); } while (ready < 0 && errno == EINTR);
+    require(ready > 0 && !(fd.revents & POLLNVAL), ready == 0 ? "socket_wait_timeout" : "socket_wait_failed");
+}
+std::uint64_t Connection::queued(std::uint64_t expected) const {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_);
+    do {
+        int bytes = 0;
+        require(ioctl(socket_.get(), FIONREAD, &bytes) == 0 && bytes >= 0, "probe_queue_unavailable");
+        if (static_cast<std::uint64_t>(bytes) >= expected) return bytes;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
+    throw std::runtime_error("probe_presend_not_delivered");
 }
 }

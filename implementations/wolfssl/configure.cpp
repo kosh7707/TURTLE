@@ -17,18 +17,23 @@ bool parse(Configuration& c, turtle_role role, int argc, const char* const* argv
             else return false;
         } else return false;
     }
-    return role == TURTLE_SERVER ? c.certificate && c.private_key : c.trusted_certificate != nullptr;
+    return (c.certificate != nullptr) == (c.private_key != nullptr) &&
+           (role == TURTLE_SERVER ? c.certificate != nullptr : c.trusted_certificate != nullptr);
 }
 bool configure(WOLFSSL_CTX* context, const Configuration& c) {
     int group = c.group;
     if (wolfSSL_CTX_set_groups(context, &group, 1) != WOLFSSL_SUCCESS) return false;
     wolfSSL_CTX_set_session_cache_mode(context, WOLFSSL_SESS_CACHE_OFF);
-    if (c.role == TURTLE_SERVER) {
-        if (wolfSSL_CTX_no_ticket_TLSv13(context) != 0) return false;
-        return wolfSSL_CTX_use_certificate_chain_file(context, c.certificate) == WOLFSSL_SUCCESS &&
-               wolfSSL_CTX_use_PrivateKey_file(context, c.private_key, WOLFSSL_FILETYPE_PEM) == WOLFSSL_SUCCESS;
+    if (c.role == TURTLE_SERVER && wolfSSL_CTX_no_ticket_TLSv13(context) != 0) return false;
+    if (c.certificate &&
+        (wolfSSL_CTX_use_certificate_chain_file(context, c.certificate) != WOLFSSL_SUCCESS ||
+         wolfSSL_CTX_use_PrivateKey_file(context, c.private_key, WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS))
+        return false;
+    if (c.trusted_certificate) {
+        wolfSSL_CTX_set_verify(context, WOLFSSL_VERIFY_PEER |
+            (c.role == TURTLE_SERVER ? WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0), nullptr);
+        return wolfSSL_CTX_load_verify_locations(context, c.trusted_certificate, nullptr) == WOLFSSL_SUCCESS;
     }
-    wolfSSL_CTX_set_verify(context, WOLFSSL_VERIFY_PEER, nullptr);
-    return wolfSSL_CTX_load_verify_locations(context, c.trusted_certificate, nullptr) == WOLFSSL_SUCCESS;
+    return true;
 }
 }

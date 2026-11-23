@@ -1,4 +1,5 @@
 #include "measure/perf.hpp"
+#ifndef TURTLE_NO_PMU
 #include <cerrno>
 #include <ctime>
 #include <linux/perf_event.h>
@@ -15,6 +16,9 @@ bool clock_ns(std::uint64_t& value) noexcept {
     return true;
 }
 }
+} // namespace turtle::measure
+#endif
+namespace turtle::measure {
 const char* name(PerfAvailability value) noexcept {
     switch (value) {
     case PerfAvailability::not_collected: return "not_collected";
@@ -24,6 +28,7 @@ const char* name(PerfAvailability value) noexcept {
     }
     return "missing";
 }
+#ifndef TURTLE_NO_PMU
 void PerfCounters::fail(PerfAvailability status, const char* reason, int error) noexcept {
     availability_ = status;
     reason_ = reason;
@@ -79,4 +84,11 @@ PerfSnapshot PerfCounters::snapshot() noexcept {
     out.available = cycles && instructions;
     return out;
 }
+#else
+PerfCounters::PerfCounters(bool requested) noexcept : requested_(requested) {
+    if (requested) { availability_ = PerfAvailability::unsupported; reason_ = "pmu_not_built"; }
+}
+PerfCounters::~PerfCounters() = default;
+PerfSnapshot PerfCounters::snapshot() noexcept { return {}; }
+#endif
 }

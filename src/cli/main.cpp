@@ -1,27 +1,41 @@
 #include "analysis/analysis.hpp"
 #include "capture/capture.hpp"
 #include "control/controller.hpp"
+#include <charconv>
 #include <iostream>
 #include <signal.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
+namespace {
+constexpr auto usage =
+    "usage: turtle check SPEC | turtle run SPEC OUTPUT | turtle analyze RUN | "
+    "turtle retry OLD_RUN FAILED_RUN_ID NEW_OUTPUT";
+}
 int main(int argc, char **argv) {
   try {
     if (argc == 2 && (std::string(argv[1]) == "--help" ||
                       std::string(argv[1]) == "--version")) {
-      std::cout << "TURTLE C++20\nusage: turtle run SPEC OUTPUT | turtle "
-                   "analyze RUN\n";
+      std::cout << "TURTLE C++20\n" << usage << '\n';
       return 0;
     }
-    if (argc == 5 && std::string(argv[1]) == "__capture")
-      return turtle::capture::collect(argv[2], argv[3], argv[4]);
+    if (argc == 6 && std::string(argv[1]) == "__capture") {
+      unsigned port{};
+      std::string_view s(argv[5]);
+      auto [p, ec] = std::from_chars(s.data(), s.data() + s.size(), port);
+      if (ec != std::errc{} || p != s.data() + s.size() || !port ||
+          port > 65535)
+        throw std::runtime_error("invalid_capture_port");
+      return turtle::capture::collect(argv[2], argv[3], argv[4], port);
+    }
+    if (argc == 3 && std::string(argv[1]) == "check")
+      return turtle::control::check(argv[2]);
     if (argc == 3 && std::string(argv[1]) == "analyze")
       return turtle::analysis::regenerate(std::filesystem::absolute(argv[2]))
                  ? 0
                  : 1;
-    if (argc != 4 || std::string(argv[1]) != "run")
-      throw std::runtime_error(
-          "usage: turtle run SPEC OUTPUT | turtle analyze RUN");
+    bool retry = argc == 5 && std::string_view(argv[1]) == "retry";
+    if (!retry && (argc != 4 || std::string_view(argv[1]) != "run"))
+      throw std::runtime_error(usage);
     ::signal(SIGPIPE, SIG_IGN);
     sigset_t mask;
     sigemptyset(&mask);
@@ -37,6 +51,8 @@ int main(int argc, char **argv) {
       ~Close() { ::close(fd); }
     } owned{cancel};
     auto self = std::filesystem::canonical("/proc/self/exe").string();
+    if (retry)
+      return turtle::control::retry(argv[2], argv[3], argv[4], self, cancel);
     return turtle::control::execute(argv[2], argv[3], self, cancel);
   } catch (const std::exception &e) {
     std::cerr << "turtle: " << e.what() << '\n';

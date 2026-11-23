@@ -5,7 +5,9 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#ifndef TURTLE_NO_PCAP
 #include <pcap/pcap.h>
+#endif
 #include <poll.h>
 #include <set>
 #include <stdexcept>
@@ -16,6 +18,7 @@ namespace {
 std::uint16_t u16(const unsigned char *p) {
   return static_cast<std::uint16_t>((p[0] << 8) | p[1]);
 }
+#ifndef TURTLE_NO_PCAP
 std::uint32_t u32(const unsigned char *p) {
   return (static_cast<std::uint32_t>(p[0]) << 24) |
          (static_cast<std::uint32_t>(p[1]) << 16) |
@@ -94,6 +97,27 @@ std::vector<Packet> packets(const std::filesystem::path &path) {
                    {"flags", tcp[13]},
                    {"link_bytes", h->len},
                    {"ip_bytes", total}};
+    Json sacks = Json::array();
+    for (unsigned pos = 20; pos < thl;) {
+      unsigned kind = tcp[pos++];
+      if (kind == 0)
+        break;
+      if (kind == 1)
+        continue;
+      if (pos >= thl)
+        throw std::runtime_error("invalid_tcp_option");
+      unsigned len = tcp[pos++];
+      if (len < 2 || len - 2 > thl - pos)
+        throw std::runtime_error("invalid_tcp_option_length");
+      if (kind == 5) {
+        if (len < 10 || (len - 2) % 8)
+          throw std::runtime_error("invalid_sack_length");
+        for (unsigned i = 0; i < len - 2; i += 8)
+          sacks.push_back({u32(tcp + pos + i), u32(tcp + pos + i + 4)});
+      }
+      pos += len - 2;
+    }
+    fields["sack_blocks"] = std::move(sacks);
     result.push_back({std::move(fields), Bytes(tcp + thl, ip + total)});
   }
   if (rc != -2)
@@ -106,6 +130,7 @@ std::uint64_t length(const Ranges &ranges) {
     n += b - a;
   return n;
 }
+#endif
 } // namespace
 Ranges overlap(const Ranges &ranges, std::uint64_t a, std::uint64_t b) {
   Ranges r;
@@ -154,6 +179,29 @@ Json records(std::span<const unsigned char> wire) {
   }
   return r;
 }
+Json raw_records(std::span<const unsigned char> wire) {
+  Json rows = Json::array();
+  for (std::size_t a = 0; a < wire.size();) {
+    if (wire.size() - a < 5)
+      throw std::runtime_error("truncated_tls_header");
+    const auto body = u16(wire.data() + a + 3);
+    if (wire[a] < 20 || wire[a] > 23 || wire[a + 1] != 3 ||
+        body > (1u << 14) + 256 || wire.size() - a - 5 < body)
+      throw std::runtime_error("invalid_tls_record");
+    const auto b = a + 5 + body;
+    rows.push_back({{"number", rows.size() + 1},
+                    {"raw_tls", true},
+                    {"content_type", wire[a]},
+                    {"legacy_version", u16(wire.data() + a + 1)},
+                    {"body_bytes", body},
+                    {"wire_begin", a},
+                    {"wire_end", b},
+                    {"tls_begin", a},
+                    {"tls_end", b}});
+    a = b;
+  }
+  return rows;
+}
 void verify_tls(std::span<const unsigned char> wire,
                 std::span<const unsigned char> tls) {
   auto r = records(wire);
@@ -172,9 +220,16 @@ void verify_tls(std::span<const unsigned char> wire,
 }
 Json mapping(const Json &records, std::uint64_t begin, std::uint64_t end) {
   Json result = Json::array();
-  for (const auto &r : records) {
+  auto it = std::upper_bound(records.begin(), records.end(), begin,
+                             [](std::uint64_t n, const Json &r) {
+                               return n < integer(r.at("wire_end"));
+                             });
+  for (; it != records.end() && integer(it->at("wire_begin")) < end; ++it) {
+    const auto &r = *it;
     auto a = integer(r.at("wire_begin")), b = integer(r.at("wire_end"));
-    std::array<Range, 3> parts{{{a, a + 4}, {a + 4, a + 9}, {a + 9, b}}};
+    auto prefix = r.value("raw_tls", false) ? 0u : 4u;
+    std::array<Range, 3> parts{
+        {{a, a + prefix}, {a + prefix, a + prefix + 5}, {a + prefix + 5, b}}};
     std::array<const char *, 3> names{
         {"frame_header", "tls_header", "tls_payload"}};
     for (std::size_t i = 0; i < 3; ++i) {
@@ -186,9 +241,10 @@ Json mapping(const Json &records, std::uint64_t begin, std::uint64_t end) {
              {"part", names[i]},
              {"wire_begin", lo},
              {"wire_end", hi},
-             {"tls_begin", i ? Json(integer(r.at("tls_begin")) + lo - a - 4)
-                             : Json(nullptr)},
-             {"tls_end", i ? Json(integer(r.at("tls_begin")) + hi - a - 4)
+             {"tls_begin",
+              i ? Json(integer(r.at("tls_begin")) + lo - a - prefix)
+                : Json(nullptr)},
+             {"tls_end", i ? Json(integer(r.at("tls_begin")) + hi - a - prefix)
                            : Json(nullptr)}});
     }
   }
@@ -197,7 +253,18 @@ Json mapping(const Json &records, std::uint64_t begin, std::uint64_t end) {
 Json analyze(const std::filesystem::path &path,
              const std::map<std::string, Bytes> &streams,
              const std::map<std::string, std::uint64_t> &required,
-             const std::string &client, const std::string &server) {
+             const std::string &client, const std::string &server,
+             bool raw_tls) {
+#ifdef TURTLE_NO_PCAP
+  (void)path;
+  (void)streams;
+  (void)required;
+  (void)client;
+  (void)server;
+  (void)raw_tls;
+  throw std::runtime_error("pcap_not_built");
+#else
+  auto parse_records = raw_tls ? raw_records : records;
   auto input = packets(path);
   std::set<std::pair<unsigned, unsigned>> flows;
   for (const auto &p : input) {
@@ -237,9 +304,9 @@ Json analyze(const std::filesystem::path &path,
       throw std::runtime_error("required_stream_too_short");
     Json frame_list;
     try {
-      frame_list = records(expected);
+      frame_list = parse_records(expected);
     } catch (const std::exception &) {
-      frame_list = records(std::span(expected).first(need));
+      frame_list = parse_records(std::span(expected).first(need));
     }
     Ranges seen;
     std::uint64_t repeated = 0, payload_bytes = 0, links = 0, ips = 0;
@@ -262,6 +329,10 @@ Json analyze(const std::filesystem::path &path,
       if (!bytes.empty()) {
         auto dup = overlap(seen, a, b);
         row["retransmitted_ranges"] = dup;
+        row["retransmitted_record_ranges"] = Json::array();
+        for (const auto &[lo, hi] : dup)
+          for (const auto &part : mapping(frame_list, lo, hi))
+            row["retransmitted_record_ranges"].push_back(part);
         repeated += length(dup);
         merge(seen, a, b);
         payload_bytes += bytes.size();
@@ -303,10 +374,76 @@ Json analyze(const std::filesystem::path &path,
          seen == (expected.empty() ? Ranges{} : Ranges{{0, expected.size()}})},
         {"packets", rows}};
   }
+  // ACK claims are about the named packet copy, not its original transmission,
+  // peer TLS processing, or application reads. A short ACK is inconclusive.
+  for (auto direction : {"client_to_server", "server_to_client"}) {
+    auto opposite = std::string(direction) == "client_to_server"
+                        ? "server_to_client"
+                        : "client_to_server";
+    auto &out = result.at(direction);
+    const auto &peer = result.at(opposite);
+    auto base = peer.at("initial_sequence").get<std::uint32_t>() + 1u;
+    auto need = required.at(opposite);
+    const auto rs = parse_records(std::span(streams.at(opposite)).first(need));
+    for (auto &pkt : out.at("packets")) {
+      pkt["opposite_records_cumulatively_acked"] = Json::array();
+      pkt["sack_stream_ranges"] = Json::array();
+      if (!(integer(pkt.at("flags")) & 16))
+        continue;
+      auto ack = pkt.at("ack").get<std::uint32_t>() - base;
+      // Reject ambiguous wrap/coordinates beyond observed payload (+FIN).
+      if (ack > streams.at(opposite).size() + 1 || ack >= 0x80000000u)
+        continue;
+      pkt["ack_stream_offset"] = ack;
+      for (const auto &block : pkt.at("sack_blocks")) {
+        auto lo = block[0].get<std::uint32_t>() - base,
+             hi = block[1].get<std::uint32_t>() - base;
+        if (lo < hi && hi <= streams.at(opposite).size())
+          pkt["sack_stream_ranges"].push_back({lo, hi});
+      }
+      if (out.at("availability") != "available" ||
+          peer.at("availability") != "available" ||
+          !integer(pkt.at("payload_bytes")))
+        continue;
+      for (const auto &r : rs)
+        if (integer(r.at("wire_end")) <= ack)
+          pkt["opposite_records_cumulatively_acked"].push_back(r.at("number"));
+    }
+  }
   return result;
+#endif
+}
+Json probe(const std::string &interface) {
+#ifdef TURTLE_NO_PCAP
+  (void)interface;
+  return {{"availability", "unsupported"}, {"reason", "pcap_not_built"}};
+#else
+  char err[PCAP_ERRBUF_SIZE]{};
+  Handle h(pcap_create(interface.c_str(), err), pcap_close);
+  if (!h)
+    return {{"availability", "unsupported"}, {"reason", err}};
+  if (pcap_set_snaplen(h.get(), 262144) ||
+      pcap_set_immediate_mode(h.get(), 1) ||
+      pcap_set_tstamp_precision(h.get(), PCAP_TSTAMP_PRECISION_NANO) ||
+      pcap_activate(h.get()) < 0)
+    return {{"availability", "unsupported"}, {"reason", pcap_geterr(h.get())}};
+  if (pcap_datalink(h.get()) != DLT_EN10MB ||
+      pcap_get_selectable_fd(h.get()) < 0)
+    return {{"availability", "unsupported"},
+            {"reason", "capture_interface_unsupported"}};
+  return {{"availability", "available"}, {"reason", nullptr}};
+#endif
 }
 int collect(const std::string &interface, const std::filesystem::path &output,
-            const std::filesystem::path &status) {
+            const std::filesystem::path &status, unsigned server_port) {
+#ifdef TURTLE_NO_PCAP
+  (void)interface;
+  (void)output;
+  (void)server_port;
+  artifact::save(
+      status, {{"availability", "unsupported"}, {"reason", "pcap_not_built"}});
+  return 1;
+#else
   Json state = {{"availability", "missing"},
                 {"kernel_dropped", nullptr},
                 {"reason", nullptr},
@@ -326,7 +463,12 @@ int collect(const std::string &interface, const std::filesystem::path &output,
     if (pcap_datalink(h.get()) != DLT_EN10MB)
       throw std::runtime_error("ethernet_capture_required");
     bpf_program filter{};
-    if (pcap_compile(h.get(), &filter, "tcp", 1, PCAP_NETMASK_UNKNOWN) < 0)
+    if (server_port > 65535)
+      throw std::runtime_error("invalid_capture_port");
+    auto expression =
+        server_port ? "tcp port " + std::to_string(server_port) : "tcp";
+    if (pcap_compile(h.get(), &filter, expression.c_str(), 1,
+                     PCAP_NETMASK_UNKNOWN) < 0)
       throw std::runtime_error(pcap_geterr(h.get()));
     int code = pcap_setfilter(h.get(), &filter);
     pcap_freecode(&filter);
@@ -392,5 +534,6 @@ int collect(const std::string &interface, const std::filesystem::path &output,
   }
   artifact::save(status, state);
   return state.at("availability") == "available" ? 0 : 1;
+#endif
 }
 } // namespace turtle::capture

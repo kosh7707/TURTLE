@@ -1,3 +1,9 @@
+cmake_minimum_required(VERSION 3.20)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(turtle_openssl_adapter LANGUAGES C CXX)
+    find_package(TURTLE CONFIG REQUIRED)
+endif()
+
 # 이 디렉터리를 명시적으로 선택했을 때만 OpenSSL을 찾는다.
 # FindOpenSSL의 정적 의존성 조회도 선택한 설치의 pkg-config를 사용한다.
 set(turtle_saved_pkg_config_path "$ENV{PKG_CONFIG_PATH}")
