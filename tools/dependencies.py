@@ -11,7 +11,7 @@ import tempfile
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ROOT / 'docs/project/dependencies.json'
+MANIFEST = Path(__file__).resolve().with_name('dependencies.json')
 
 
 def digest(path):
