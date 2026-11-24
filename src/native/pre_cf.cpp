@@ -51,6 +51,12 @@ std::optional<Stream> trace(const Json &r, const std::string &source, bool send,
         return {};
       ready = true;
     }
+    if (ready && source == "stream" && e.at("kind") == "bytes" &&
+        e.at("sent") == send) {
+      out.hex += e.at("hex").get_ref<const std::string &>();
+      out.last_seq = seq;
+      continue;
+    }
     if (e.at("kind") != "io" || e.at("source") != source ||
         e.at("sent") != send)
       continue;
@@ -73,6 +79,44 @@ std::optional<Stream> trace(const Json &r, const std::string &source, bool send,
   if (!ready || out.hex.empty())
     return {};
   return out;
+}
+// Optional send observations can veto the proof, never supply the TCP bound.
+// The receiver is allowed to have consumed only a prefix when the gate closes.
+bool agrees(const Json &server, const std::string &received) {
+  std::optional<std::string> reported;
+  for (const auto &source : supplied(server)) {
+    if (source == "header")
+      continue;
+    auto seen = trace(server, source, true);
+    if (!seen || !seen->hex.starts_with(received) ||
+        (reported && seen->hex != *reported))
+      return false;
+    reported = std::move(seen->hex);
+  }
+  const auto &known = reported ? *reported : received;
+  bool ready = false, header_bound = false;
+  for (const auto &e : server.at("events")) {
+    if (e.at("kind") == "event" && e.at("name") == "ready")
+      ready = true;
+    if (e.at("kind") == "coverage" && e.at("source") == "header") {
+      if (ready)
+        return false;
+      header_bound = e.at("active").get<bool>();
+    }
+    if (!ready || e.at("kind") != "header" || e.at("sent") != true)
+      continue;
+    auto off = artifact::integer(e.at("offset"));
+    if (!header_bound)
+      return false;
+    if (off < known.size() / 2) {
+      const auto &header = e.at("hex").get_ref<const std::string &>();
+      auto pos = static_cast<size_t>(off) * 2;
+      auto len = std::min(known.size() - pos, header.size());
+      if (known.compare(pos, len, header, 0, len) != 0)
+        return false;
+    }
+  }
+  return true;
 }
 unsigned byte(const std::string &hex, size_t n) {
   unsigned v;
@@ -99,7 +143,7 @@ bool protected_records(const std::string &hex, size_t start) {
 }
 } // namespace
 Json pre_cf_extent(const Json &client, const Json &server, size_t greeting,
-                   bool stock_server) {
+                   bool direct_reference_server) {
   if (!greeting || !ok(client) || !ok(server))
     return nullptr;
   auto &cm = client.at("lifecycle");
@@ -115,20 +159,17 @@ Json pre_cf_extent(const Json &client, const Json &server, size_t greeting,
   // The trusted probe client uses SSL_set_fd's direct socket BIO; its positive
   // BIO reads (including read-ahead) have already removed these bytes from TCP.
   const auto sources = supplied(server);
-  const bool receiver_only = !stock_server && sources.empty();
-  const std::string source = stock_server ? "library_io" : "socket";
-  auto sent = trace(server, source, true);
-  if (!receiver_only) {
-    if (!sent || !sent->hex.starts_with(received->hex))
-      return nullptr;
-    // Reject inconsistent parallel sources; never sum two layers' bytes.
-    for (const auto &other : sources)
-      if ((other == "socket" || other == "library_io") && other != source) {
-        auto second = trace(server, other, true);
-        if (!second || second->hex != sent->hex)
-          return nullptr;
-      }
-  }
+  // Only a transport hook or the known reference's direct SSL_set_fd BIO
+  // supplies a terminal TCP extent. Generic BIO/stream/header observations
+  // are cross-checks; actual delivery must be proven at the frozen receiver.
+  std::string source;
+  if (sources.contains("socket"))
+    source = "socket";
+  else if (direct_reference_server && sources.contains("library_io"))
+    source = "library_io";
+  if (!agrees(server, received->hex))
+    return nullptr;
+  auto sent = source.empty() ? std::nullopt : trace(server, source, true);
   size_t accepted = 0;
   uint64_t first = 0, offer = 0, last = 0;
   for (const auto &e : server.at("message_events")) {
@@ -144,9 +185,11 @@ Json pre_cf_extent(const Json &client, const Json &server, size_t greeting,
       if (!offer || offer >= seq ||
           artifact::integer(e.at("offset")) != accepted)
         return nullptr;
-      auto flush = trace(server, source, true, seq);
-      if (!receiver_only && (!flush || flush->last_seq <= offer))
-        return nullptr;
+      if (sent) {
+        auto flush = trace(server, source, true, seq);
+        if (!flush || flush->last_seq <= offer)
+          return nullptr;
+      }
       accepted += artifact::integer(e.at("length"));
       last = seq;
       offer = 0;
@@ -154,7 +197,7 @@ Json pre_cf_extent(const Json &client, const Json &server, size_t greeting,
   }
   if (accepted != greeting || !first || !last)
     return nullptr;
-  if (receiver_only)
+  if (!sent)
     return {{"client_source", "direct_probe_socket_bio"},
             {"server_source", nullptr},
             {"pause_seq", paused},
@@ -182,7 +225,7 @@ bool pre_cf_arrived(const Json &e, uint64_t queued) {
          queued >= artifact::integer(e.at("required_queue_bytes"));
 }
 Json pre_cf_delivery(const Json &client, const Json &server, const Json &extent,
-                     bool stock_server, uint64_t queued) {
+                     uint64_t queued) {
   if (extent.is_null() || !ok(client) || !ok(server))
     return nullptr;
   auto validation = client.at("timeline").at("SAD1").at("validated");
@@ -197,10 +240,11 @@ Json pre_cf_delivery(const Json &client, const Json &server, const Json &extent,
     return nullptr;
   auto prior = artifact::integer(extent.at("client_consumed_bytes"));
   auto total = consumed->hex.size() / 2;
-  if (total < prior || total - prior > queued)
+  if (total < prior || total - prior > queued ||
+      !agrees(server, consumed->hex))
     return nullptr;
   if (!extent.at("server_source").is_null()) {
-    auto sent = trace(server, stock_server ? "library_io" : "socket", true);
+    auto sent = trace(server, extent.at("server_source").get<std::string>(), true);
     if (!pre_cf_arrived(extent, queued) || !sent ||
         sent->hex.size() / 2 !=
             artifact::integer(extent.at("server_terminal_bytes")) ||

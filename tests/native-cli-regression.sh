@@ -38,6 +38,12 @@ cp basic/analysis.json live.json
 "$turtle" analyze basic
 cmp live.json basic/analysis.json
 
+# The peer is the observed reference server, not this unobserved client.
+jq '.required_metrics=["peer_task"]' profile.json >peer.json
+"$turtle" run peer.json peer
+jq -e '.attempts[0] | .requested_metrics.peer_task.available==true and
+    .participants.server.metrics.peer_task==true and .participants.client.metrics.peer_task==null' peer/analysis.json >/dev/null
+
 # With only an initial X25519 share, this same P-256 server must request a
 # second ClientHello. The resulting TLS exchange works, but is not one RTT.
 jq '.target.argv |= map(if .=="P-256" then "X25519:P-256" else . end)' profile.json >hrr.json
@@ -71,6 +77,39 @@ reject "$turtle" retry strict "$id" retried
 jq -e --arg id "$id" '.retry_of.connection_id==$id' retried/manifest.json >/dev/null
 jq -e --arg id "$id" '.attempts[0].connection_id!=$id and .eligible_measurements==0' retried/analysis.json >/dev/null
 sha256sum -c original.sha256 >/dev/null
+
+# The separate diagnostic is finalized after ordinary samples. A failed
+# required diagnostic is retryable; the same missing optional one is not.
+for kind in required optional; do
+    name="cpu-$kind"
+    jq --arg kind "$kind" --arg tool "$work/no-such-perf" '
+        del(.optional_metrics) | .[($kind+"_metrics")]=["cpu_samples"] |
+        .measurement.cpu_samples={perf:$tool}' profile.json >"$name.json"
+    expected=0; if [ "$kind" = required ]; then expected=1; fi
+    rc=0; "$turtle" run "$name.json" "$name" || rc=$?
+    [ "$rc" -eq "$expected" ]
+    jq -e --arg k "$kind" '.attempts[0] |
+        .requested_metrics.cpu_samples.available==null and
+        .operation_ok==($k=="optional")' "$name/analysis.json" >/dev/null
+    cp "$name/analysis.json" live.json
+    replay=0; "$turtle" analyze "$name" || replay=$?
+    [ "$rc" -eq "$replay" ]; cmp live.json "$name/analysis.json"
+    cpu_id=$(jq -er '.attempts[0].connection_id' live.json)
+    # Derived files are not authority for retry; neither trust nor modify them.
+    printf '{}\n' >"$name/analysis.json"
+    printf '{}\n' >"$name/attempt-1/analysis.json"
+    find "$name" -type f -exec sha256sum {} + >original.sha256
+    reject "$turtle" retry "$name" "$cpu_id" "$name-retry"
+    if [ "$kind" = required ]; then
+        jq -e --arg id "$cpu_id" '.retry_of.connection_id==$id' "$name-retry/manifest.json" >/dev/null
+        jq -e --arg id "$cpu_id" '.attempts[0].connection_id!=$id and
+            .attempts[0].operation_ok==false' "$name-retry/analysis.json" >/dev/null
+    else
+        grep -q 'retry_requires_failed_measurement' rejection.log
+        test ! -e "$name-retry"
+    fi
+    sha256sum -c original.sha256 >/dev/null
+done
 
 # An edited manifest is no longer authorized to execute, even in its original
 # directory. Offline replay independently rejects changes to source evidence.

@@ -130,12 +130,36 @@ int run(const std::string &mode, const fs::path &dir) {
   Json schedule = {{"run_id", "test"}, {"purpose", "measurement"},
                    {"artifacts_sha256", {{"raw", process::digest(attempt / "raw")}}}};
   auto assessed = [&] { return analysis::assess(attempt, config, schedule); };
-  require(assessed().at("raw_evidence_valid"), "intact inventory rejected");
+  artifact::write_text(attempt / "analysis.json", "{");
+  require(assessed().at("raw_evidence_valid"), "damaged derived report blocked intact inventory");
+  artifact::write_text(attempt / "analysis.json", "unfinished report");
+  artifact::write_text(attempt / "raw", "changed");
+  require(!assessed().at("raw_evidence_valid") &&
+              artifact::load(attempt / "analysis.json").at("eligible") == false,
+          "damaged derived report blocked rejection of damaged raw evidence");
+  artifact::write_text(attempt / "raw", "known");
+  // Historical decoder status lived in the derived report, not the inventory.
+  // A rejected inventory must retain that input without publishing stale rows.
+  const Json receipt = {{"returncode", 0}, {"stdout", "perf.script.txt"}};
+  auto prior = artifact::load(attempt / "analysis.json");
+  prior["roles"]["client"]["cpu_profile"] =
+      {{"analysis_command", receipt}, {"sample_count", 1}};
+  artifact::save(attempt / "analysis.json", prior);
   artifact::write_text(attempt / "raw", "changed");
   auto changed = assessed();
   require(!changed.at("raw_evidence_valid") && !changed.at("eligible") &&
           changed.at("invalid_reasons")[0] == "raw_artifact_digest_mismatch" &&
           changed.at("measurements").empty(), "corrupt evidence accepted");
+  require(changed.at("roles").empty() &&
+              changed.at("legacy_decoder_receipts").at("client") ==
+                  Json{{"analysis_command", receipt}},
+          "rejected attempt lost decoder receipt or retained measurements");
+  artifact::write_text(attempt / "raw", "known");
+  auto repaired = assessed();
+  require(repaired.at("raw_evidence_valid") &&
+              repaired.at("legacy_decoder_receipts") ==
+                  changed.at("legacy_decoder_receipts"),
+          "restoring raw data lost decoder receipt");
   return 0;
 }
 }

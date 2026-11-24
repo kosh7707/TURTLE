@@ -6,12 +6,12 @@ namespace turtle::native {
 // capability.
 artifact::Json pre_cf_extent(const artifact::Json &client,
                              const artifact::Json &server,
-                             std::size_t greeting_size, bool stock_server);
+                             std::size_t greeting_size,
+                             bool direct_reference_server);
 bool pre_cf_arrived(const artifact::Json &extent, uint64_t queued);
 // Bind the encrypted bytes actually consumed by the known probe client through
-// successful greeting validation to the already submitted sender prefix.
+// successful greeting validation to the queue sampled before gate release.
 artifact::Json pre_cf_delivery(const artifact::Json &client_validated,
                                const artifact::Json &server_frozen,
-                               const artifact::Json &extent, bool stock_server,
-                               uint64_t queued);
+                               const artifact::Json &extent, uint64_t queued);
 } // namespace turtle::native

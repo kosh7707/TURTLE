@@ -52,16 +52,49 @@ int main() try {
   delivered["lifecycle"]["probe_resumed"] = {{"seq", 5}};
   delivered["events"].push_back(io(6, false, sad));
   delivered["timeline"]["SAD1"]["validated"] = {{"seq", 7}};
-  ck(pre_cf_delivery(delivered, s, e, true, 8)["needed_from_queue"] == 8);
-  ck(pre_cf_delivery(delivered, s, e, true, 7).is_null());
+  ck(pre_cf_delivery(delivered, s, e, 8)["needed_from_queue"] == 8);
+  ck(pre_cf_delivery(delivered, s, e, 7).is_null());
   auto no_wire = s;
   no_wire["events"] =
       Json::array({{{"kind", "event"}, {"name", "ready"}, {"seq", 2}}});
   auto rx = pre_cf_extent(c, no_wire, 3, false);
   ck(rx.is_object() && rx["server_source"].is_null());
-  ck(pre_cf_delivery(delivered, no_wire, rx, false, 8)["needed_from_queue"] ==
-     8);
-  ck(pre_cf_delivery(delivered, no_wire, rx, false, 7).is_null());
+  ck(pre_cf_delivery(delivered, no_wire, rx, 8)["needed_from_queue"] == 8);
+  ck(pre_cf_delivery(delivered, no_wire, rx, 7).is_null());
+  // Library writes can be buffered: only the frozen receiver's validated
+  // greeting can prove delivery, never the submitted BIO byte count.
+  auto buffered = pre_cf_extent(c, s, 3, false);
+  ck(buffered == rx);
+  ck(pre_cf_delivery(delivered, s, buffered, 8).is_object());
+  ck(pre_cf_delivery(delivered, s, buffered, 1).is_null());
+  auto not_received = delivered;
+  not_received["timeline"]["SAD1"]["validated"] = nullptr;
+  ck(pre_cf_delivery(not_received, s, buffered, 8).is_null());
+  auto header_only = base("header");
+  header_only["message_events"] = s["message_events"];
+  auto header = Json{{"kind", "header"}, {"sent", true}, {"seq", 3},
+                     {"offset", 0}, {"hex", head.substr(0, 10)}};
+  header_only["events"].push_back(header);
+  ck(pre_cf_extent(c, header_only, 3, false) == rx);
+  auto wrong_header = header_only;
+  wrong_header["events"].back()["hex"] = "1703030001";
+  ck(pre_cf_extent(c, wrong_header, 3, false).is_null());
+  auto socket = s;
+  for (auto &event : socket["events"])
+    if (event.contains("source"))
+      event["source"] = "socket";
+  auto socket_extent = pre_cf_extent(c, socket, 3, false);
+  ck(socket_extent["server_source"] == "socket" &&
+     socket_extent["required_queue_bytes"] == 8);
+  auto both = socket;
+  auto &events = both["events"];
+  events.insert(events.begin(), s["events"][0]);
+  events.push_back(io(7, true, head + sad));
+  ck(pre_cf_extent(c, both, 3, true) == socket_extent);
+  events.back()["hex"] = head + "1703030003abcdee";
+  ck(pre_cf_extent(c, both, 3, true).is_null());
+  socket["events"][2]["hex"] = nullptr;
+  ck(pre_cf_extent(c, socket, 3, false).is_null());
   auto rebound = s;
   auto &ev = rebound["events"];
   // Pre-READY changes do not interrupt the tested interval.
@@ -73,6 +106,7 @@ int main() try {
   auto interrupted = s;
   interrupted["events"].push_back(release);
   ck(pre_cf_extent(c, interrupted, 3, true).is_null());
+  ck(pre_cf_extent(c, interrupted, 3, false).is_null());
   auto incomplete = s;
   incomplete["events"][2]["hex"] = nullptr;
   ck(pre_cf_extent(c, incomplete, 3, false)
@@ -85,7 +119,8 @@ int main() try {
   ck(pre_cf_extent(conflict, s, 3, true).is_null());
   auto extra = delivered;
   extra["events"][3]["hex"] = "1703030003abcdee";
-  ck(pre_cf_delivery(extra, s, e, true, 8).is_null());
+  ck(pre_cf_delivery(extra, s, e, 8).is_null());
+  ck(pre_cf_delivery(extra, s, buffered, 8).is_null());
   std::cout
       << "sender/receiver and receiver-only pre-CF exact thresholds verified\n";
 } catch (const std::exception &e) {

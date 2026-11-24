@@ -374,7 +374,7 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled,
              {"measurements", Json::array()},
              {"roles", Json::object()},
              {"invalid_reasons", Json::array({e.what()})}};
-      if (!fs::is_symlink(dir / "analysis.json")) artifact::save(dir / "analysis.json", out);
+      if (!fs::is_symlink(dir / "analysis.json")) profiling::save_attempt_report(dir, out);
       return out;
     }
     out["raw_evidence_valid"] = true;
@@ -606,7 +606,7 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled,
             (!profile || available(observations.at("cpu_samples")))},
        {"perf_invalid_reasons", Json::array()},
        {"measurements", rows}});
-  artifact::save(dir / "analysis.json", out);
+  profiling::save_attempt_report(dir, out);
   return out;
 }
 
@@ -709,7 +709,7 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
         row["valid_sample"] = false;
         row["excluded_reason"] = "prerequisite_attempt_not_verified";
       }
-      if (!fs::is_symlink(root / d / "analysis.json")) artifact::save(root / d / "analysis.json", r);
+      if (!fs::is_symlink(root / d / "analysis.json")) profiling::save_attempt_report(dir, r);
     }
     const bool pending = r.value("qualification", "") == "decision_required";
     if (pending) ++decisions;

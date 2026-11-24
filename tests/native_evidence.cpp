@@ -28,6 +28,7 @@ J context() {
           {"plaintext",
            {{"CAD", "70696e67"}, {"SAD1", "68656c6f"}, {"SAD2", "706f6e67"}}},
           {"peer_name", "client.turtle.test"},
+          {"peer_full_handshake_auth", true},
           {"capability_proof", true}};
 }
 void event(const char *n) { turtle_observe_event(n); }
@@ -86,7 +87,7 @@ J capture(const char *self, const char *mode = "produce") {
     events.push_back(J::parse(line));
   return events;
 }
-J run(J events, J c = context()) {
+J local_report(J events, const J &c) {
   std::string s;
   uint64_t seq = 0;
   for (auto &e : events) {
@@ -94,6 +95,13 @@ J run(J events, J c = context()) {
     s += e.dump() + "\n";
   }
   return turtle::native::analyze_evidence(s, c);
+}
+// Isolated endpoint tests supply the final opposite-role proof explicitly.
+J run(J events, J c = context()) {
+  auto report = local_report(std::move(events), c);
+  turtle::native::qualify_flights(report, c.at("auth") == "mtls",
+                                  c.at("peer_full_handshake_auth"));
+  return report;
 }
 auto find(J &es, const std::string &n) {
   auto it = std::find_if(es.begin(), es.end(),
@@ -334,6 +342,35 @@ void named_tests(const J &es) {
          r["wire"]["flights"]["client_protected_flight"]["inner_message_times"]
              .is_null(),
      "four unsplit native anchored flights");
+  ck(r["wire"]["flights"]["client_protected_flight"]["conceptual_members"] ==
+         J{"CC", "CCV", "CF"}, "confirmed mutual authentication");
+  for (auto peer : {J(nullptr), J(false)}) {
+    c["peer_full_handshake_auth"] = peer;
+    auto report = run(data, c);
+    auto &group = report["wire"]["flights"]["server_protected_flight"];
+    ck(report["metrics"]["tls_flights"] == peer && group["end"] > group["begin"] &&
+           group["anchor"].is_object() && !group.contains("conceptual_members") &&
+           report["metrics"]["timed_records"] == true,
+       "unproven peer handshake cannot name protected members");
+  }
+  c["peer_full_handshake_auth"] = true;
+  auto unauth = data;
+  (*find(unauth, "verify_peer"))["value"] = false;
+  auto bad = run(unauth, c);
+  ck(bad["metrics"]["full_handshake_auth"] == false &&
+         bad["metrics"]["tls_flights"] == false &&
+         !bad["wire"]["flights"]["client_protected_flight"].contains("conceptual_members"),
+     "server did not authenticate client in requested mutual handshake");
+  auto incomplete_profile = data;
+  incomplete_profile.erase(find(incomplete_profile, "resumed"));
+  ck(run(incomplete_profile, c)["metrics"]["tls_flights"].is_null(),
+     "missing full handshake proof cannot name protected members");
+  c["auth"] = "server";
+  auto server_only = run(unauth, c);
+  ck(server_only["metrics"]["tls_flights"] == true &&
+         server_only["wire"]["flights"]["client_protected_flight"]["conceptual_members"] ==
+             J{"CF"}, "confirmed server-only authentication");
+  c["auth"] = "mtls";
   for (auto &e : data)
     if (e["kind"] == "identity")
       e["suite"] = 0x1302;
@@ -345,6 +382,37 @@ void named_tests(const J &es) {
   incomplete.erase(find(incomplete, "end"));
   ck(run(incomplete, c)["facts"]["hrr"] == true,
      "HRR survives missing end/completeness");
+}
+void settled_auth_test(const J &es) {
+  auto server_ctx = context();
+  auto server_bytes = fully_framed(es);
+  server_ctx["peer_sender_unpadded"] = server_ctx["peer_application_only_tail"] = true;
+  server_ctx["peer_sender_extent"] = sender_extent(server_bytes);
+  auto server = local_report(server_bytes, server_ctx);
+  auto client_ctx = context();
+  client_ctx["role"] = "client";
+  J client_events = J::array();
+  for (auto e : es) {
+    if (e.at("kind") == "plain")
+      continue;
+    e["role"] = "client";
+    if (e.at("kind") == "identity")
+      e["group"] = 0;
+    client_events.push_back(e);
+  }
+  auto client = local_report(client_events, client_ctx);
+  ck(client["metrics"]["full_handshake_auth"].is_null() &&
+         server["metrics"]["full_handshake_auth"] == true &&
+         server["metrics"]["tls_flights"].is_null() &&
+         !server["wire"]["flights"]["client_protected_flight"].contains("conceptual_members"),
+     "one participant alone cannot establish both endpoint authentications");
+  client_ctx["peer_negotiated"] = server.at("negotiated");
+  client = local_report(client_events, client_ctx);
+  ck(client["metrics"]["full_handshake_auth"] == true, "peer numeric ID settles full profile");
+  turtle::native::qualify_flights(server, true, client.at("metrics").at("full_handshake_auth"));
+  ck(server["metrics"]["tls_flights"] == true &&
+         server["wire"]["flights"]["client_protected_flight"]["conceptual_members"] ==
+             J{"CC", "CCV", "CF"}, "settled peer proof authorizes timed encrypted groups");
 }
 void close_notify_test(const J &es) {
   J s0 = J::array();
@@ -435,6 +503,33 @@ void source_tests(const J &es) {
          h["metrics"]["ciphertext_bytes"].is_null() &&
          h["metrics"]["timed_records"].is_null(),
      "header-only observation not timed");
+  auto cross_check = [&](bool cut_sent, bool cut_received) {
+    auto both = pub;
+    both.insert(both.begin(), headers.front());
+    for (const auto &e : headers)
+      if (e.at("kind") == "header" &&
+          (e.at("offset") == 0 || !(e.at("sent") == true ? cut_sent : cut_received)))
+        both.insert(both.end() - 1, e);
+    return run(both, c);
+  };
+  ck(cross_check(false, false)["metrics"]["header_layout"] == true,
+     "complete matching header callbacks");
+  for (bool sent : {true, false}) {
+    auto cut = cross_check(sent, !sent);
+    ck(cut["metrics"]["header_layout"] == (sent ? J(false) : J(nullptr)) &&
+           cut["metrics"]["record_layout"] == true &&
+           cut["metrics"]["tls_flights"] == true && !cut["wire"]["headers"].empty(),
+       "header prefix cannot certify complete independent record stream");
+  }
+  auto gap = pub;
+  gap.insert(gap.begin(), headers.front());
+  for (const auto &e : headers)
+    if (e.at("kind") == "header" && !(e.at("sent") == true && e.at("offset") == 0))
+      gap.insert(gap.end() - 1, e);
+  auto missed = run(gap, c);
+  ck(missed["metrics"]["header_layout"] == false &&
+         missed["metrics"]["timed_records"] == true && missed["status"] == "verified",
+     "missing internal header does not invalidate independent evidence");
   auto p = run(pub, c);
   ck(p["metrics"]["library_io"] == true, "continuous timed library I/O");
   auto cut = pub;
@@ -498,6 +593,20 @@ void combined_tests(const J &es) {
        b = r["timeline"]["SAD2"]["first_read_return"];
   ck(a["seq"] == b["seq"] && r["timing"]["end"]["seq"] == b["seq"],
      "shared real read-return boundary");
+  // The application services an already readable greeting before its write.
+  auto greet = *find(data, "read_return");
+  greet["hex"] = "68656c6f";
+  greet["length"] = 4;
+  auto resp = find(data, "read_return");
+  (*resp)["hex"] = "706f6e67";
+  (*resp)["length"] = 4;
+  data.insert(find(data, "write_attempt"), greet);
+  auto read_first = run(data, c);
+  ck(read_first["metrics"]["task"].is_null() && read_first["status"] == "unknown",
+     "S4 read-first does not establish CAD dependency");
+  (*find(data, "verify_peer"))["value"] = false;
+  ck(run(data, c)["status"] == "contradicted",
+     "S4 read-first does not hide authentication contradiction");
 }
 void pmu_tests(const J &es) {
   J data = es;
@@ -619,6 +728,7 @@ int main(int argc, char **argv) try {
   write_pair_tests(es);
   wire_tests(es);
   named_tests(es);
+  settled_auth_test(es);
   close_notify_test(es);
   source_tests(es);
   combined_tests(es);

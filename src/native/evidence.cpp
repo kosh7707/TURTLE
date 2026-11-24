@@ -402,17 +402,21 @@ void evaluate(Trace &t, const J &c, J &r) {
   if (s == "S4") {
     auto v1 = point("SAD1", "validated"), v2 = point("SAD2", "validated");
     auto same = !v1.is_null() && !v2.is_null() && v1.at("seq") == v2.at("seq");
-    if (client)
-      ordering = all(
-          {ordering, before(cad_write, point("SAD1", "first_read_return"))});
+    if (client) {
+      // Writing first proves CAD did not wait for SAD1. Reading an already
+      // available greeting first establishes order, not a causal dependency.
+      auto independent = before(cad_write, point("SAD1", "first_read_return"));
+      ordering = all({ordering, independent == true ? J(true) : J(nullptr)});
+    }
     ordering = all({ordering, client ? (same ? J(true) : before(v1, v2))
                                      : before(greeting, response)});
   }
   m["authentication"] = auth;
   m["profile"] = profile;
+  m["full_handshake_auth"] = all({core, auth, profile});
   m["ordinary_server_first"] = early;
   m["message_timeline"] = timeline;
-  m["peer_task"] = all({core, auth, profile, peer_task, ordering});
+  m["peer_task"] = all({m["full_handshake_auth"], peer_task, ordering});
   m["task"] = all({m["peer_task"], timeline});
   J finish = e["hs_complete"];
   if (s == "S1")
@@ -443,8 +447,8 @@ J analyze_evidence(const std::string &data, const J &c) {
          {"metrics", J::object()},       {"negotiated", J::object()},
          {"facts", J::object()}};
   for (auto key : {"task", "peer_task", "authentication", "profile",
-                   "ordinary_server_first", "message_timeline", "timing", "pmu",
-                   "transport_counts", "ciphertext_bytes", "record_layout",
+                   "full_handshake_auth", "ordinary_server_first", "message_timeline",
+                   "timing", "pmu", "transport_counts", "ciphertext_bytes", "record_layout",
                    "timed_records", "tls_flights"})
     r["metrics"][key] = nullptr;
   try {
@@ -538,13 +542,11 @@ J analyze_evidence(const std::string &data, const J &c) {
       r["wire"]["flights"].erase(c.at("role") == "client"
                                      ? "client_protected_flight"
                                      : "server_protected_flight");
-      if (r["metrics"]["tls_flights"] != false)
-        r["metrics"]["tls_flights"] = nullptr;
       for (auto key : {"task", "peer_task", "message_timeline"})
         r["metrics"][key] = false;
     }
     if (conflict) {
-      for (auto key : {"task", "peer_task", "profile"})
+      for (auto key : {"task", "peer_task", "profile", "full_handshake_auth"})
         r["metrics"][key] = false;
       r["errors"].push_back("contradictory_negotiated_evidence");
       r["wire"]["flights"] = J::object();
@@ -562,5 +564,23 @@ J analyze_evidence(const std::string &data, const J &c) {
       metric = nullptr;
   }
   return r;
+}
+void qualify_flights(J &r, bool mutual, const J &peer_full_handshake_auth) {
+  if (r.at("status") == "invalid")
+    return;
+  auto &metrics = r.at("metrics");
+  auto &flights = r.at("wire").at("flights");
+  auto confirmed = all({metrics.at("full_handshake_auth"), peer_full_handshake_auth});
+  metrics["tls_flights"] = all({confirmed, metrics.at("record_layout"),
+                                metrics.at("timed_records"),
+                                flights.size() == 4 ? J(true) : J(nullptr)});
+  if (confirmed != true)
+    return;
+  if (flights.contains("client_protected_flight"))
+    flights["client_protected_flight"]["conceptual_members"] =
+        mutual ? J{"CC", "CCV", "CF"} : J{"CF"};
+  if (flights.contains("server_protected_flight"))
+    flights["server_protected_flight"]["conceptual_members"] =
+        mutual ? J{"EE", "CR", "SC", "SCV", "SF"} : J{"EE", "SC", "SCV", "SF"};
 }
 } // namespace turtle::native

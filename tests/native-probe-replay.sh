@@ -25,3 +25,11 @@ for test in exact short one; do
         jq -e '.eligible_measurements==0 and all(.attempts[]|select(.purpose=="sample");.separate_capability_proof!=true)' "$dir/analysis.json" >/dev/null
     fi
 done
+# The persisted normalized argv and image are identical when the same peer is
+# named explicitly. Peer selection metadata cannot alter the measured proof.
+dir="$work/same-explicit-peer"
+cp -r "$src" "$dir"
+mf="$dir/manifest.json"
+jq '.profile.stock_peer=false' "$mf" >"$mf.new"; mv "$mf.new" "$mf"
+"$cli" analyze "$dir" >"$dir/probe-replay.log" 2>&1
+jq -e '.capability_proof==true' "$dir/attempt-1/analysis.json" >/dev/null

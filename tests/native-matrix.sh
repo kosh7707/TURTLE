@@ -41,9 +41,14 @@ cell() {
     fi
     jq -n --arg role "$role" --arg auth "$auth" --arg s "$scenario" --argjson argv "$argv" \
         '{v:1,target:{role:$role,argv:$argv},scenario:$s,auth:$auth,expected:{group:"X25519"},timeout_seconds:5,warmups:0,repetitions:2,recording:"detailed",application:{request:"PING/1\n",greeting:"HELLO/1\n",response:"PONG/1\n"}}' >"$profile"
-    if [ "$kind" = native-pair ]; then
+    if [ "$kind" = native-pair ] || [ "$kind" = unobserved-peer ]; then
         other=server; [ "$role" = client ] || other=client
-        jq --arg other "$other" --arg exe "$exe" '.peer.argv=[$exe,$other,"{host}","{port}","{ca}","{cert}","{key}","{peer_name}"]|.required_metrics=["tls_flights"]' "$profile" >"$profile.tmp"
+        peer=$exe; required='["tls_flights","peer_task"]'
+        if [ "$kind" = unobserved-peer ]; then peer="$work/chat-no-sdk"; required='["peer_task"]'; fi
+        jq --arg other "$other" --arg exe "$peer" --argjson req "$required" '.peer.argv=[$exe,$other,"{host}","{port}","{ca}","{cert}","{key}","{peer_name}"]|.required_metrics=$req' "$profile" >"$profile.tmp"
+        mv "$profile.tmp" "$profile"
+    elif [ "$kind" = observed ] && { [ "$scenario" = S2 ] || [ "$scenario" = S4 ]; }; then
+        jq '.required_metrics=["ordinary_server_first"]' "$profile" >"$profile.tmp"
         mv "$profile.tmp" "$profile"
     fi
     # Failures (e.g. late server-first) must still have complete raw trials.
@@ -67,7 +72,11 @@ cell() {
             jq -e '.gate as $g|$g.server_stopped and $g.pre_cf.client_consumed_bytes+$g.client_recv_queue >= $g.pre_cf.server_terminal_bytes and $g.delivery.needed_from_queue <= $g.client_recv_queue and $g.delivery.consumed_through_validation > 0' "$out/attempt-1/attempt.json" >/dev/null || reject "$name complete encrypted greeting before CF"
         fi
     fi
-    if [ "$kind" = wrong-name ]; then
+    if [ "$kind" = unobserved-peer ]; then
+        [ "$rc" = 1 ] && jq -e --arg r "$role" '.eligible_measurements==0 and all(.attempts[];
+            .application_exchange=="verified" and .participants[$r].metrics.peer_task==true and
+            .requested_metrics.peer_task.available==null and .required_metrics_available==false)' "$j" >/dev/null || reject "$name granted measured participant evidence to unobserved peer"
+    elif [ "$kind" = wrong-name ]; then
         jq -e '.eligible_measurements==0 and all(.attempts[];.application_exchange=="failed")' "$j" >/dev/null || reject "$name accepted wrong identity"
     elif [ "$kind" != observed ] && [ "$kind" != native-pair ]; then
         jq -e --arg r "$role" --arg s "$scenario" '.eligible_measurements==0 and all(.attempts[]|select(.purpose=="sample");.application_exchange==(if $s=="S0" then "not_applicable" else "verified" end) and .participants[$r].metrics.authentication!=true and .participants[$r].metrics.transport_counts!=true and .participants[$r].metrics.pmu!=true and .participants[$r].timing.wall_ns==null)' "$j" >/dev/null || reject "$name stock/unobserved evidence"
@@ -75,6 +84,10 @@ cell() {
         jq -e '.eligible_measurements==0 and all(.attempts[]|select(.purpose=="sample"); .application_exchange=="verified" and .participants.server.metrics.ordinary_server_first==false and .separate_capability_proof!=true)' "$j" >/dev/null || reject "$name late greeting or bogus proof"
     else
         jq -e --arg r "$role" --arg s "$scenario" '.eligible_measurements==2 and all(.attempts[]|select(.purpose=="sample");.eligible and .task_success and .prepared_start.verified==true and .prepared_start.basis=="prepared_rendezvous" and .participants[$r].metrics.transport_counts==true and .participants[$r].metrics.authentication==true and .participants[$r].metrics.timed_records==true and (.participants[$r].timing|.wall_ns==(.end.ns-.begin.ns) and .begin.tid==.end.tid and .pmu_delta.tid==.begin.tid and .pmu_delta.running_ns==.pmu_delta.enabled_ns and .pmu_delta.running_ns>0) and (if $s=="S2" or $s=="S4" then .separate_capability_proof==true and .participants.server.metrics.ordinary_server_first==true else true end))' "$j" >/dev/null || reject "$name strict native role/PMU/evidence"
+    fi
+    if [ "$kind" = observed ] && { [ "$scenario" = S2 ] || [ "$scenario" = S4 ]; }; then
+        jq -e 'all(.attempts[]|select(.purpose=="sample");
+            .requested_metrics.ordinary_server_first.available==.participants.server.metrics.ordinary_server_first)' "$j" >/dev/null || reject "$name ordinary server-first metric owner"
     fi
     if [ "$kind" = observed ] || [ "$kind" = native-pair ]; then
         for attempt in "$out"/attempt-*; do
@@ -113,6 +126,8 @@ cell native-pair client mtls S3 "$work/chat"
 cell native-pair server server S3 "$work/chat"
 cell unobserved client mtls S3 "$work/chat-no-sdk"
 cell wrong-name client server S3 "$cli"
+cell unobserved-peer client mtls S3 "$work/chat"
+cell unobserved-peer server mtls S3 "$work/chat"
 printf '%s\n' 'stock server: not admitted; gnutls-serv is an echo/HTTP protocol server, not a stdin/stdout plaintext bridge; no relabeled peer.' >"$work/stock-server-limit.txt"
 sha256sum -c "$work/frozen.sha256" >"$work/check-frozen.log"
 sha256sum -c "$work/apps.sha256" >"$work/check-apps.log"

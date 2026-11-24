@@ -334,8 +334,9 @@ void evaluate_wire(const J &c, J &r) {
                                                   : J(nullptr);
   }
   J flights = J::object(), neg = J::object();
+  uint64_t framed_end[2] = {0, 0};
   bool timed = true;
-  bool both = true, layout = true, seen = false, raw_hrr = false;
+  bool both = true, layout = true, raw_hrr = false;
   for (bool from_client : {false, true}) {
     bool sent = (c.at("role") == "client") == from_client;
     std::string flow = from_client ? "client_to_server" : "server_to_client";
@@ -362,7 +363,6 @@ void evaluate_wire(const J &c, J &r) {
       both = false;
       continue;
     }
-    seen = true;
     if (provider == "stream")
       timed = false;
     const auto &d = best->dir[sent];
@@ -371,6 +371,7 @@ void evaluate_wire(const J &c, J &r) {
     layout &= ok;
     if (!ok || rec.empty())
       continue;
+    framed_end[sent] = rec.back().hi;
     if (sent)
       wire["sender_extent"] = {
           {"run_id", c.at("run_id")}, {"connection_id", c.at("connection_id")},
@@ -498,11 +499,6 @@ void evaluate_wire(const J &c, J &r) {
                      [](auto z) { return z.type == 23; }))
       continue;
     J group = flight(first, stop - 1);
-    bool mutual = c.at("auth") == "mtls";
-    group["conceptual_members"] =
-        from_client ? (mutual ? J{"CC", "CCV", "CF"} : J{"CF"})
-                    : (mutual ? J{"EE", "CR", "SC", "SCV", "SF"}
-                              : J{"EE", "SC", "SCV", "SF"});
     group["basis"] = "same_connection_unpadded_application_only_tail";
     group["application_bytes"] = observed;
     group["aead_tag_bytes"] = overhead - 1;
@@ -526,22 +522,26 @@ void evaluate_wire(const J &c, J &r) {
   // data delivery, and their timestamps are not send/receive boundaries.
   if (src.count("header") && covered(src["header"])) {
     uint64_t next[2] = {0, 0};
+    bool contiguous = true;
     for (const auto &h : headers) {
       if (h.at("seq") < ready || h.at("seq") > end)
         continue;
       auto b = decode(h.at("hex"));
       bool sent = h.at("sent");
-      check(u(h, "offset") == next[sent] && b[0] >= 20 && b[0] <= 23 &&
-                b[1] == 3 && b[2] <= 3 && (256 * b[3] + b[4]) <= 16640,
+      contiguous &= u(h, "offset") == next[sent];
+      check(b[0] >= 20 && b[0] <= 23 && b[1] == 3 && b[2] <= 3 &&
+                (256 * b[3] + b[4]) <= 16640,
             "invalid_header_sequence");
       next[sent] += 5 + 256 * b[3] + b[4];
     }
-    if (next[0] && next[1])
+    // A contiguous callback prefix does not certify the entire direction.
+    // An inbound suffix may merely be buffered read-ahead; that does not
+    // contradict the callbacks, but cannot corroborate a full layout either.
+    if (!contiguous || framed_end[1] > next[1])
+      metrics["header_layout"] = false;
+    else if (framed_end[0] <= next[0] && next[0] && next[1])
       metrics["header_layout"] = true;
   }
-  metrics["tls_flights"] = flights.size() == 4 && timed ? J(true)
-                           : !layout && seen            ? J(false)
-                                                        : J(nullptr);
   r["wire"] = std::move(wire);
 }
 } // namespace turtle::native

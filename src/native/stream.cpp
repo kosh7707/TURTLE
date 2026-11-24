@@ -330,10 +330,19 @@ Json gate_report(const Json &p, const Json &raw, const std::string &who,
 }
 Json before_gate(const Json &p, const Json &raw, const std::string &client,
                  const std::string &server) {
+  // The gated client is our reference executable. The same image running
+  // its native server entry point uses the known direct socket BIO as well,
+  // regardless of whether it was selected automatically or explicitly.
+  const auto &hashes = raw.at("binary_sha256");
+  const auto &argv = raw.at("argv").at("server");
+  const bool direct_reference =
+      hashes.contains("client") && hashes.contains("server") &&
+      hashes.at("client") == hashes.at("server") && argv.size() == 7 &&
+      argv[1] == "--native-stream" && argv[2] == "server";
   return pre_cf_extent(
       gate_report(p, raw, "client", client),
       gate_report(p, raw, "server", server), Messages(p).sad1.size(),
-      p.at("stock_peer") == true && p.at("target").at("role") == "client");
+      direct_reference);
 }
 Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
              std::string run, std::string purpose, int cancel) {
@@ -609,10 +618,7 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
               gate_report(p, raw, "server",
                           ch["server"].evidence.substr(
                               0, artifact::integer(g.at("server_bytes")))),
-              g.at("pre_cf"),
-              p.at("stock_peer") == true &&
-                  p.at("target").at("role") == "client",
-              artifact::integer(g.at("client_recv_queue")));
+              g.at("pre_cf"), artifact::integer(g.at("client_recv_queue")));
           raw["gate"]["before_server_resume_client_bytes"] = prefix.size();
           raw["gate"]["host_before_server_resume_ns"] = ns();
           require(::kill(-ch["server"].child->pid, SIGCONT) == 0,
@@ -784,6 +790,11 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
     }
     participants[who] = analyze_evidence(logs[who], ctx);
   }
+  // The peer's profile may itself depend on corroborated numeric IDs. Only
+  // publish semantic flight names after both reports have settled.
+  for (auto who : {"client", "server"})
+    qualify_flights(participants.at(who), p.at("auth") == "mtls",
+                    participants.at(other(who)).at("metrics").at("full_handshake_auth"));
   const auto &dut = participants.at(role);
   const auto &peer = participants.at(other(role));
   bool contradiction = dut.at("status") == "contradicted" ||
@@ -815,7 +826,11 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
     const bool mandatory = std::string_view(kind) == "required_metrics";
     for (const auto &k : p.at(kind)) {
       auto metric_name = metric_key(k);
-      Json value = dut.at("metrics").value(metric_name, Json(nullptr));
+      const auto &owner =
+          metric_name == "ordinary_server_first" ? participants.at("server")
+          : metric_name == "peer_task"           ? peer
+                                                 : dut;
+      Json value = owner.at("metrics").value(metric_name, Json(nullptr));
       if (metric_name == "capture" || metric_name == "tcp_ack")
         value = network.value(metric_name == "capture" ? "capture_verified"
                                                        : "tcp_ack",
@@ -888,9 +903,7 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
       auto resumed =
           gate_report(p, raw, "client", logs["client"].substr(0, cut));
       const auto delivered = pre_cf_delivery(
-          resumed, gate_report(p, raw, "server", server_cut), extent,
-          p.at("stock_peer") == true && p.at("target").at("role") == "client",
-          queued);
+          resumed, gate_report(p, raw, "server", server_cut), extent, queued);
       barrier =
           !delivered.is_null() &&
           delivered == g.value("delivery", Json(nullptr)) &&
@@ -1119,7 +1132,9 @@ void check_certificates(const fs::path &root, const Json &m) {
 }
 } // namespace
 
-static int regenerate_verified(const fs::path &root, const Json &manifest) {
+// Compute from inventory-checked inputs without writing derived files. Retry
+// must see the same finalized sample as run/analyze, without changing its source.
+static Json verified_report(const fs::path &root, const Json &manifest) {
   const auto &p = manifest.at("profile");
   const auto &list = manifest.at("attempts");
   require(list.is_array() && !list.empty(), "no_native_attempts");
@@ -1175,8 +1190,9 @@ static int regenerate_verified(const fs::path &root, const Json &manifest) {
       if (raw.at("error") != nullptr || row.at("operation_ok") != true)
         diagnostic = {{"availability", "missing"},
                       {"reason", "diagnostic_task_failed"}};
-      diagnostic["prepared_start"]=row.at("prepared_start").at("verified");
-      diagnostic["scope"]=diagnostic.at("prepared_start")==true?"prepared_scenario":"local_diagnostic_only";
+      diagnostic["prepared_start"] = row.at("prepared_start").at("verified");
+      diagnostic["scope"] = diagnostic.at("prepared_start") == true
+                                ? "prepared_scenario" : "local_diagnostic_only";
       row["cpu_samples"] = diagnostic;
       row["eligible"] = false;
       row["qualified"] = false;
@@ -1202,14 +1218,22 @@ static int regenerate_verified(const fs::path &root, const Json &manifest) {
                      : row.at("operation_ok") == true);
     }
     row["directory"] = name;
-    artifact::save(dir / "analysis.json", row);
-    rows.push_back(row);
+    rows.push_back(std::move(row));
   }
   ok = ok && p.at("repetitions") == samples && p.at("warmups") == warmups;
-  bool profile_available =
+  const bool profile_available =
       diagnostic.is_object() &&
       diagnostic.value("availability", "missing") == "available" &&
-      diagnostic.contains("sample_count")&&diagnostic.value("prepared_start",Json(nullptr))==true;
+      diagnostic.contains("sample_count") &&
+      diagnostic.value("prepared_start", Json(nullptr)) == true;
+  Json profile_reason = nullptr;
+  if (!profile_available) {
+    profile_reason = "separate_diagnostic_missing";
+    if (diagnostic.is_object())
+      profile_reason = diagnostic.value("scope", "") == "local_diagnostic_only"
+                           ? Json("unverified_diagnostic_start")
+                           : diagnostic.value("reason", profile_reason);
+  }
   if (require_profile && !profile_available) {
     ok = false;
     count = 0;
@@ -1219,11 +1243,7 @@ static int regenerate_verified(const fs::path &root, const Json &manifest) {
         row.at("requested_metrics").contains("cpu_samples")) {
       auto &request = row["requested_metrics"]["cpu_samples"];
       request["available"] = profile_available ? Json(true) : Json(nullptr);
-      request["reason"] =
-          profile_available ? Json(nullptr)
-          : diagnostic.is_object()
-              ? diagnostic.value("scope","")=="local_diagnostic_only"?Json("unverified_diagnostic_start"):diagnostic.value("reason", Json("separate_diagnostic_missing"))
-              : Json("separate_diagnostic_missing");
+      request["reason"] = profile_reason;
       if (require_profile && !profile_available) {
         row["ordinary_qualified_without_diagnostic"] = row.at("eligible");
         if (row.at("eligible") == true)
@@ -1233,24 +1253,29 @@ static int regenerate_verified(const fs::path &root, const Json &manifest) {
         row["operation_ok"] = false;
         row["required_metrics_available"] = false;
       }
-      artifact::save(
-          root / row.at("directory").get<std::string>() / "analysis.json", row);
     }
-  Json out = {{"cpu_samples", diagnostic},
-              {"schema", "turtle.native-run.v1"},
-              {"measured_role", p.at("target").at("role")},
-              {"attempts", rows},
-              {"qualified_samples", count},
-              {"eligible_measurements", count},
-              {"measurement_count", samples},
-              {"successful_measurements", successful},
-              {"collection_complete", manifest.at("status") == "complete"},
-              {"samples", samples},
-              {"complete", ok}};
+  return {{"cpu_samples", diagnostic},
+          {"schema", "turtle.native-run.v1"},
+          {"measured_role", p.at("target").at("role")},
+          {"attempts", std::move(rows)},
+          {"qualified_samples", count},
+          {"eligible_measurements", count},
+          {"measurement_count", samples},
+          {"successful_measurements", successful},
+          {"collection_complete", manifest.at("status") == "complete"},
+          {"samples", samples},
+          {"complete", ok}};
+}
+static int regenerate_verified(const fs::path &root, const Json &manifest) {
+  const auto out = verified_report(root, manifest);
+  for (const auto &row : out.at("attempts"))
+    artifact::save(root / row.at("directory").get<std::string>() / "analysis.json",
+                   row);
   artifact::save(root / "analysis.json", out);
-  std::cout << "native-stream: " << samples << " sample(s); " << count
+  std::cout << "native-stream: " << out.at("samples") << " sample(s); "
+            << out.at("qualified_samples")
             << " benchmark-qualified; see " << (root / "analysis.json") << "\n";
-  return ok ? 0 : 1;
+  return out.at("complete") == true ? 0 : 1;
 }
 int regenerate(const fs::path &root) {
   const auto manifest = artifact::load(root / "manifest.json");
@@ -1399,52 +1424,32 @@ int retry(const fs::path &source, const std::string &failed,
               m.at("status") == "complete",
           "retry_requires_final_native_run");
   require(Receipts().verify_or_store(root, m, false), "untrusted_retry_source");
-  check_certificates(root, m);
   require(m.at("controller_sha256") == process::digest(self),
           "retry_controller_changed");
   auto p = m.at("profile");
   std::string role = p.at("target").at("role");
-  size_t matches = 0, samples = 0;
-  Json proof_image = nullptr;
-  for (size_t i = 0; i < m.at("attempts").size(); ++i) {
-    auto name = "attempt-" + std::to_string(i + 1);
-    auto dir = root / name;
-    auto &row = m.at("attempts").at(i);
-    require(row.at("directory") == name &&
-                fs::is_directory(fs::symlink_status(dir)) &&
-                row.at("sha256") == inventory(dir),
-            "invalid_retry_inventory");
-    auto raw = artifact::load(dir / "attempt.json");
-    require(raw.at("run_id") == m.at("run_id") &&
-                raw.at("purpose") == row.at("purpose"),
-            "retry_identity_mismatch");
-    if (raw.at("purpose") == "capability")
-      assess_bound(m, raw, dir, proof_image);
-    if (raw.at("purpose") == "sample")
-      ++samples;
-    if (raw.at("connection_id") != failed)
-      continue;
-    require(raw.at("purpose") == "sample" && ++matches == 1,
-            "retry_requires_unique_sample");
-    auto result = assess_bound(m, raw, dir, proof_image);
-    require(result.at("operation_ok") == false,
-            "retry_requires_failed_measurement");
-    for (auto who : {"client", "server"}) {
-      auto exe = p.at(who == role ? "target" : "peer")
-                     .at("argv")
-                     .at(0)
-                     .get<std::string>();
-      const auto &hash =
-          m.at("program_sha256").at(who == role ? "target" : "peer");
-      require(hash == process::digest(exe) &&
-                  (!raw.contains("binary_sha256") ||
-                   !raw.at("binary_sha256").contains(who) ||
-                   raw.at("binary_sha256").at(who) == hash),
-              "retry_program_changed");
-    }
+  const auto report = verified_report(root, m);
+  const auto &rows = report.at("attempts");
+  const auto sample =
+      std::find_if(rows.begin(), rows.end(), [&](const Json &r) {
+        return r.at("connection_id") == failed;
+      });
+  require(sample != rows.end(), "missing_or_unscheduled_retry");
+  require(sample->at("purpose") == "sample", "retry_requires_unique_sample");
+  require(sample->at("operation_ok") == false,
+          "retry_requires_failed_measurement");
+  const auto raw = artifact::load(
+      root / sample->at("directory").get<std::string>() / "attempt.json");
+  for (auto who : {"client", "server"}) {
+    const auto key = who == role ? "target" : "peer";
+    const auto exe = p.at(key).at("argv").at(0).get<std::string>();
+    const auto &hash = m.at("program_sha256").at(key);
+    require(hash == process::digest(exe) &&
+                (!raw.contains("binary_sha256") ||
+                 !raw.at("binary_sha256").contains(who) ||
+                 raw.at("binary_sha256").at(who) == hash),
+            "retry_program_changed");
   }
-  require(matches == 1 && p.at("repetitions") == samples,
-          "missing_or_unscheduled_retry");
   if (p.contains("credentials")) {
     const auto &c = p.at("credentials");
     require(m.at("certificate_sha256").at("ca.crt") ==

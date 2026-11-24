@@ -39,6 +39,19 @@ std::string build_id(const fs::path &p) {
       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return value;
 }
+// Offline inputs are regular files reached through their exact archive paths.
+// Reject symlink components, absolute metadata paths and traversal.
+fs::path archived_file(const fs::path &root, const fs::path &relative,
+                       const char *failure) {
+  auto path = fs::absolute(root / relative).lexically_normal();
+  std::error_code ec;
+  if (relative.is_absolute() || relative.empty() ||
+      relative.native().find('\0') != std::string::npos ||
+      std::find(relative.begin(), relative.end(), "..") != relative.end() ||
+      !fs::is_regular_file(path, ec) || fs::canonical(path, ec) != path || ec)
+    throw std::runtime_error(failure);
+  return path;
+}
 bool virtual_module(std::string_view name) {
   if (name == "[vdso]" || name == "[vdso32]" || name == "[vdsox32]")
     return true;
@@ -324,6 +337,46 @@ Json window(const Json &samples, std::uint64_t begin, std::uint64_t end) {
   r.update({{"begin_ns", begin}, {"end_ns", end}});
   return r;
 }
+namespace {
+Json prior_report(const fs::path &attempt) {
+  if (!fs::exists(attempt / "analysis.json"))
+    return Json::object();
+  // A broken derived report supplies no decoder receipt. Do not let a JSON
+  // syntax error suppress independent raw measurements or rejection reports.
+  auto path = archived_file(attempt, "analysis.json", "archived_analysis_missing");
+  auto report = Json::parse(artifact::read_text(path), nullptr, false);
+  return report.is_object() ? std::move(report) : Json::object();
+}
+Json decoder_receipt(const Json &report, const std::string &role) {
+  Json receipt = Json::object();
+  // Old reports stored these inputs alongside derived CPU measurements.
+  // A rejected replay may have no role row at all; keep only the inputs.
+  for (const auto &path : {"/legacy_decoder_receipts/" + role,
+                           "/roles/" + role + "/cpu_profile"}) {
+    Json::json_pointer location(path);
+    if (!report.contains(location))
+      continue;
+    const auto &profile = report.at(location);
+    for (auto key : {"analysis_command", "analysis_tool", "perf_script_sha256"})
+      if (profile.contains(key))
+        receipt[key] = profile.at(key);
+  }
+  return receipt;
+}
+} // namespace
+void save_attempt_report(const fs::path &attempt, Json &report) {
+  auto prior = prior_report(attempt);
+  for (auto role : {"client", "server"}) {
+    auto receipt = decoder_receipt(prior, role);
+    // Preserve inputs not already present in the replacement report. Never
+    // carry over availability, samples or other conclusions after a failure.
+    auto current = decoder_receipt(report, role);
+    for (const auto &[key, value] : receipt.items())
+      if (!current.contains(key))
+        report["legacy_decoder_receipts"][role][key] = value;
+  }
+  artifact::save(attempt / "analysis.json", report);
+}
 Json analyze(const fs::path &root, const Json &summary, const Json &events,
              const Json &phases) {
   bool requested = summary.at("collection").value("cpu_samples", false);
@@ -333,7 +386,13 @@ Json analyze(const fs::path &root, const Json &summary, const Json &events,
   if (!requested)
     return r;
   try {
-    auto p = artifact::load(root / "profile.json");
+    // Receipt first: a missing host utility or damaged raw file must not
+    // destroy the original decoder's exit status when persisting this result.
+    r.update(decoder_receipt(prior_report(root.parent_path()),
+                             root.filename().string()));
+    r["analysis_source"] = "archived_perf_script";
+    auto p = artifact::load(archived_file(root, "profile.json",
+                                          "archived_profile_missing"));
     if (p.at("schema") != "turtle.cpu-collection.v1" ||
         p.at("clock") != "CLOCK_MONOTONIC" ||
         p.at("ordinary_timing_sample") != false)
@@ -342,38 +401,35 @@ Json analyze(const fs::path &root, const Json &summary, const Json &events,
     if (p.at("status") != "collected")
       throw std::runtime_error(
           p.value("reason", Json("cpu_collection_incomplete")).dump());
-    if (process::digest(root / "perf.data") !=
+    if (process::digest(archived_file(root, "perf.data", "perf_data_missing")) !=
         p.at("perf_data_sha256").get<std::string>())
       throw std::runtime_error("perf_data_changed");
     std::set<std::string> available;
     for (const auto &b : p.at("binaries"))
       if (b.at("availability") == "available") {
-        auto path = root / b.at("path").get<std::string>();
+        auto relative = fs::path(b.at("path").get<std::string>());
+        if (relative.empty() || *relative.begin() != "symbols")
+          throw std::runtime_error("preserved_binary_changed");
+        auto path = archived_file(root, relative, "preserved_binary_changed");
         if (process::digest(path) != b.at("sha256").get<std::string>() ||
             build_id(path) != b.at("build_id").get<std::string>())
           throw std::runtime_error("preserved_binary_changed");
         available.insert(b.at("source"));
       }
-    std::string analysis_perf = p.at("perf");
-    if (!fs::is_regular_file(analysis_perf))
-      analysis_perf = "perf";
-    analysis_perf = settings({{"perf", analysis_perf},
-                              {"event", p.at("event")},
-                              {"frequency_hz", p.at("frequency_hz")}})
-                        .at("perf");
-    r["analysis_tool"] = {{"path", analysis_perf},
-                          {"sha256", process::digest(analysis_perf)}};
-    auto cmd = invoke(
-        {analysis_perf, "script", "-i", (root / "perf.data").string(),
-         "--symfs", (root / "symbols").string(), "--ns", "--show-lost-events",
-         "--no-inline", "-F", "pid,tid,time,event,period,ip,sym,dso"},
-        root / "perf.script.txt");
-    auto parsed = parse_samples(artifact::read_text(root / "perf.script.txt"));
-    r.update({{"analysis_command", cmd},
-              {"unparsed_or_lost", parsed.at("unparsed_or_lost")}});
-    if (cmd.at("returncode") != 0 || !parsed.at("unparsed_or_lost").empty())
-      throw std::runtime_error(
-          "perf_script_failed_or_lost_or_unparsed_samples");
+    auto decoded = archived_file(root, "perf.script.txt",
+                                 "archived_perf_script_missing");
+    if (!r.contains("analysis_command"))
+      throw std::runtime_error("archived_perf_script_status_missing");
+    const auto &cmd = r.at("analysis_command");
+    if (cmd.at("stdout") != "perf.script.txt" || cmd.at("returncode") != 0)
+      throw std::runtime_error("archived_perf_script_failed");
+    auto digest = process::digest(decoded);
+    if (r.contains("perf_script_sha256") && r.at("perf_script_sha256") != digest)
+      throw std::runtime_error("archived_perf_script_changed");
+    auto parsed = parse_samples(artifact::read_text(decoded));
+    r["unparsed_or_lost"] = parsed.at("unparsed_or_lost");
+    if (!parsed.at("unparsed_or_lost").empty())
+      throw std::runtime_error("perf_script_failed_or_lost_or_unparsed_samples");
     Json local = Json::array();
     for (auto s : parsed.at("samples")) {
       if (s.at("event") != p.at("event"))
@@ -431,6 +487,8 @@ Json analyze(const fs::path &root, const Json &summary, const Json &events,
     }
     artifact::save(root / "cpu-samples.json",
                    {{"schema", "turtle.cpu-samples.v1"}, {"samples", local}});
+    if (!local.empty())
+      r["perf_script_sha256"] = digest;
   } catch (const std::exception &e) {
     r.update({{"availability", "missing"}, {"reason", e.what()}});
   }

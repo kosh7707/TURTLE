@@ -101,6 +101,8 @@ target_link_libraries(my_existing_app PRIVATE turtle::observe)
 
 **선택 지표와 망:** `required_metrics`는 양성 근거를 요구하고 `optional_metrics`는 부재를 기록하되 실행을 막지 않는다. 예: `timing`(`scenario_wall_ns`), `pmu`(`perf_counters`), `task`, `peer_task`, `authentication`, `profile`(협상 조건), `message_timeline`, `ordinary_server_first`, `transport_counts`, `ciphertext_bytes`, `record_layout`(`records`), `timed_records`, `library_io`(`public_io`), `header_layout`(`headers`), `tls_flights`, `capture`, `tcp_ack`, `cpu_samples`. 오타는 거부하며 결과의 `requested_metrics`에서 근거가 없거나 모순인 지표를 구별한다. 이름 별칭 대신 표준 협상 ID(예: `expected.group: 4588`)로 요구할 수도 있다.
 
+`task`는 측정 대상, `peer_task`는 그 반대편, `ordinary_server_first`는 어느 쪽을 측정하든 **서버의 본 시행**에서 확인한다. 예를 들어 클라이언트를 측정할 때 서버가 보고한 선송신은 쓸 수 있지만, 클라이언트의 성공으로 서버의 과업 증거를 대신하지 않는다.
+
 루프백이 기본이다. 격리된 Linux 네트워크 네임스페이스·netem·캡처 권한이 있을 때 프로필에 다음 필드를 추가하면 추가 RTT 16 ms와 클라이언트→서버 손실 20%를 요청한다.
 
 ~~~json
@@ -111,8 +113,12 @@ target_link_libraries(my_existing_app PRIVATE turtle::observe)
 
 **함수 프로파일:** `"measurement":{"cpu_samples":{"event":"cycles:u","frequency_hz":997}}`로 선택적 프로파일을 요청한다. 필수이면 `"required_metrics":["cpu_samples"]`도 지정한다. 기본 시행에서 perf를 실행하지 않는다. 별도 진단 대상 프로세스에 perf를 붙이고, 표본에서 해당 네이티브 시작·끝 사건과 같은 PID/TID·시간 범위만 고른다. `attempt-N/profile/`에는 실제 기록, ELF 식별 자료, 디코더 출력이 남는다. perf 부재·권한 거부·유효 구간 표본 부재는 함수 계수 0이 아니다. 재분석은 보관된 디코더 출력을 읽으며 보관된 도구 명령을 실행하지 않는다.
 
+구형 보관 자료는 역할별 `perf.script.txt`와 당시 디코더의 성공 기록이 함께 있어야 한다. 둘 중 하나가 없으면 호스트의 perf로 다시 디코딩하지 않고 그 지표만 미확인으로 남긴다.
+
 **신뢰 범위:** `run`과 `retry`는 사용자가 신뢰하는 로컬 프로그램을 계정 권한으로 실행한다. 대상의 단방향 사건은 해당 프로세스가 보고한 관측이며 원격 증명이나 악의적 응용에 대한 보안 인증이 아니다.
 
 **실패 재시도:** `turtle retry OLD_RUN FAILED_CONNECTION_ID NEW_OUTPUT`는 완료된 로컬 실행의 실패한 **본 시행** 하나를 새 ID·새 연결에서 재시도한다. ID는 원 시행의 `attempt.json`이나 결과 행의 `connection_id`다. 원 결과를 덮어쓰거나 단순 미계측을 재시도 대상으로 간주하지 않는다. 원 시행을 만든 계정의 전용 영수증(`$XDG_STATE_HOME/turtle-retry`, 기본 `~/.local/state/turtle-retry`)과 입력·실행 파일 해시를 대조한다. 영수증이 없는 복사본과 변조·이동된 명세는 명령 실행 권한이 아니다. 저장 공간이 없어도 일반 시험과 오프라인 재분석은 가능하다. 가져온 자료는 분석만 하거나 직접 검토한 원 프로필을 새로 실행한다.
+
+가령 평문 교환은 성공했지만 `cpu_samples` 진단을 얻지 못했다면, 이를 **필수**로 지정한 시행은 재시도 대상이다. **선택** 지표 누락만으로는 재시도하지 않는다. 두 경우 모두 원시 기록에서 최종 판정을 다시 계산하며, 원본의 `analysis.json`을 바꾸지 않는다.
 
 일반 회귀 검사는 `ctest --test-dir build --output-on-failure`로 실행한다. 실제 제3 구현의 참여, 계측된 성능 표본, 물리 보드 측정은 각각 다른 검증이다.

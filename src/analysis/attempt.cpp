@@ -341,7 +341,7 @@ Json attempt(const std::filesystem::path &root, Json error) {
       {"network_availability",
        network.value("availability", std::string("missing"))}};
   measurements(result);
-  artifact::save(root / "analysis.json", result);
+  profiling::save_attempt_report(root, result);
   return result;
 }
 std::filesystem::path attempt_directory(const std::filesystem::path &root,
