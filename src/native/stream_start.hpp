@@ -8,7 +8,9 @@ using artifact::Json;
 // This is the ONLY ordinary control edge. The app explicitly opts in with
 // a datagram from its own PID. Silence/exit/timeouts are not READY.
 class PreparedStart {
-  process::Deadline deadline_;
+  process::Deadline end_;
+  std::optional<process::Deadline> wait_by_;
+  bool conditioned_;
   bool released_ = false, finished_ = false;
   Json &record_;
 
@@ -19,14 +21,13 @@ public:
         "/proc/" + std::to_string(pid) + "/ns/time", ec);
     return ec ? "" : value.string();
   }
-  PreparedStart(Json &raw, process::Deadline end)
-      : deadline_(std::min(Clock::now() + std::chrono::milliseconds(250),
-                           Clock::now() + (end - Clock::now()) / 4)),
+  PreparedStart(Json &raw, process::Deadline end, bool conditioned)
+      : end_(end), conditioned_(conditioned),
         record_(raw["prepared_start"]) {
     record_ = {{"v", 1},
                {"run_id", raw.at("run_id")},
                {"connection_id", raw.at("connection_id")},
-               {"outcome", "pending"},
+               {"outcome", "no_registrations"},
                {"host_time_namespace", time_namespace(getpid())},
                {"roles", Json::object()}};
   }
@@ -39,6 +40,10 @@ public:
       side["pid"] = a->pid;
       if (side.contains(released_ ? "ack_received_ns" : "ready_received_ns"))
         continue;
+      if (side.value("channel_unavailable", false)) {
+        unavailable = true;
+        continue;
+      }
       StartPacket payload{};
       alignas(cmsghdr) char ancillary[CMSG_SPACE(sizeof(ucred))]{};
       iovec io{payload.data(), payload.size()};
@@ -83,8 +88,10 @@ public:
         auto domain = time_namespace(a->pid);
         if (!domain.empty())
           side["time_namespace"] = domain;
-      } else
+      } else {
+        side["channel_unavailable"] = true;
         unavailable = true;
+      }
     }
     if (released_) {
       if (record_["roles"]["client"].contains("ack_received_ns") &&
@@ -99,8 +106,22 @@ public:
     }
     bool both = record_["roles"]["client"].contains("ready_received_ns") &&
                 record_["roles"]["server"].contains("ready_received_ns");
-    if (!both && !unavailable && Clock::now() < deadline_)
+    if (!record_["roles"]["client"].contains("ready_received_ns") &&
+        !record_["roles"]["server"].contains("ready_received_ns"))
+      return; // No app is waiting. TCP establishment is outside the grace window.
+    if (!wait_by_) {
+      auto now = Clock::now();
+      auto grace = std::chrono::milliseconds(conditioned_ ? 10000 : 250);
+      wait_by_ = std::min(now + grace, now + (end_ - now) / 2);
+      record_["outcome"] = "waiting_for_peer";
+      record_["grace_policy"] = conditioned_ ? "conditioned_transport" : "local";
+      record_["grace_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 *wait_by_ - now).count();
+    }
+    if (!both && !unavailable && Clock::now() < *wait_by_)
       return;
+    const char *reason = both ? "challenge_unavailable" :
+                         unavailable ? "peer_channel_unavailable" : "peer_grace_expired";
     std::array<uint64_t, 2> tokens{};
     if (both && (getrandom(tokens.data(), sizeof tokens, GRND_NONBLOCK) !=
                      sizeof tokens ||
@@ -123,6 +144,8 @@ public:
     }
     released_ = both && delivered;
     record_["outcome"] = released_ ? "awaiting_ack" : "unsynchronized_fallback";
+    if (!released_)
+      record_["reason"] = both ? "release_delivery_failed" : reason;
     finished_ = !released_;
   }
 };
@@ -176,6 +199,7 @@ inline Json prepared_start_proof(const Json &raw, const Json &participants) {
           roles.at("server").at("release_token"))
         throw std::runtime_error("invalid_prepared_release");
       uint64_t got = 0, released = UINT64_MAX;
+      std::map<std::string, std::pair<uint64_t, uint64_t>> phase_bounds;
       for (auto role : {"client", "server"}) {
         auto &s = r.at("roles").at(role);
         auto pid = raw.at("pid").at(role);
@@ -203,7 +227,20 @@ inline Json prepared_start_proof(const Json &raw, const Json &participants) {
              artifact::integer(f.at("hs_begin").at("ns")) < local_a))
           release_conflict = true;
         auto domain = domains.value(role, "");
-        if (!domain.empty() && domain == r.value("host_time_namespace", "")) {
+        auto packet_domain = s.value("time_namespace", domain);
+        if (linux_clock(domain) && linux_clock(packet_domain) && domain != packet_domain)
+          throw std::runtime_error("participant_start_clock_domain_conflict");
+        if (linux_clock(packet_domain)) {
+          auto &bounds = phase_bounds.try_emplace(packet_domain, 0, UINT64_MAX).first->second;
+          bounds.first = std::max(bounds.first, local_r);
+          bounds.second = std::min(bounds.second, local_a);
+          if (bounds.first > bounds.second)
+            throw std::runtime_error("invalid_participant_start_order");
+        }
+        if (linux_clock(packet_domain) && packet_domain == r.value("host_time_namespace", "")) {
+          if (local_r > ready || local_a < go ||
+              local_a > artifact::integer(s.at("ack_received_ns")))
+            throw std::runtime_error("invalid_prepared_release_time");
           bool early_entry = !f.at("hs_begin").is_null() &&
                              artifact::integer(f.at("hs_begin").at("ns")) < go;
           bool late_ready = !f.at("ready").is_null() &&

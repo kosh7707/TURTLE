@@ -440,7 +440,7 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
       gate->r.reset();
     auto release_by = Clock::now() + (end - Clock::now()) / 2;
     const auto thaw_by=release_by+(end-release_by)/2;
-    PreparedStart startup(raw,end);
+    PreparedStart startup(raw, end, p.at("network") == "netem");
     bool changed = false, frozen = false;
     while (true) {
       clock_check();

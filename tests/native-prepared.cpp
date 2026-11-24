@@ -50,6 +50,49 @@ int main() try {
                               {"participant_ack_ns", 20}};
   }
   proof(true); // no dependence on aligned host/participant clock origins
+  {
+    auto host = raw;
+    auto anchors = reports;
+    host["prepared_start"]["host_time_namespace"] = "time:[1]";
+    auto &c = host["prepared_start"]["roles"]["client"];
+    c["participant_ready_ns"] = 110;
+    c["participant_ack_ns"] = 135;
+    anchors["client"]["lifecycle"]["hs_begin"]["ns"] = 150;
+    auto check = [&](const char *error = nullptr) {
+      try {
+        if (prepared_start_proof(host, anchors).at("basis") != "prepared_rendezvous")
+          throw std::runtime_error("missing_causal_start");
+      } catch (const std::runtime_error &e) {
+        if (error && std::string_view(e.what()) == error)
+          return;
+        throw;
+      }
+      if (error)
+        throw std::runtime_error("accepted_impossible_causal_order");
+    };
+    check();
+    host["time_namespaces"].erase("server"); // role/host comparison is independent
+    check();
+    c["participant_ready_ns"] = 121;
+    check("invalid_prepared_release_time");
+    c["participant_ready_ns"] = 110;
+    c["participant_ack_ns"] = 129;
+    check("invalid_prepared_release_time");
+    c["participant_ack_ns"] = 141;
+    check("invalid_prepared_release_time");
+    c["participant_ack_ns"] = 135;
+    c["time_namespace"] = "time:[8]";
+    check("participant_start_clock_domain_conflict");
+    c.erase("time_namespace");
+    host["prepared_start"]["host_time_namespace"] = "time:[8]";
+    host["time_namespaces"]["server"] = "time:[1]";
+    check("invalid_participant_start_order"); // client READY after server ACK
+    auto &sr = host["prepared_start"]["roles"]["server"];
+    sr["participant_ready_ns"] = 110;
+    sr["participant_ack_ns"] = 135;
+    anchors["server"]["lifecycle"]["hs_begin"]["ns"] = 150;
+    check(); // comparable participants, independent supervisor clock
+  }
   reports["client"]["lifecycle"]["hs_begin"]["ns"] = 19;
   proof(false);
   reports["client"]["lifecycle"]["hs_begin"]["ns"] = 22;

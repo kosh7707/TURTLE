@@ -39,7 +39,7 @@ extern "C" int turtle_wait_start(void) {
   // The supervisor normally releases/declines promptly. Bound a stale or
   // non-supervisor fd too; no signal handlers or fd flags are changed.
   using Clock = std::chrono::steady_clock;
-  auto deadline = Clock::now() + std::chrono::seconds(5);
+  auto deadline = Clock::now() + std::chrono::seconds(15);
   while (Clock::now() < deadline) {
     pollfd descriptor{fd, POLLIN, 0};
     int ms =
