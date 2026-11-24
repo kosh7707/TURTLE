@@ -125,6 +125,10 @@ template <class F> uint64_t emit(turtle_observe_stamp t, F fields) noexcept {
   }
 }
 Json str(const char *p) { return p ? Json(p) : Json(nullptr); }
+Json event(const char *name) {
+  return {{"kind", "event"}, {"name", str(name)}, {"message", nullptr},
+          {"offset", 0}, {"length", 0}};
+}
 } // namespace
 extern "C" turtle_observe_stamp turtle_observe_now(void) {
   PreserveErrno keep;
@@ -151,13 +155,7 @@ extern "C" turtle_observe_stamp turtle_observe_now(void) {
 }
 extern "C" void turtle_observe_event_at(turtle_observe_stamp t,
                                         const char *name) {
-  emit(t, [&] {
-    return Json{{"kind", "event"},
-                {"name", str(name)},
-                {"message", nullptr},
-                {"offset", 0},
-                {"length", 0}};
-  });
+  emit(t, [&] { return event(name); });
 }
 extern "C" void turtle_observe_event(const char *n) {
   turtle_observe_event_at(turtle_observe_now(), n);
@@ -241,6 +239,13 @@ extern "C" void turtle_observe_plain(const char *n, const void *data,
 }
 
 namespace turtle::native::detail {
+void ready_with_prepared_response() {
+  emit(turtle_observe_now(), [] {
+    auto ready = event("ready");
+    ready["response_source"] = "prepared_environment";
+    return ready;
+  });
+}
 uint64_t full_offer(const void *data, size_t length) {
   return emit(turtle_observe_now(), [&] {
     return Json{{"kind", "plain"}, {"name", "write_attempt"},

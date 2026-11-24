@@ -37,7 +37,7 @@ void ready(int fd, Deadline end, int cancel) {
 int decode(int s) { return WIFEXITED(s) ? WEXITSTATUS(s) : 128 + WTERMSIG(s); }
 } // namespace
 Child::Child(const Args &args, const Environment &env,
-             const std::filesystem::path &err) {
+             const std::filesystem::path &err, Group group) : group_(group) {
   if (args.empty())
     throw std::runtime_error("empty_command");
   error_ = err.empty() ? std::tmpfile() : std::fopen(err.c_str(), "w+");
@@ -56,7 +56,8 @@ Child::Child(const Args &args, const Environment &env,
   argv.push_back(nullptr);
   pid_ = ::fork();
   if (pid_ == 0) {
-    ::setsid();
+    if (group_ == Group::isolated)
+      ::setsid();
     ::dup2(in[0], STDIN_FILENO);
     ::dup2(out[1], STDOUT_FILENO);
     ::dup2(::fileno(error_), STDERR_FILENO);
@@ -150,7 +151,7 @@ int Child::wait(Deadline end, int cancel) {
 }
 void Child::signal(int s) {
   if (pid_ > 0 && status_ < 0)
-    ::kill(-pid_, s);
+    ::kill(group_ == Group::isolated ? -pid_ : pid_, s);
 }
 int Child::stop() noexcept {
   if (pid_ > 0 && status_ < 0) {

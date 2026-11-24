@@ -69,6 +69,22 @@ cell() {
     if [ "$kind" = observed ] || [ "$kind" = native-pair ]; then
         jq -e 'all(.attempts[]|select(.purpose=="sample"); .prepared_start.verified==true and .prepared_start.basis=="prepared_rendezvous")' "$j" >/dev/null || reject "$name ordinary joint release"
     fi
+    for attempt in "$out"/attempt-*/attempt.json; do
+        if [ "$kind" = observed ] || [ "$kind" = native-pair ]; then
+            jq -e '. as $a | .prepared_start.roles as $r |
+                all("client", "server"; . as $role | $a.images[$role] |
+                    .pid==$a.pid[$role] and .phase=="prepared" and
+                    .host_begin_ns>=([$r[].ready_received_ns]|max) and
+                    .host_end_ns>=.host_begin_ns and .host_end_ns<=([$r[].release_begin_ns]|min) and
+                    (if .available then .mapped[.exe]!=null else
+                        .available==false and (.reason|type)=="string" and (has("mapped")|not) end))' \
+                "$attempt" >/dev/null || reject "$name image snapshot outside joint preparation"
+        else
+            jq -e 'all(.images.client, .images.server;
+                .available==false and .reason=="joint_preparation_unavailable" and (has("mapped")|not))' \
+                "$attempt" >/dev/null || reject "$name image snapshot without joint preparation"
+        fi
+    done
     if [ "$kind" = unobserved-peer ]; then
         [ "$rc" = 1 ] && jq -e --arg r "$role" '.eligible_measurements==0 and all(.attempts[];
             .application_exchange=="verified" and .participants[$r].metrics.peer_task==true and
@@ -118,6 +134,17 @@ cell() {
                    elif $s=="S1" then (if $role=="client" then $p.timeline.CAD.final_write_accept else $p.timeline.CAD.validated end)
                    elif $s=="S2" then (if $role=="client" then $p.timeline.SAD1.first_read_return else $p.timeline.SAD1.final_write_accept end)
                    elif $role=="client" then $p.timeline.SAD2.first_read_return else $p.timeline.SAD2.final_write_accept end).seq)' "$attempt/analysis.json" >/dev/null || reject "$name raw anchors/timing"
+        done
+    fi
+    if [ "$kind" = observed ] && [ "$role" = server ] && { [ "$scenario" = S3 ] || [ "$scenario" = S4 ]; }; then
+        for attempt in "$out"/attempt-*/attempt.json; do
+            jq -e --slurpfile p "$profile" --arg s "$scenario" '
+              (if $s=="S4" then ($p[0].application.greeting|utf8bytelength) else 0 end) as $skip |
+              [.ranges[]|select(.role=="server" and .channel=="stdout")] as $cad |
+              [.ranges[]|select(.role=="server" and .channel=="stdin" and .end>$skip)] as $reply |
+              $cad[-1].end==($p[0].application.request|utf8bytelength) and ($reply|length)>0 and
+              $cad[-1].host_end_ns <= $reply[0].host_begin_ns' "$attempt" >/dev/null ||
+                reject "$name supplied an ordinary server response before complete CAD"
         done
     fi
     printf '%s\n' "$name"

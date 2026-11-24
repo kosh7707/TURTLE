@@ -1,8 +1,10 @@
 #pragma once
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 namespace turtle::native::detail {
+inline constexpr auto start_wait_limit = std::chrono::seconds(15);
 // Local IPC, explicit byte order. The optional stamp is CLOCK_MONOTONIC in
 // the sender's namespace. The release token binds a reply to THIS release.
 using StartPacket = std::array<unsigned char, 17>;

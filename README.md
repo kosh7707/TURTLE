@@ -50,7 +50,7 @@ cmake --build build --parallel 2
   '--port={port}' '{host}'
 ~~~
 
-기본값은 S3, mTLS, 예열 1회, 본 시행 2회다. 매 실행 새 시험 CA가 서로 다른 서버·클라이언트 인증서를 발급한다. 서버가 요청 `ping` 전체를 전달한 뒤에만 응답 `pong`을 공급하며, 클라이언트 stdout이 정확히 그 바이트인지 확인한다. `--logfile=/dev/stderr`는 GnuTLS 진단을 평문과 분리하는 **그 앱의 옵션**이다. 진단 문자열은 인증 증거로 쓰지 않는다.
+기본값은 S3, mTLS, 예열 1회, 본 시행 2회다. 매 실행 새 시험 CA가 서로 다른 서버·클라이언트 인증서를 발급한다. 기본 서버는 준비해 둔 응답 `pong`을 요청 `ping` 전체를 검증한 뒤에만 TLS에 쓴다. TURTLE은 클라이언트 stdout에 정확히 그 응답이 나왔는지 확인한다. `--logfile=/dev/stderr`는 GnuTLS 진단을 평문과 분리하는 **그 앱의 옵션**이다. 진단 문자열은 인증 증거로 쓰지 않는다.
 
 결과 끝의 **`2 sample(s); 0 benchmark-qualified`는 예상된 결과**다. 수정하지 않은 GnuTLS로 요청·응답을 관측했지만 그 클라이언트의 TLS 호출 시각이나 PMU를 관측하지 않았다. 데이터 교환과 측정 자격을 구별한다. 명시한 필수 지표가 없거나 실제 실행이 실패하면 명령은 0이 아닌 상태로 끝난다. 인자 없는 `./bench.sh`는 별도 소켓 진단이지 TLS 실행이 아니다.
 
@@ -130,8 +130,10 @@ target_link_libraries(my_existing_app PRIVATE turtle::observe)
 
 ## 결과 읽기와 검증
 
+터미널 첫 줄에 측정 역할·작업, 본 시행 수, 정식 표본 수, 작업 성공 횟수가 나온다. 다음 줄의 시간은 이름을 표시한 **한 시행**의 관측값이지 평균이 아니다. `diagnostic only`는 정식 표본에 넣지 않는 값이며, `local elapsed`는 양측 준비가 확인되지 않은 로컬 구간이다. 예열·별도 진단은 집계하지 않는다. 제외된 본 시행이 있으면 가장 흔한 제외 사유 하나와 확인할 곳을 표시한다. 측정 대상의 사용자 공간 스레드 계수, 인증의 독립 증거, 보호 flight 전체의 귀속은 각각 별개다. `unconfirmed`는 인증 실패나 0을 뜻하지 않는다.
+
 - `manifest.json`: 실행 프로필, 선택한 대상·상대와 바이너리·인증 자료 식별자, 시행 목록 및 원자료 해시. 새 실행에는 컨트롤러가 `profile.scenario_contract: "endpoint.v1"`을 기록한다. 이 표식은 사용자가 프로필에 넣는 옵션이 아니다. 구형 자료의 능력 시험은 당시 계약대로 재분석하며 새 계약으로 재시도하지 않는다.
-- `attempt-N/attempt.json`: 연결 ID, 실제 argv/PID와 이미지 증거, 호스트가 기록한 평문 범위·시각·종료 상태. 역할별 `*.stdin`, `*.stdout`, `*.stderr`, `*.ndjson`은 서로 분리한다. 시험 개인 키는 결과에 복사하지 않는다.
+- `attempt-N/attempt.json`: 연결 ID, 실제 argv/PID, 준비 시점에 확인한 이미지, 호스트 평문 범위·시각·종료 상태. 양측이 시작을 기다리는 동안 이미지 확인을 끝낼 수 없으면 이 선택 정보는 미확인으로 남긴다. 이후 동적으로 로드되는 라이브러리 목록은 아니다. 역할별 `*.stdin`, `*.stdout`, `*.stderr`, `*.ndjson`은 서로 분리한다. 시험 개인 키는 결과에 복사하지 않는다.
 - `analysis.json`: `measurement_count`는 본 시행 수, `successful_measurements`는 양쪽 과업 근거가 확인된 본 시행 수, `eligible_measurements`는 유효 측정 표본 수다. `application_exchange`는 응용 경계만, `scenario_support`는 실제 시나리오 입증 여부만 말한다. `collection_complete`는 회수를 끝냈다는 뜻이지 PMU 사용 가능이나 유효 표본을 뜻하지 않는다.
 - 하드웨어 카운터·상세 기록은 해당 근거가 있을 때만 사용한다. `required_metrics`에 `"perf_counters"` 또는 `"scenario_wall_ns"` 등을 지정해 그 근거를 요구할 수 있다. `recording`의 `basic`·`detailed`는 프로필 호환용 값으로, 앱에 전달하거나 수집량을 전환하지 않는다. 두 값으로 기록 비용을 비교할 수 없으며 실제 제공한 관측과 필수 지표가 자격을 결정한다. 같은 대상 스레드의 시작·끝에서 cycles와 instructions를 함께 확인할 수 없으면 기본 표본으로 채택하지 않는다. 계수 하나만 확인됐거나 multiplex되어 전체 구간을 직접 세지 않았다면 관측한 원자료만 남긴다. 나머지 조건이 충족돼도 이 조합은 `decision_required`이며, 미계측을 0으로 채우지 않는다. 호스트 파이프 시각을 TLS 반환 시각으로 바꾸지 않는다. 망 조건은 실제 적용 근거가 있어야 한다. 적용하지 않은 조건으로 대체하지 않는다. [네이티브 TLS 검증과 재현](docs/native-validation.md)
 - `turtle analyze RUN`은 대상 바이너리를 재실행하지 않고 저장한 근거로 판정을 재생성한다. 이전 형식의 보관 결과도 읽지만 이전 실행 명세를 라이브 대상 접점으로 사용하지 않는다. [예제 구분](examples/README.md) · [네이티브 인수 계약](docs/native-participant.md)

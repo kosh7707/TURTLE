@@ -40,6 +40,32 @@ check '[.[]|select(.name=="read_return")|.length] == [8] and [.[]|select(.name==
 trial client S4 ping helopong partial 0 HWWRRRR helopong
 trial server S4 helopong ping all 0 EwHRW ping
 
+# With the controller's response copy withheld, a prepared SDK server must
+# still validate the whole request and finish its real TLS response. The
+# missing copy fails post-task transcript verification, not the TLS operation.
+for s in S3 S4; do
+    if [ "$s" = S4 ]; then initial=helo; calls=EwwHRRWW; else initial=; calls=HRRWW; fi
+    trial server "$s" "$initial" ping partial 3 "$calls" ping
+    check '[.[]|select(.name=="ready" and .response_source=="prepared_environment")]|length==1'
+    check 'map(select(.name=="validated"))[0].seq < map(select(.name=="write_accepted"))[-1].seq
+           and map(select(.name=="end"))[0].seq > map(select(.name=="write_accepted"))[-1].seq'
+done
+trial server S3 pong pin partial 1 HRRR ''
+check 'all(.[]; .name!="validated" and .name!="write_attempt")'
+
+# stdout publication must not precede the response callback, even for the
+# largest permitted request. Both file descriptors refer to the same file.
+export TURTLE_ROLE=server TURTLE_SCENARIO=S3
+TURTLE_REQUEST=$(head -c 16384 /dev/zero | tr '\000' x)
+printf pong | "$app" "$TURTLE_REQUEST" all 3>"$work/events" >"$work/both" 2>&1
+test "$(cat "$work/both")" = "HRW$TURTLE_REQUEST"
+TURTLE_REQUEST=ping
+rc=0
+printf pong | "$app" ping all 3>"$work/events" >/dev/full 2>"$work/err" || rc=$?
+test "$rc" = 3
+test "$(cat "$work/err")" = HRW
+check 'any(.[]; .name=="end")'
+
 trial client S2 '' he partial 1 RR ''
 check 'all(.[]; .name!="validated" and .name!="hs_complete" and .name!="end")'
 trial server S2 helo '' noearly 2 E ''

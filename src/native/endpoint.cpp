@@ -42,6 +42,10 @@ std::string supplied(View expected) {
           input == expected);
   return input;
 }
+void publish(View bytes) {
+  require(std::fwrite(bytes.data(), 1, bytes.size(), stdout) == bytes.size() &&
+          std::fflush(stdout) == 0);
+}
 
 struct Scenario {
   const turtle_endpoint &ep;
@@ -92,11 +96,13 @@ struct Scenario {
   }
 
   // A single real TLS return can straddle the greeting/response boundary.
-  // Record it once, then check and publish each complete message separately.
-  void receive(View first, View second = {}) {
-    std::string bytes(first.size() + second.size(), '\0');
+  // Record it once, then validate each complete message separately.
+  void receive(View first, View second = {}, std::string *deferred = nullptr) {
+    std::string local;
+    auto &bytes = deferred ? *deferred : local;
+    bytes.resize(first.size() + second.size());
     const std::array<View, 2> messages{first, second};
-    size_t used = 0, published = 0, next = 0;
+    size_t used = 0, verified = 0, next = 0;
     while (used != bytes.size()) {
       size_t n = 0;
       size_t cap = bytes.size() - used;
@@ -109,13 +115,13 @@ struct Scenario {
       turtle_observe_plain_at(returned, "read_return", out, n);
       used += n;
       while (next < messages.size() && !messages[next].empty() &&
-             used - published >= messages[next].size()) {
-        auto msg = View(bytes).substr(published, messages[next].size());
+             used - verified >= messages[next].size()) {
+        auto msg = View(bytes).substr(verified, messages[next].size());
         require(msg == messages[next]);
         turtle_observe_plain("validated", msg.data(), msg.size());
-        require(std::fwrite(msg.data(), 1, msg.size(), stdout) == msg.size() &&
-                std::fflush(stdout) == 0);
-        published += msg.size();
+        if (!deferred)
+          publish(msg);
+        verified += msg.size();
         ++next;
       }
     }
@@ -141,14 +147,19 @@ struct Scenario {
         ((client ? (greeting || response) : request) && !ep.read_plain))
       throw Failure{TURTLE_UNSUPPORTED};
 
-    // CAD and the initial greeting are unconditionally supplied. Stage them
-    // outside the measured interval; the response is released only after CAD.
+    // The server owns its configured response before READY. Only validation
+    // of the peer's actual CAD, not a controller pipe round trip, gates TLS.
+    const bool server_response = !client && response;
+    const std::string reply(server_response ? sad2 : View{});
     std::string outgoing;
     if (client && request)
       outgoing = supplied(cad);
     if (!client && greeting)
       outgoing = supplied(sad1);
-    turtle_observe_event("ready");
+    if (server_response)
+      turtle::native::detail::ready_with_prepared_response();
+    else
+      turtle_observe_event("ready");
     require(turtle_wait_start() >= 0);
     if (!client && greeting) {
       handshake(TURTLE_SERVER_CAN_SEND);
@@ -159,17 +170,25 @@ struct Scenario {
     handshake(TURTLE_LOCAL_COMPLETE);
     if (client && request)
       send(outgoing);
+    std::string received_request;
     if (!client && request)
-      receive(cad);
+      receive(cad, {}, server_response ? &received_request : nullptr);
     if (response) {
       if (!client)
-        send(supplied(sad2));
+        send(reply);
       else if (greeting)
         receive(sad1, sad2);
       else
         receive(sad2);
     }
     turtle_observe_event("end");
+    if (server_response) {
+      // Finish the same audited stdio transcript as an ordinary participant,
+      // but only after the measured operation. Neither stream is synthesized:
+      // publish the received bytes and verify the controller's actual copy.
+      publish(received_request);
+      supplied(reply);
+    }
   }
 };
 } // namespace

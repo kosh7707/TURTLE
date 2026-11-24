@@ -24,7 +24,10 @@ jq -n --arg openssl "$openssl" '{
 
 # Host plaintext is positive evidence of exchange, not target authentication,
 # TLS return timing, or hardware counters.
-"$turtle" run profile.json basic
+"$turtle" run profile.json basic >summary
+grep -F 'client S3: 1 sample(s); 0 benchmark-qualified; task success 0/1' summary
+grep -F 'elapsed unavailable' summary
+grep -F 'application bytes matched, but task order not confirmed' summary
 jq -e '.complete and .collection_complete and .eligible_measurements==0 and
     .measurement_count==1 and .measured_role=="client" and
     (.attempts[0] | .application_exchange=="verified" and

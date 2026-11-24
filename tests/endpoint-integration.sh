@@ -29,6 +29,19 @@ for role in client server; do
                 application:{request:"request",greeting:"hello",response:"reply"},
                 required_metrics:["timing","task"],optional_metrics:["authentication","library_io"]}' >"$run.json"
             "$turtle" run "$run.json" "$run"
+            if [ "$scenario" = S3 ] || [ "$scenario" = S4 ]; then
+                # This loopback fixture shares the controller's monotonic
+                # clock. The SDK sent its reply before the supervisor even
+                # received CAD; the real stdio copy still follows CAD.
+                jq -e --slurpfile a "$run/attempt-1/analysis.json" '
+                  $a[0].participants.server as $srv |
+                  [.ranges[]|select(.role=="server" and .channel=="stdout")] as $cad |
+                  [.ranges[]|select(.role=="server" and .channel=="stdin")] as $input |
+                  $srv.lifecycle.ready.response_source=="prepared_environment" and
+                  $srv.timeline.CAD.validated.seq < $srv.timeline.SAD2.first_write_attempt.seq and
+                  $srv.timeline.SAD2.final_write_accept.ns <= $cad[0].host_end_ns and
+                  $cad[-1].host_end_ns <= $input[-1].host_begin_ns' "$run/attempt-1/attempt.json" >/dev/null
+            fi
             jq -e --arg role "$role" --arg s "$scenario" '
                 [.attempts[].purpose]==["sample"] and .successful_measurements==1 and
                 (.attempts[0] |

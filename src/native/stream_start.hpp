@@ -31,7 +31,9 @@ public:
                {"host_time_namespace", time_namespace(getpid())},
                {"roles", Json::object()}};
   }
-  void service(App &client, App &server, std::vector<pollfd> &fds) {
+  template<class BeforeRelease>
+  void service(App &client, App &server, std::vector<pollfd> &fds,
+               BeforeRelease before_release) {
     if (finished_)
       return;
     bool unavailable = false;
@@ -128,6 +130,8 @@ public:
                  !tokens[0] || !tokens[1] || tokens[0] == tokens[1]))
       both = false;
     const char answer = both ? 'G' : 'U';
+    if (both)
+      before_release();
     bool delivered = true;
     for (auto [role, a] : {std::pair{"client", &client}, {"server", &server}}) {
       auto &side = record_["roles"][role];

@@ -13,8 +13,9 @@ using Deadline = std::chrono::steady_clock::time_point;
 Deadline deadline(double seconds);
 class Child {
 public:
+  enum class Group { isolated, inherit };
   Child(const Args &, const Environment & = {},
-        const std::filesystem::path &error_file = {});
+        const std::filesystem::path &error_file = {}, Group group = Group::isolated);
   ~Child();
   Child(const Child &) = delete;
   pid_t pid() const noexcept { return pid_; }
@@ -30,6 +31,7 @@ public:
 
 private:
   pid_t pid_ = -1;
+  Group group_;
   int input_ = -1, output_ = -1, status_ = -1;
   FILE *error_ = nullptr;
   std::string buffered_;

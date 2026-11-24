@@ -7,6 +7,7 @@
 #include "native/stream_profile.hpp"
 #include "native/stream_start.hpp"
 #include "native/stream_receipt.hpp"
+#include "native/stream_summary.hpp"
 #include "process/images.hpp"
 #include <algorithm>
 #include <cmath>
@@ -424,6 +425,8 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
   };
   try {
     network.start(p);
+    // Neither app can enter its bounded start wait before its launch.
+    const auto first_possible_wait = Clock::now();
     launch("server");
     // A test connection would consume a single-use server's only accept.
     while (owned_socket(ch["server"].child->pid, network.host(), portnum,
@@ -433,22 +436,40 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
       poll(nullptr, 0, 5);
     }
     network.listen(ch["server"].child->pid, portnum);
-    raw["images"]["server"] = process::image_inventory(ch["server"].child->pid,
-                                                       ch["server"].child->pid);
     launch("client");
+    for (auto who : {"client", "server"})
+      raw["images"][who] = {{"available", false}, {"pid", ch[who].child->pid},
+                            {"reason", "joint_preparation_unavailable"}};
+    auto snapshot = [&] {
+      // One shared budget for BOTH inventories. Leave time for TLS and for
+      // the two independent participant wait timeouts, even on a slow board.
+      const auto now = Clock::now();
+      const auto until = std::min({now + std::chrono::seconds(1),
+                                   now + (end - now) / 8,
+                                   first_possible_wait + start_wait_limit - std::chrono::seconds(1)});
+      for (auto who : {"client", "server"}) {
+        auto pid = ch[who].child->pid;
+        auto begin = ns();
+        auto inventory = process::image_inventory(pid, pid, until, cancel);
+        inventory.update({{"phase", "prepared"}, {"host_begin_ns", begin}, {"host_end_ns", ns()}});
+        raw["images"][who] = std::move(inventory);
+      }
+    };
     PreparedStart startup(raw, end, p.at("network") == "netem");
     bool changed = false;
     while (true) {
       clock_check();
       bool finished = true;
       std::vector<pollfd> fds = {{cancel, POLLIN, 0}};
-      startup.service(*ch.at("client").child,*ch.at("server").child,fds);
+      startup.service(*ch.at("client").child,*ch.at("server").child,fds,snapshot);
       for (auto &[who, c] : ch) {
         auto &app = *c.child;
         network.sample(who, app.pid, portnum);
         const bool client = who == "client";
         const auto want = client ? m.sad1 + m.sad2 : m.cad;
         std::string supply = client ? m.cad : m.sad1;
+        // An ordinary server may send stdin immediately. Keep its reply gated
+        // on CAD; an SDK server verifies this copy after its own TLS reply.
         if (!client && c.received == m.cad)
           supply += m.sad2;
         if (c.sent.size() < supply.size()) {
@@ -502,9 +523,6 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
         }
         require(want.compare(0, c.received.size(), c.received) == 0,
                 who + "_unexpected_plaintext");
-        if (client && !raw["images"].contains("client") &&
-            (!c.evidence.empty() || !c.received.empty()))
-          raw["images"]["client"] = process::image_inventory(app.pid, app.pid);
         if (!app.done() || app.out.fd >= 0 || app.err.fd >= 0 || app.ev.fd >= 0)
           finished = false;
       }
@@ -1171,9 +1189,8 @@ static int regenerate_verified(const fs::path &root, const Json &manifest) {
     artifact::save(root / row.at("directory").get<std::string>() / "analysis.json",
                    row);
   artifact::save(root / "analysis.json", out);
-  std::cout << "native-stream: " << out.at("samples") << " sample(s); "
-            << out.at("qualified_samples")
-            << " benchmark-qualified; see " << (root / "analysis.json") << "\n";
+  print_summary(std::cout, out, manifest.at("profile").at("scenario"));
+  std::cout << "Details: " << (root / "analysis.json") << '\n';
   return out.at("complete") == true ? 0 : 1;
 }
 int regenerate(const fs::path &root) {

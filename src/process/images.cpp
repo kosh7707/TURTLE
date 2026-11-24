@@ -1,13 +1,17 @@
 #include "process/images.hpp"
 #include "process/process.hpp"
+#include <cstring>
 #include <fcntl.h>
 #include <fstream>
 #include <map>
 #include <memory>
+#include <poll.h>
 #include <set>
 #include <sstream>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <sys/wait.h>
 #include <unistd.h>
 namespace turtle::process {
 using artifact::Json;
@@ -51,8 +55,9 @@ struct File {
       close(fd);
   }
 };
-} // namespace
-Json image_inventory(pid_t launcher, pid_t participant) {
+// Runs in the snapshot group. Both /proc/file access and the external hasher
+// are optional: neither is allowed to hold the supervisor past its deadline.
+Json collect_images(pid_t launcher, pid_t participant, Deadline until) {
   Json inventory = {
       {"launcher_pid", launcher}, {"pid", participant}, {"available", false}};
   try {
@@ -107,9 +112,10 @@ Json image_inventory(pid_t launcher, pid_t participant) {
     Args args{"sha256sum"};
     for (auto &[_, f] : files)
       args.push_back("/proc/self/fd/" + std::to_string(f->fd));
-    auto result = command(args);
-    check(result.at("returncode") == 0, "image_digest_failed");
-    std::istringstream hashes(result.at("stdout").get<std::string>());
+    Child hash(args, {}, {}, Child::Group::inherit);
+    hash.close_input();
+    std::istringstream hashes(hash.collect(until));
+    check(hash.wait(until) == 0, "image_digest_failed");
     Json mapped = Json::object();
     for (auto &[path, f] : files) {
       std::string hash, name;
@@ -128,6 +134,69 @@ Json image_inventory(pid_t launcher, pid_t participant) {
     inventory["reason"] = e.what();
   }
   return inventory;
+}
+} // namespace
+Json image_inventory(pid_t launcher, pid_t participant, Deadline until, int cancel_fd) {
+  auto unavailable = [&](const char *reason) -> Json {
+    return {{"launcher_pid", launcher}, {"pid", participant}, {"available", false}, {"reason", reason}};
+  };
+  // A cancelled helper may still be in a kernel file operation. Do not
+  // block joint release on waitpid, or accumulate more helpers behind it.
+  static thread_local pid_t stopping = -1;
+  if (stopping > 0) {
+    auto reaped = waitpid(stopping, nullptr, WNOHANG);
+    if (!reaped || (reaped < 0 && errno == EINTR))
+      return unavailable("previous_image_snapshot_stopping");
+    stopping = -1;
+  }
+  if (std::chrono::steady_clock::now() >= until)
+    return unavailable("image_snapshot_timeout");
+  // Only pages written by the helper are populated. A large inventory cannot
+  // stall the helper on pipe capacity while its parent waits for completion.
+  constexpr size_t limit = 8 * 1024 * 1024;
+  void *shared = mmap(nullptr, limit, PROT_READ | PROT_WRITE,
+                      MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (shared == MAP_FAILED)
+    return unavailable("image_snapshot_buffer_failed");
+  auto unmap = [](char *p) { munmap(p, limit); };
+  std::unique_ptr<char, decltype(unmap)> buffer(static_cast<char *>(shared), unmap);
+  const auto pid = fork();
+  if (!pid) {
+    if (setpgid(0, 0) != 0)
+      _exit(1);
+    try {
+      auto text = collect_images(launcher, participant, until).dump();
+      if (text.size() >= limit)
+        _exit(1);
+      std::memcpy(buffer.get(), text.c_str(), text.size() + 1);
+      _exit(0);
+    } catch (...) {
+      _exit(1);
+    }
+  }
+  if (pid < 0)
+    return unavailable("image_snapshot_fork_failed");
+  setpgid(pid, pid);
+  pollfd cancel{cancel_fd, POLLIN, 0};
+  int status = 0;
+  for (;;) {
+    const auto rc = waitpid(pid, &status, WNOHANG);
+    if (rc == pid)
+      break;
+    if (rc < 0 && errno != EINTR)
+      return unavailable("image_snapshot_wait_failed");
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        until - std::chrono::steady_clock::now()).count();
+    if (ms > 0 && poll(&cancel, 1, static_cast<int>(std::min<int64_t>(ms, 5))) <= 0)
+      continue;
+    kill(-pid, SIGKILL); // includes sha256sum; never signal either TLS role
+    stopping = pid;
+    return unavailable(ms > 0 ? "image_snapshot_cancelled" : "image_snapshot_timeout");
+  }
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    return unavailable("image_snapshot_failed");
+  auto inventory = Json::parse(buffer.get(), nullptr, false);
+  return inventory.is_discarded() ? unavailable("image_snapshot_invalid") : inventory;
 }
 Json image_key(const Json &inv, pid_t pid) {
   check(inv.value("available", false) && pid > 0 && inv.at("pid") == pid,
