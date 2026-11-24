@@ -53,6 +53,10 @@ for contract in implementation role; do
 done
 find "$work/sdk" -type f -name '*.a' -exec nm -g --defined-only {} + >"$work/exports"
 find "$work/sdk" -type f \( -name '*.so' -o -name '*.so.*' \) -exec nm -D --defined-only {} + >>"$work/exports"
+test -f "$work/sdk/include/turtle/start.h"
+if ! grep -Eq ' [T] turtle_wait_start(@[^ ]*)?$' "$work/exports"; then
+    reject 'installed SDK missing the optional non-TLS START rendezvous'
+fi
 if grep -Eq ' [TW] (turtle_pull|turtle_submit|turtle_endpoint_main)(@[^ ]*)?$' "$work/exports"; then
     reject 'installed SDK exports a legacy native-operation dispatcher'
 fi

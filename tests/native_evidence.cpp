@@ -1,4 +1,5 @@
 #include "native/evidence.hpp"
+#include "native/stream.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <cstdlib>
@@ -240,6 +241,26 @@ void wire_tests(const J &events) {
      "layout not flights");
   ck(run(wire(events, true))["metrics"]["transport_counts"] == false,
      "interrupted counts");
+  auto cycled = wire(events);
+  auto on = cycled.front(), off = on;
+  off["active"] = false;
+  cycled.insert(cycled.begin() + 1, off);
+  cycled.insert(cycled.begin() + 2, on);
+  ck(run(cycled)["metrics"]["transport_counts"] == true,
+     "pre-ready rebind preserves complete coverage");
+  auto late = wire(events, true);
+  late.insert(late.end() - 1, on);
+  ck(run(late)["metrics"]["transport_counts"] == false,
+     "in-task rebind cannot restore continuity");
+  auto detached = wire(events);
+  detached.insert(detached.begin() + 1, off);
+  detached.insert(find(detached, "ready") + 1, on);
+  ck(run(detached)["metrics"]["transport_counts"] != true,
+     "inactive at ready is incomplete");
+  auto outside = wire(events);
+  outside.push_back(off);
+  ck(run(outside)["metrics"]["transport_counts"] == true,
+     "detach after end is outside coverage");
 }
 std::string octet(unsigned x) {
   constexpr char alphabet[] = "0123456789abcdef";
@@ -571,6 +592,29 @@ int main(int argc, char **argv) try {
     return 0;
   }
   auto es = capture(argv[0]);
+  // Exercise the exact predicate shared by the scheduling and replay paths.
+  // Unavailable required metrics stay unavailable; only otherwise valid
+  // decision-required warmups may be bypassed for a fresh observation.
+  for (auto mode : {"partial", "multiplexed"}) {
+    J warm = {{"purpose", "warmup"},
+              {"operation_ok", false},
+              {"qualification", "decision_required"},
+              {"pmu_status", mode},
+              {"eligible", false}};
+    J measurement = {{"purpose", "sample"}, {"qualified", true}};
+    std::vector<J> scheduled{warm};
+    if (turtle::native::warmup_allows_measurement(warm))
+      scheduled.push_back(measurement);
+    ck(scheduled.size() == 2 && scheduled.front()["eligible"] == false &&
+           scheduled.back()["qualified"] == true,
+       "incomplete warmup permits fresh measurement");
+    warm["qualification"] = "unknown"; // another mandatory metric missing
+    ck(!turtle::native::warmup_allows_measurement(warm),
+       "missing non-PMU metric blocks warmup");
+    warm["pmu_status"] = "unsupported";
+    ck(!turtle::native::warmup_allows_measurement(warm),
+       "denied required PMU blocks warmup");
+  }
   lifecycle_tests(es);
   write_pair_tests(es);
   wire_tests(es);

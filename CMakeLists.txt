@@ -46,12 +46,12 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 include(GNUInstallDirs)
-add_library(turtle_observe SHARED src/native/observe.cpp src/measure/perf.cpp)
+add_library(turtle_observe SHARED src/native/observe.cpp src/native/start.cpp src/measure/perf.cpp)
 add_library(turtle::observe ALIAS turtle_observe)
 set_target_properties(turtle_observe PROPERTIES EXPORT_NAME observe CXX_EXTENSIONS OFF
     VERSION ${PROJECT_VERSION} SOVERSION 1)
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/observe.map"
-    CONTENT "TURTLE_OBSERVE_1 { global: turtle_observe_*; local: *; };\n")
+    CONTENT "TURTLE_OBSERVE_1 { global: turtle_observe_*; turtle_wait_start; local: *; };\n")
 target_link_options(turtle_observe PRIVATE "LINKER:--version-script,${CMAKE_CURRENT_BINARY_DIR}/observe.map")
 target_include_directories(turtle_observe PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>" "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -88,7 +88,7 @@ add_library(turtle_analysis STATIC
 target_link_libraries(turtle_analysis PUBLIC turtle_artifact PRIVATE turtle_capture turtle_profiling turtle_process)
 add_library(turtle_native_evidence STATIC src/native/evidence.cpp src/native/evidence_wire.cpp)
 target_link_libraries(turtle_native_evidence PUBLIC turtle_artifact)
-add_library(turtle_native STATIC src/native/stream.cpp src/native/network.cpp src/native/packets.cpp src/control/network.cpp)
+add_library(turtle_native STATIC src/native/stream.cpp src/native/network.cpp src/native/pre_cf.cpp src/native/packets.cpp src/control/network.cpp)
 target_link_libraries(turtle_native PUBLIC turtle_process PRIVATE turtle_native_evidence turtle_capture turtle_profiling)
 file(GLOB_RECURSE turtle_sources CONFIGURE_DEPENDS src/*.cpp src/*.hpp src/*.h include/*.h reference/*.cpp reference/CMakeLists.txt cmake/*)
 list(APPEND turtle_sources "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
@@ -123,7 +123,7 @@ if(TARGET turtle-reference)
     install(TARGETS turtle-reference RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 install(TARGETS turtle RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES include/turtle/observe.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/turtle)
+install(FILES include/turtle/observe.h include/turtle/start.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/turtle)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/build_info.hpp" DESTINATION ${CMAKE_INSTALL_DATADIR}/turtle)
 install(TARGETS turtle_observe EXPORT turtleTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(EXPORT turtleTargets FILE TURTLEConfig.cmake NAMESPACE turtle::

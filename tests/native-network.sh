@@ -30,6 +30,7 @@ mf="$dir/contradictory/manifest.json"
 jq --arg hash "$hash" '.attempts[1].sha256["network/network.json"]=$hash' "$mf" >"$mf.tmp"; mv "$mf.tmp" "$mf"
 if "$turtle" analyze "$dir/contradictory"; then exit 1; fi
 jq -e '.network.verified==false and .eligible==false' "$dir/contradictory/attempt-2/analysis.json" >/dev/null
+sh "$(dirname "$0")/native-probe-replay.sh" "$turtle" "$dir/actual" "$dir"
 # Strip network and mount capabilities inside a disposable namespace. A
 # failure must be recorded without launching either TLS participant.
 if "$ns" setpriv --bounding-set=-net_admin,-sys_admin "$turtle" run "$dir/netem.json" "$dir/denied"; then exit 1; fi

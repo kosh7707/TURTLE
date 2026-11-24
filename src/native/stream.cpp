@@ -2,8 +2,10 @@
 #include "artifact/network_evidence.hpp"
 #include "native/evidence.hpp"
 #include "native/network.hpp"
+#include "native/pre_cf.hpp"
 #include "native/stream_process.hpp"
 #include "native/stream_profile.hpp"
+#include "native/stream_start.hpp"
 #include "native/stream_receipt.hpp"
 #include "process/images.hpp"
 #include <algorithm>
@@ -320,32 +322,18 @@ struct Channels {
   std::unique_ptr<App> child;
   std::string sent, received, evidence, diagnostics;
 };
-bool before_gate(const Json &p, const Json &raw, const std::string &client,
+Json gate_report(const Json &p, const Json &raw, const std::string &who,
+                 const std::string &data) {
+  const auto last = data.rfind('\n');
+  return analyze_evidence(last == data.npos ? "" : data.substr(0, last + 1),
+                          context(p, raw, who, false));
+}
+Json before_gate(const Json &p, const Json &raw, const std::string &client,
                  const std::string &server) {
-  auto events = [&](std::string who, const std::string &data) {
-    auto last = data.rfind('\n');
-    auto r = analyze_evidence(last == data.npos ? "" : data.substr(0, last + 1),
-                              context(p, raw, who, false));
-    return (r.at("status") == "invalid" || r.at("status") == "contradicted")
-               ? Json::array()
-               : r.at(who == "client" ? "events" : "message_events");
-  };
-  bool paused = false;
-  for (auto &e : events("client", client)) {
-    if (e.value("name", "") == "probe_paused")
-      paused = true;
-    if (e.value("name", "") == "probe_resumed")
-      return false;
-  }
-  size_t accepted = 0;
-  for (auto &e : events("server", server)) {
-    if (e.value("name", "") != "write_accepted" || e.at("message") != "SAD1")
-      continue;
-    if (artifact::integer(e.at("offset")) != accepted)
-      return false;
-    accepted += artifact::integer(e.at("length"));
-  }
-  return paused && accepted == Messages(p).sad1.size();
+  return pre_cf_extent(
+      gate_report(p, raw, "client", client),
+      gate_report(p, raw, "server", server), Messages(p).sad1.size(),
+      p.at("stock_peer") == true && p.at("target").at("role") == "client");
 }
 Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
              std::string run, std::string purpose, int cancel) {
@@ -358,7 +346,7 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
               {"connection_id", random_id()},
               {"purpose", purpose},
               {"port", portnum},
-              {"ranges", Json::array()},
+              {"time_namespaces",Json::object()},{"ranges", Json::array()},
               {"error", nullptr}};
   NetworkTrial network(p, dir, raw, cancel);
   std::map<std::string, Channels> ch;
@@ -451,11 +439,14 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
     if (gate)
       gate->r.reset();
     auto release_by = Clock::now() + (end - Clock::now()) / 2;
+    const auto thaw_by=release_by+(end-release_by)/2;
+    PreparedStart startup(raw,end);
     bool changed = false, frozen = false;
     while (true) {
       clock_check();
       bool finished = true;
       std::vector<pollfd> fds = {{cancel, POLLIN, 0}};
+      startup.service(*ch.at("client").child,*ch.at("server").child,fds);
       for (auto &[who, c] : ch) {
         auto &app = *c.child;
         network.sample(who, app.pid, portnum);
@@ -509,6 +500,10 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
         drain(app.out, c.received, "stdout", 1024 * 1024);
         drain(app.err, c.diagnostics, "stderr", 1024 * 1024);
         drain(app.ev, c.evidence, "evidence", 16 * 1024 * 1024);
+        if(!c.evidence.empty()&&!raw["time_namespaces"].contains(who)){
+          auto domain=PreparedStart::time_namespace(app.pid);
+          if(!domain.empty())raw["time_namespaces"][who]=domain;
+        }
         require(want.compare(0, c.received.size(), c.received) == 0,
                 who + "_unexpected_plaintext");
         if (client && !raw["images"].contains("client") &&
@@ -518,31 +513,82 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
           finished = false;
       }
       if (gate && gate->w.fd >= 0 && (changed || Clock::now() >= release_by)) {
-        bool positive =
+        Json extent =
             before_gate(p, raw, ch["client"].evidence, ch["server"].evidence);
-        auto queued = positive ? socket_queue(ch["client"].child->pid, portnum,
-                                              false, network.host())
-                               : 0;
-        if ((positive && queued) || Clock::now() >= release_by) {
-          siginfo_t status{};
+        if (!extent.is_null() || Clock::now() >= release_by) {
           auto server = ch["server"].child->pid;
-          if (positive && queued && ::kill(-server, SIGSTOP) == 0) {
-            while (true) {
+          Json queue = nullptr;
+          uint64_t stopped_ns = 0, queue_ns = 0;
+          if (!extent.is_null() && ::kill(-server, SIGSTOP) == 0) {
+            for (;;) {
               clock_check();
+              siginfo_t status{};
               auto w = waitid(P_PID, server, &status,
                               WSTOPPED | WEXITED | WNOHANG | WNOWAIT);
               if (w == 0 && status.si_pid == server) {
                 require(status.si_code == CLD_STOPPED, "server_not_stopped");
                 frozen = true;
+                stopped_ns = ns();
                 break;
               }
               require(w >= 0 || errno == EINTR, "server_stop_failed");
               ::poll(nullptr, 0, 1);
             }
+            // Account for events already written between the positive prefix
+            // and SIGSTOP. A partial final evidence line isn't a stable
+            // boundary.
+            auto &server_channel = ch["server"];
+            std::array<char, 8192> buffer;
+            for (;;) {
+              auto n = read(server_channel.child->ev.fd, buffer.data(),
+                            buffer.size());
+              if (n > 0) {
+                require(server_channel.evidence.size() + size_t(n) <=
+                            16 * 1024 * 1024,
+                        "evidence_limit");
+                server_channel.evidence.append(buffer.data(), n);
+              } else if (n < 0 && errno == EINTR)
+                continue;
+              else
+                break;
+            }
+            extent = server_channel.evidence.ends_with('\n')
+                         ? before_gate(p, raw, ch["client"].evidence,
+                                       server_channel.evidence)
+                         : Json(nullptr);
+            // TCP may still deliver in-flight bytes after the server stops.
+            // Wait for complete coverage, not merely the first readable byte.
+            while (!extent.is_null()) {
+              clock_check();
+              queue = owned_socket(ch["client"].child->pid, network.host(),
+                                   portnum, false, false);
+              queue_ns = ns();
+              if (!queue.is_null() &&
+                  (extent.at("server_source").is_null()
+                       ? artifact::integer(queue.at("recv_queue")) > 0
+                       : pre_cf_arrived(extent, artifact::integer(
+                                                    queue.at("recv_queue")))))
+                break;
+              if (Clock::now() >= release_by)
+                break;
+              ::poll(nullptr, 0, 1);
+            }
+            if (queue.is_null() || extent.is_null() ||
+                (!extent.at("server_source").is_null() &&
+                 !pre_cf_arrived(extent,
+                                 artifact::integer(queue.at("recv_queue"))))) {
+              require(::kill(-server, SIGCONT) == 0, "server_resume_failed");
+              frozen = false;
+            }
           }
           raw["gate"] = {{"client_bytes", ch["client"].evidence.size()},
                          {"server_bytes", ch["server"].evidence.size()},
-                         {"client_recv_queue", queued},
+                         {"client_recv_queue",
+                          queue.is_null() ? Json(0) : queue.at("recv_queue")},
+                         {"queue_socket", queue},
+                         {"pre_cf", extent},
+                         {"host_server_stopped_ns", stopped_ns},
+                         {"host_queue_sample_ns", queue_ns},
                          {"server_stopped", frozen},
                          {"host_before_release_ns", ns()}};
           require(::write(gate->w.fd, "G", 1) == 1, "probe_gate_failed");
@@ -557,8 +603,26 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
             analyze_evidence(prefix, context(p, raw, "client", false));
         if (result["status"] != "invalid" &&
             !result.at("timeline").at("SAD1").at("validated").is_null()) {
+          const auto &g = raw.at("gate");
+          raw["gate"]["delivery"] = pre_cf_delivery(
+              result,
+              gate_report(p, raw, "server",
+                          ch["server"].evidence.substr(
+                              0, artifact::integer(g.at("server_bytes")))),
+              g.at("pre_cf"),
+              p.at("stock_peer") == true &&
+                  p.at("target").at("role") == "client",
+              artifact::integer(g.at("client_recv_queue")));
           raw["gate"]["before_server_resume_client_bytes"] = prefix.size();
           raw["gate"]["host_before_server_resume_ns"] = ns();
+          require(::kill(-ch["server"].child->pid, SIGCONT) == 0,
+                  "server_resume_failed");
+          frozen = false;
+        } else if (Clock::now() >= thaw_by) {
+          // In particular, a sender may have accepted plaintext only into an
+          // application buffer. Resume without proof; retain the ordinary
+          // completion/failure instead of deadlocking this probe.
+          raw["gate"]["delivery"] = nullptr;
           require(::kill(-ch["server"].child->pid, SIGCONT) == 0,
                   "server_resume_failed");
           frozen = false;
@@ -742,6 +806,8 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
   bool unsupported = early && participants.at("server").at("facts").value(
                                   "server_first", Json(nullptr)) == false;
   Json requested_metrics = Json::object();
+  const auto start_proof=prepared_start_proof(raw,participants);
+  const bool synchronized=start_proof.at("verified")==true;
   const auto &time = dut.at("timing");
   auto pmu = time.value("pmu_status", "unobserved");
   bool partial = pmu == "partial" || pmu == "multiplexed";
@@ -754,8 +820,12 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
         value = network.value(metric_name == "capture" ? "capture_verified"
                                                        : "tcp_ack",
                               Json(nullptr));
+      const bool strict_boundary=metric_name=="pmu"||metric_name=="timing";
+      if(strict_boundary&&!synchronized)value=start_proof.at("verified");
       bool diag = metric_name == "cpu_samples";
-      auto reason = value == true          ? Json(nullptr)
+      auto reason = value == true ? Json(nullptr)
+                    : strict_boundary && !synchronized
+                        ? start_proof.at("reason")
                     : diag                 ? Json("separate_diagnostic")
                     : metric_name == "pmu" ? Json(pmu)
                     : value == false       ? Json("contrary_evidence")
@@ -775,7 +845,8 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
   bool task_success = valid && !invalid && !contradiction &&
                       metric(dut, "peer_task") && metric(peer, "peer_task") &&
                       (!early || proof);
-  bool otherwise_qualified = task_success && dut.at("status") == "verified";
+  bool otherwise_qualified =
+      task_success && synchronized && dut.at("status") == "verified";
   bool qualified =
       otherwise_qualified && required && !partial && metric(dut, "pmu");
   bool gate = false;
@@ -786,25 +857,51 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
     require(ci <= logs["client"].size() && si <= logs["server"].size(),
             "invalid_gate_watermark");
     bool barrier = false;
-    if (g.at("server_stopped") == true &&
-        artifact::integer(g.at("client_recv_queue")) > 0 &&
+    const auto client_cut = logs["client"].substr(0, ci),
+               server_cut = logs["server"].substr(0, si);
+    const auto extent = before_gate(p, raw, client_cut, server_cut);
+    const auto socket = g.value("queue_socket", Json(nullptr));
+    const auto queued = artifact::integer(g.at("client_recv_queue"));
+    if (g.at("server_stopped") == true && !extent.is_null() &&
+        extent == g.value("pre_cf", Json(nullptr)) &&
+        (extent.at("server_source").is_null() ||
+         pre_cf_arrived(extent, queued)) &&
+        socket.is_object() && socket.at("pid") == raw.at("pid").at("client") &&
+        socket.at("remote_port") == raw.at("port") &&
+        socket.at("remote_ip") == (p.value("network", "loopback") == "netem"
+                                       ? control::Topology::server_ip
+                                       : "127.0.0.1") &&
+        artifact::integer(socket.at("inode")) > 0 &&
+        artifact::integer(socket.at("recv_queue")) == queued &&
+        g.value("host_server_stopped_ns", uint64_t(0)) >=
+            artifact::integer(extent.at("pause_ns")) &&
+        g.value("host_queue_sample_ns", uint64_t(0)) >=
+            g.value("host_server_stopped_ns", uint64_t(0)) &&
+        g.value("host_queue_sample_ns", uint64_t(0)) <=
+            artifact::integer(g.at("host_before_release_ns")) &&
         g.contains("before_server_resume_client_bytes")) {
       auto cut = artifact::integer(g.at("before_server_resume_client_bytes"));
       require(ci <= cut && cut <= logs["client"].size() &&
                   artifact::integer(g.at("host_before_release_ns")) <=
                       artifact::integer(g.at("host_before_server_resume_ns")),
               "invalid_resume_watermark");
-      auto resumed = analyze_evidence(logs["client"].substr(0, cut),
-                                      context(p, raw, "client", false));
-      barrier = resumed.at("status") != "invalid" &&
-                resumed.at("status") != "contradicted" &&
-                resumed.at("lifecycle").contains("probe_resumed") &&
-                !resumed.at("timeline").at("SAD1").at("validated").is_null();
+      auto resumed =
+          gate_report(p, raw, "client", logs["client"].substr(0, cut));
+      const auto delivered = pre_cf_delivery(
+          resumed, gate_report(p, raw, "server", server_cut), extent,
+          p.at("stock_peer") == true && p.at("target").at("role") == "client",
+          queued);
+      barrier =
+          !delivered.is_null() &&
+          delivered == g.value("delivery", Json(nullptr)) &&
+          artifact::integer(
+              resumed.at("lifecycle").at("probe_resumed").at("ns")) >=
+              artifact::integer(g.at("host_before_release_ns")) &&
+          artifact::integer(
+              resumed.at("timeline").at("SAD1").at("validated").at("ns")) <=
+              artifact::integer(g.at("host_before_server_resume_ns"));
     }
-    gate = barrier &&
-           before_gate(p, raw, logs["client"].substr(0, ci),
-                       logs["server"].substr(0, si)) &&
-           valid && !invalid && !contradiction &&
+    gate = barrier && valid && !invalid && !contradiction &&
            metric(participants.at("client"), "peer_task") &&
            metric(participants.at("server"), "peer_task");
   }
@@ -817,6 +914,8 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
     qualification = "contradicted";
   else if (!valid)
     qualification = "failed";
+  else if(start_proof.at("verified")==false)
+    qualification="unprepared_start";
   else if (partial && otherwise_qualified && other_required)
     qualification = "decision_required";
   else if (qualified)
@@ -831,6 +930,7 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
           {"app_observation_scope",
            "stdin/stdout byte ranges; host monotonic clock only"},
           {"participants", participants},
+          {"prepared_start",start_proof},{"benchmark_timing_ns",synchronized?time.at("wall_ns"):Json(nullptr)},{"benchmark_pmu_available",synchronized?dut.at("metrics").at("pmu"):Json(nullptr)},
           {"network", network},
           {"capability_proof", gate ? Json(true) : Json(nullptr)},
           {"separate_capability_proof", proof ? Json(true) : Json(nullptr)},
@@ -1075,6 +1175,8 @@ static int regenerate_verified(const fs::path &root, const Json &manifest) {
       if (raw.at("error") != nullptr || row.at("operation_ok") != true)
         diagnostic = {{"availability", "missing"},
                       {"reason", "diagnostic_task_failed"}};
+      diagnostic["prepared_start"]=row.at("prepared_start").at("verified");
+      diagnostic["scope"]=diagnostic.at("prepared_start")==true?"prepared_scenario":"local_diagnostic_only";
       row["cpu_samples"] = diagnostic;
       row["eligible"] = false;
       row["qualified"] = false;
@@ -1089,11 +1191,15 @@ static int regenerate_verified(const fs::path &root, const Json &manifest) {
       } else {
         require(raw.at("purpose") == "warmup", "invalid_attempt_purpose");
         ++warmups;
+        row["warmup_allows_measurement"] = warmup_allows_measurement(row);
+        row["warmup_assessment"] = row.at("qualification");
         row["eligible"] = false;
         row["qualified"] = false;
         row["qualification"] = "warmup_only";
       }
-      ok = ok && row.at("operation_ok") == true;
+      ok = ok && (raw.at("purpose") == "warmup"
+                     ? row.at("warmup_allows_measurement") == true
+                     : row.at("operation_ok") == true);
     }
     row["directory"] = name;
     artifact::save(dir / "analysis.json", row);
@@ -1103,7 +1209,7 @@ static int regenerate_verified(const fs::path &root, const Json &manifest) {
   bool profile_available =
       diagnostic.is_object() &&
       diagnostic.value("availability", "missing") == "available" &&
-      diagnostic.contains("sample_count");
+      diagnostic.contains("sample_count")&&diagnostic.value("prepared_start",Json(nullptr))==true;
   if (require_profile && !profile_available) {
     ok = false;
     count = 0;
@@ -1116,7 +1222,7 @@ static int regenerate_verified(const fs::path &root, const Json &manifest) {
       request["reason"] =
           profile_available ? Json(nullptr)
           : diagnostic.is_object()
-              ? diagnostic.value("reason", Json("separate_diagnostic_missing"))
+              ? diagnostic.value("scope","")=="local_diagnostic_only"?Json("unverified_diagnostic_start"):diagnostic.value("reason", Json("separate_diagnostic_missing"))
               : Json("separate_diagnostic_missing");
       if (require_profile && !profile_available) {
         row["ordinary_qualified_without_diagnostic"] = row.at("eligible");
@@ -1250,7 +1356,7 @@ int execute(Json p, const fs::path &root, const fs::path &self, int cancel,
       throw std::runtime_error("interrupted");
     if (purpose == "capability" || purpose == "warmup") {
       auto row = assess_bound(manifest, raw, root / name, positive);
-      return purpose == "capability" || row.at("operation_ok") == true;
+      return purpose == "capability" || warmup_allows_measurement(row);
     }
     return true;
   };

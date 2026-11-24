@@ -57,12 +57,21 @@ inline void nonblock(int fd) {
 // the optional one-way evidence pipe. No child inherits another app's stdin.
 class App {
 public:
-  FD in, out, ev, err;
+  FD in, out, ev, err, start;
   pid_t pid = -1;
   int status = -1;
   App(const process::Args &args, process::Environment env, int gate = -1,
       bool hold_for_profile = false, const std::string &netns = {}) {
     Pipe i, o, e, d;
+    int pair[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair))
+      throw std::runtime_error("start_channel_failed");
+    FD start_child(pair[1]);
+    start.reset(pair[0]);
+    int one = 1;
+    if (setsockopt(start.fd, SOL_SOCKET, SO_PASSCRED, &one, sizeof one))
+      throw std::runtime_error("start_credentials_failed");
+    env["TURTLE_START_FD"] = "5";
     nonblock(i.w.fd);
     nonblock(o.r.fd);
     nonblock(e.r.fd);
@@ -85,21 +94,28 @@ public:
       int dest = 0;
       std::array<int, 4> src{i.r.fd, o.w.fd, d.w.fd, e.w.fd};
       if (gate >= 0) {
-        gate = fcntl(gate, F_DUPFD_CLOEXEC, 5);
+        gate = fcntl(gate, F_DUPFD_CLOEXEC, 6);
         if (gate < 0)
           ::_exit(126);
       }
       for (int &s : src) {
-        s = fcntl(s, F_DUPFD_CLOEXEC, 5);
+        s = fcntl(s, F_DUPFD_CLOEXEC, 6);
         if (s < 0)
           ::_exit(126);
       }
+      int start_fd = fcntl(start_child.fd, F_DUPFD_CLOEXEC, 6);
+      if (start_fd < 0)
+        ::_exit(126);
       for (int s : src)
         if (dup2(s, dest++) < 0)
           ::_exit(126);
       if (gate >= 0 && dup2(gate, 4) < 0)
         ::_exit(126);
-      if (::close_range(gate >= 0 ? 5 : 4, ~0U, 0))
+      if (gate < 0)
+        ::close(4);
+      if (dup2(start_fd, 5) < 0)
+        ::_exit(126);
+      if (::close_range(6, ~0U, 0))
         ::_exit(126);
       sigset_t mask;
       sigemptyset(&mask);

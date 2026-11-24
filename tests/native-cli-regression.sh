@@ -28,7 +28,8 @@ jq -n --arg openssl "$openssl" '{
 jq -e '.complete and .collection_complete and .eligible_measurements==0 and
     .measurement_count==1 and .measured_role=="client" and
     (.attempts[0] | .application_exchange=="verified" and
-      .scenario_support=="unconfirmed" and
+      .scenario_support=="unconfirmed" and .prepared_start.verified==null and
+      .prepared_start.rendezvous=="unsynchronized_fallback" and .benchmark_timing_ns==null and
       .requested_metrics.perf_counters.available==null and
       .participants.server.negotiated.group==23)' basic/analysis.json >/dev/null
 printf ping | cmp - basic/attempt-1/server.stdout

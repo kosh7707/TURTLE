@@ -61,6 +61,12 @@ cell() {
       ordinary:[.attempts[]|select(.purpose=="sample")|{status:.qualification,exchange:.application_exchange,reason:.error,metrics:.participants[$r].metrics,
       flight_names:(.participants[$r].wire.flights // {}|keys)}]}' "$j" >>"$work/matrix.jsonl"
     if ! jq -e --arg s "$scenario" --arg r "$role" '.measured_role==$r and .measurement_count==2 and ([.attempts[]|select(.purpose=="sample")|.connection_id]|unique|length)==2 and ([.attempts[]|select(.purpose=="capability")]|length)==(if $s=="S2" or $s=="S4" then 1 else 0 end)' "$j" >/dev/null; then reject "$name attempt separation"; fi
+    if [ "$kind" = observed ] || [ "$kind" = native-pair ]; then
+        jq -e 'all(.attempts[]|select(.purpose=="sample"); .prepared_start.verified==true and .prepared_start.basis=="prepared_rendezvous")' "$j" >/dev/null || reject "$name ordinary joint release"
+        if [ "$role" = client ] && { [ "$scenario" = S2 ] || [ "$scenario" = S4 ]; }; then
+            jq -e '.gate as $g|$g.server_stopped and $g.pre_cf.client_consumed_bytes+$g.client_recv_queue >= $g.pre_cf.server_terminal_bytes and $g.delivery.needed_from_queue <= $g.client_recv_queue and $g.delivery.consumed_through_validation > 0' "$out/attempt-1/attempt.json" >/dev/null || reject "$name complete encrypted greeting before CF"
+        fi
+    fi
     if [ "$kind" = wrong-name ]; then
         jq -e '.eligible_measurements==0 and all(.attempts[];.application_exchange=="failed")' "$j" >/dev/null || reject "$name accepted wrong identity"
     elif [ "$kind" != observed ] && [ "$kind" != native-pair ]; then
@@ -68,7 +74,7 @@ cell() {
     elif [ "$role" = server ] && { [ "$scenario" = S2 ] || [ "$scenario" = S4 ]; }; then
         jq -e '.eligible_measurements==0 and all(.attempts[]|select(.purpose=="sample"); .application_exchange=="verified" and .participants.server.metrics.ordinary_server_first==false and .separate_capability_proof!=true)' "$j" >/dev/null || reject "$name late greeting or bogus proof"
     else
-        jq -e --arg r "$role" --arg s "$scenario" '.eligible_measurements==2 and all(.attempts[]|select(.purpose=="sample");.eligible and .task_success and .participants[$r].metrics.transport_counts==true and .participants[$r].metrics.authentication==true and .participants[$r].metrics.timed_records==true and (.participants[$r].timing|.wall_ns==(.end.ns-.begin.ns) and .begin.tid==.end.tid and .pmu_delta.tid==.begin.tid and .pmu_delta.running_ns==.pmu_delta.enabled_ns and .pmu_delta.running_ns>0) and (if $s=="S2" or $s=="S4" then .separate_capability_proof==true and .participants.server.metrics.ordinary_server_first==true else true end))' "$j" >/dev/null || reject "$name strict native role/PMU/evidence"
+        jq -e --arg r "$role" --arg s "$scenario" '.eligible_measurements==2 and all(.attempts[]|select(.purpose=="sample");.eligible and .task_success and .prepared_start.verified==true and .prepared_start.basis=="prepared_rendezvous" and .participants[$r].metrics.transport_counts==true and .participants[$r].metrics.authentication==true and .participants[$r].metrics.timed_records==true and (.participants[$r].timing|.wall_ns==(.end.ns-.begin.ns) and .begin.tid==.end.tid and .pmu_delta.tid==.begin.tid and .pmu_delta.running_ns==.pmu_delta.enabled_ns and .pmu_delta.running_ns>0) and (if $s=="S2" or $s=="S4" then .separate_capability_proof==true and .participants.server.metrics.ordinary_server_first==true else true end))' "$j" >/dev/null || reject "$name strict native role/PMU/evidence"
     fi
     if [ "$kind" = observed ] || [ "$kind" = native-pair ]; then
         for attempt in "$out"/attempt-*; do
@@ -77,7 +83,7 @@ cell() {
             # whose accepted/consumed byte interval contains the boundary.
             jq -e --arg role "$role" --arg kind "$kind" --arg s "$scenario" --slurpfile raw "$attempt/$role.ndjson" '
                 .participants[$role] as $p | $p.wire.flights as $fs |
-                (($fs|keys|length)>=(if $kind=="native-pair" then 4 else 3 end)) and
+                (($fs|keys|length)==4) and
                 all($fs|to_entries[]; .key as $name | .value as $f |
                     (($name=="CH" or $name=="client_protected_flight")==($role=="client")) as $send |
                     ([$raw[]|select(.seq==$f.anchor.seq)][0]) as $io |

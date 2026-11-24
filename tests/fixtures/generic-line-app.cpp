@@ -16,6 +16,7 @@
 #include <unistd.h>
 #ifdef OBSERVE
 #include <turtle/observe.h>
+#include <turtle/start.h>
 #define REPORT(x) (x)
 #define STAMP(n) const auto n = turtle_observe_now()
 #else
@@ -206,6 +207,7 @@ int run(int argc, char **av) {
   gnutls_transport_set_push_function(session, send_bytes);
   REPORT(turtle_observe_coverage("socket", 1));
   REPORT(turtle_observe_event("ready"));
+  REPORT(need(turtle_wait_start() >= 0, "start barrier"));
   REPORT(turtle_observe_event("hs_begin"));
   int rc;
   do {

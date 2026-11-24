@@ -116,3 +116,11 @@ if(TURTLE_TEST_NETEM)
         "$<TARGET_FILE:turtle>" "${TURTLE_NATIVE_TEST_APP}" "${CMAKE_CURRENT_BINARY_DIR}/artifacts")
     set_tests_properties(native_netem_capture PROPERTIES RUN_SERIAL TRUE TIMEOUT 300)
 endif()
+
+add_executable(turtle-native-prepared native-prepared.cpp)
+target_link_libraries(turtle-native-prepared PRIVATE turtle_artifact)
+add_test(NAME native_prepared_start COMMAND turtle-native-prepared)
+
+add_executable(turtle-native-probe-test native-probe.cpp)
+target_link_libraries(turtle-native-probe-test PRIVATE turtle_native)
+add_test(NAME native_prefinished_queue_bound COMMAND turtle-native-probe-test)

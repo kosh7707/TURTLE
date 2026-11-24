@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <turtle/observe.h>
+#include <turtle/start.h>
 #include <unistd.h>
 
 namespace {
@@ -318,6 +319,7 @@ struct Session {
     turtle_observe_coverage("library_io", 1);
     turtle_observe_coverage("header", 1);
     event("ready");
+    require(turtle_wait_start() >= 0, "start_barrier_failed");
     event("hs_begin");
     if (!client && greeting) {
       char scratch;

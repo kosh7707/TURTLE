@@ -204,6 +204,12 @@ void evaluate_wire(const J &c, J &r) {
   for (const auto &e : events) {
     auto k = e.at("kind").get<std::string>();
     auto seq = u(e, "seq");
+    if (seq == ready) {
+      for (auto &[_, source] : src) {
+        source.started = source.active;
+        source.interrupted = !source.active;
+      }
+    }
     if (k != "coverage" && k != "io" && k != "bytes" && k != "header")
       continue;
     if (k == "header") {
@@ -224,9 +230,8 @@ void evaluate_wire(const J &c, J &r) {
       bool active = e["active"];
       check(active != s.active, "duplicate_coverage_state");
       s.active = active;
-      if (active && !ready.is_null() && seq < ready)
-        s.started = true;
-      if (!active && (end.is_null() || seq <= end))
+      if (!ready.is_null() && seq > ready && (end.is_null() || seq < end) &&
+          (!active || !s.started))
         s.interrupted = true;
       continue;
     }

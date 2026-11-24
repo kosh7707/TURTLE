@@ -26,3 +26,14 @@ and rejects a modified PCAP, a rehashed inconsistent qdisc witness, and denied
 namespace setup. The two `lo` collectors in a loopback capture do **not**
 represent separate network vantages; `tcp_ack` is a packet-copy observation,
 not a measurement of a TLS return.
+
+For pre-CF capability, the trusted paused client's direct socket BIO is the
+receive boundary. Replay checks consumed bytes plus the kernel receive queue
+before release against bytes used through authenticated greeting validation
+while the server remains stopped. A stock sender additionally supplies its
+direct-BIO extent; an instrumented external sender can supply a continuous
+socket-write extent. With **no sender wire observations**, the receiver-only
+path can establish the bound. A custom sender with partial, header-only or
+buffered-library-only instrumentation is currently left unconfirmed rather
+than treating those observations as proof of a TCP flush or silently ignoring
+them. This is a conservative limitation of this probe, not a TLS requirement.

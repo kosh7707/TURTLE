@@ -4,9 +4,10 @@ file(MAKE_DIRECTORY "${WORK}/app")
 execute_process(COMMAND "${CMAKE_COMMAND}" --install "${BUILD}" --prefix "${WORK}/sdk" COMMAND_ERROR_IS_FATAL ANY)
 file(WRITE "${WORK}/app/main.c" [=[
 #include <turtle/observe.h>
+#include <turtle/start.h>
 int main(void) {
     turtle_observe_event("ready");
-    (void)turtle_observe_now(); return 0;
+    (void)turtle_observe_now(); return turtle_wait_start() != 0;
 }
 ]=])
 file(WRITE "${WORK}/app/CMakeLists.txt" [=[
