@@ -36,6 +36,58 @@ void verify_evidence(const fs::path &dir, const Json &hashes) {
   }
   require(seen == hashes.size(), "raw_artifact_missing");
 }
+Json verified_participant_images(const fs::path &dir, const Json &scheduled,
+                                 bool probe, const Json *baselines) {
+  const auto raw = artifact::load(dir / "images.json");
+  require(raw.at("run_id") == scheduled.at("run_id") &&
+              raw.at("schema") == "proc-exec.v1",
+          "image_run_mismatch");
+  Json cohort = Json::object();
+  for (auto role : {"client", "server"}) {
+    const std::string key =
+        probe && std::string_view(role) == "client" ? "probe_client" : role;
+    const auto pid =
+        artifact::load(dir / role / "endpoint.json").at("pid").get<pid_t>();
+    const auto &snapshots = raw.at("roles").at(role);
+    const auto ready = process::image_key(snapshots.at("ready"), pid);
+    const auto finished = process::image_key(snapshots.at("finished"), pid);
+    require(ready.at("exe") == finished.at("exe"),
+            "participant_changed_during_trial");
+    for (const auto &[path, hash] : ready.at("mapped").items())
+      require(!finished.at("mapped").contains(path) ||
+                  finished.at("mapped").at(path) == hash,
+              "mapped_code_replaced_during_trial");
+    cohort[key] = {{"ready", ready}, {"finished", finished}};
+    require(baselines &&
+                (!baselines->contains(key) || baselines->at(key) == cohort.at(key)),
+            "participant_image_changed_between_trials");
+  }
+  return cohort;
+}
+void verify_presend_probe(const fs::path &dir, const Task &task,
+                          const Json &roles, bool image_check,
+                          bool require_ciphertext_bounds) {
+  const auto &client = roles.at("client").at("capability");
+  const auto &server = roles.at("server").at("capability");
+  const auto client_log = artifact::read_text(dir / "client" / "control.log");
+  const auto server_log = artifact::read_text(dir / "server" / "control.log");
+  const auto submitted = integer(server.at("server_submitted"));
+  const auto presend = "PRESEND " + std::to_string(submitted) + "\n";
+  const std::string terminal = image_check ? "IMAGES_DONE\n" : "";
+  require(client_log == "READY\nPAUSED\nGREETING\n" + terminal &&
+              server_log.starts_with("LISTEN ") &&
+              server_log.ends_with("\nREADY\n" + presend + terminal),
+          "presend_greeting_not_validated_while_server_paused");
+  if (require_ciphertext_bounds)
+    require(integer(client.at("client_hello_bytes")) > 0 &&
+                submitted > integer(server.at("presend_begin")),
+            "presend_probe_ciphertext_boundaries_missing");
+  require(task.greeting && client.at("client_paused") == true &&
+              server.at("server_presend") == true && submitted > 0 &&
+              client.at("server_submitted") == server.at("server_submitted") &&
+              integer(client.at("queued_before_resume")) >= submitted,
+          "presend_probe_not_demonstrated");
+}
 Json elapsed(const Json &a, const Json &b, const std::string &clock) {
   if (!a.contains(clock) || !b.contains(clock) || a.at(clock).is_null() ||
       b.at(clock).is_null())
@@ -239,6 +291,22 @@ Json measurement_rows(const Json &role_report, const std::string &role,
   }
   return rows;
 }
+
+// Report any witnessed window; only a partially scheduled one needs a decision.
+bool record_pmu_coverage(const Json &counters, Json &out) {
+  if (counters.value("availability", "") != "available")
+    return false;
+  const auto scope = counters.at("operations").value("scenario", Json::object());
+  if (!scope.contains("cycles_raw") || !available(scope.at("cycles_raw")) ||
+      !available(scope.at("instructions_raw")))
+    return false;
+  const auto enabled = integer(scope.at("time_enabled_ns").at("value"));
+  const auto running = integer(scope.at("time_running_ns").at("value"));
+  out["pmu_coverage"] = {{"time_enabled_ns", enabled},
+                         {"time_running_ns", running},
+                         {"running_fraction", static_cast<double>(running) / enabled}};
+  return running > 0 && running < enabled;
+}
 } // namespace
 Json assess(const fs::path &dir, const Json &config, const Json &scheduled,
             Json *image_baselines) {
@@ -352,29 +420,7 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled,
   }
   if (image_check) {
     try {
-      const auto raw = artifact::load(dir / "images.json");
-      require(raw.at("run_id") == scheduled.at("run_id") &&
-                  raw.at("schema") == "proc-exec.v1",
-              "image_run_mismatch");
-      for (auto role : {"client", "server"}) {
-        const std::string key =
-            probe && std::string_view(role) == "client" ? "probe_client" : role;
-        const auto pid =
-            artifact::load(dir / role / "endpoint.json").at("pid").get<pid_t>();
-        const auto &w = raw.at("roles").at(role);
-        const auto first = process::image_key(w.at("ready"), pid);
-        const auto last = process::image_key(w.at("finished"), pid);
-        require(first.at("exe") == last.at("exe"),
-                "participant_changed_during_trial");
-        for (const auto &[path, hash] : first.at("mapped").items())
-          require(!last.at("mapped").contains(path) ||
-                      last.at("mapped").at(path) == hash,
-                  "mapped_code_replaced_during_trial");
-        cohort[key] = {{"ready", first}, {"finished", last}};
-        require(image_baselines && (!image_baselines->contains(key) ||
-                                    image_baselines->at(key) == cohort.at(key)),
-                "participant_image_changed_between_trials");
-      }
+      cohort = verified_participant_images(dir, scheduled, probe, image_baselines);
     } catch (const std::exception &e) {
       membership.push_back(e.what());
     }
@@ -388,30 +434,7 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled,
   }
   if (probe) {
     try {
-      const auto &c = roles.at("client").at("capability"),
-                 &s = roles.at("server").at("capability");
-      const auto client_log =
-          artifact::read_text(dir / "client" / "control.log");
-      const auto server_log =
-          artifact::read_text(dir / "server" / "control.log");
-      const auto presend =
-          "PRESEND " + std::to_string(integer(s.at("server_submitted"))) + "\n";
-      const std::string terminal = image_check ? "IMAGES_DONE\n" : "";
-      require(client_log == "READY\nPAUSED\nGREETING\n" + terminal &&
-                  server_log.starts_with("LISTEN ") &&
-                  server_log.ends_with("\nREADY\n" + presend + terminal),
-              "presend_greeting_not_validated_while_server_paused");
-      if (combined)
-        require(integer(c.at("client_hello_bytes")) > 0 &&
-                    integer(s.at("server_submitted")) > integer(s.at("presend_begin")),
-                "presend_probe_ciphertext_boundaries_missing");
-      require(t.greeting && c.at("client_paused") == true &&
-                  s.at("server_presend") == true &&
-                  integer(s.at("server_submitted")) > 0 &&
-                  c.at("server_submitted") == s.at("server_submitted") &&
-                  integer(c.at("queued_before_resume")) >=
-                      integer(s.at("server_submitted")),
-              "presend_probe_not_demonstrated");
+      verify_presend_probe(dir, t, roles, image_check, combined);
     } catch (const std::exception &e) {
       task_errors.push_back(e.what());
     }
@@ -504,20 +527,12 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled,
   for (const auto &[key, why] : unavailable.items())
     if (observations.contains(key) && !available(observations.at(key)))
       observations[key] = measurement(nullptr, "unsupported", why);
-  const bool coverage_policy = combined && config.value("raw_coverage_contract", "") == "partial-decision.v1";
+  const bool coverage_policy =
+      combined && config.value("raw_coverage_contract", "") == "partial-decision.v1";
+  const bool timing_attempt = !probe && !profile;
   bool partial = false;
-  if (coverage_policy && !probe && !profile && !unavailable.contains("perf_counters") &&
-      counters_report.value("availability", "") == "available") {
-    const auto scope = counters_report.at("operations").value("scenario", Json::object());
-    if (scope.contains("cycles_raw") && available(scope.at("cycles_raw")) &&
-        available(scope.at("instructions_raw"))) {
-      const auto enabled = integer(scope.at("time_enabled_ns").at("value"));
-      const auto running = integer(scope.at("time_running_ns").at("value"));
-      partial = running > 0 && running < enabled;
-      out["pmu_coverage"] = {{"time_enabled_ns", enabled}, {"time_running_ns", running},
-                             {"running_fraction", static_cast<double>(running) / enabled}};
-    }
-  }
+  if (coverage_policy && timing_attempt && !unavailable.contains("perf_counters"))
+    partial = record_pmu_coverage(counters_report, out);
   for (const auto &k : required) {
     if (probe || (k == "cpu_samples" && !profile) ||
         (k == "perf_counters" && profile))
@@ -528,18 +543,23 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled,
       metric_errors.push_back(k.get<std::string>() + ":" +
                               m.at("reason").dump());
   }
-  if (combined && !partial && !probe && !profile && !has(required, "perf_counters") &&
+  if (combined && !partial && timing_attempt && !has(required, "perf_counters") &&
       !available(observations.at("perf_counters")))
     metric_errors.push_back("basic_run_requires_actual_counters");
   if (!probe && !available(observations.at("scenario_wall_ns")) &&
       !has(required, "scenario_wall_ns"))
     metric_errors.push_back("scenario_wall_ns:required_boundary_unavailable");
-  bool success = task_errors.empty(),
-       verified = success && membership.empty() && metric_errors.empty(),
-       decision = partial && verified, eligible = verified && !partial;
+  const bool success = task_errors.empty();
+  const bool verified = success && membership.empty() && metric_errors.empty();
+  const bool decision = verified && partial;
+  const bool eligible = verified && !partial;
   if (coverage_policy) {
-    out["qualification"] = decision ? "decision_required" : eligible ? "eligible" : "invalid";
-    if (decision) out["qualification_reason"] = "pmu_partial_coverage";
+    if (decision) {
+      out["qualification"] = "decision_required";
+      out["qualification_reason"] = "pmu_partial_coverage";
+    } else {
+      out["qualification"] = eligible ? "eligible" : "invalid";
+    }
   }
   bool ordinary =
       purpose == "measurement" && (combined || !counters_report.value("requested", false));
@@ -605,9 +625,11 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
             integer(a.value("repeat", Json(0)))};
   };
   std::set<Slot> planned, seen;
-  for (const auto &a : manifest.at("order")) {
-    auto [id, purpose, repeat] = slot(a);
-    auto &cfg = configs.at(id);
+  const auto &order = manifest.at("order");
+  for (const auto &a : order) {
+    const auto planned_slot = slot(a);
+    const auto &[id, purpose, repeat] = planned_slot;
+    const auto &cfg = configs.at(id);
     bool probe = cfg.at("scenario") == "S2" || cfg.at("scenario") == "S4";
     require((purpose == "measurement" &&
              repeat < integer(spec.at("repetitions"))) ||
@@ -618,8 +640,7 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
                   has(cfg.value("optional_metrics", Json::array()),
                       "cpu_samples"))),
             "unexpected_schedule_slot");
-    require(configs.contains(a.at("configuration")) &&
-                planned.insert(slot(a)).second,
+    require(planned.insert(planned_slot).second,
             "unknown_configuration_or_duplicate_schedule_slot");
   }
   std::map<std::string, std::size_t> samples, warmed;
@@ -647,15 +668,15 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
   for (const auto &a : manifest.at("attempts")) {
     auto id = a.at("configuration").get<std::string>();
     auto d = a.at("directory").get<std::string>();
-    require(planned.contains(slot(a)) && seen.insert(slot(a)).second &&
+    const auto attempt_slot = slot(a);
+    require(planned.contains(attempt_slot) && seen.insert(attempt_slot).second &&
                 ids.insert(a.at("run_id")).second && dirs.insert(d).second,
             "duplicate_or_unscheduled_attempt");
     auto planned_pos = std::find_if(
-        manifest.at("order").begin() + position, manifest.at("order").end(),
-        [&](const auto &s) { return slot(s) == slot(a); });
-    require(planned_pos != manifest.at("order").end(),
-            "attempt_schedule_out_of_order");
-    position = planned_pos - manifest.at("order").begin() + 1;
+        order.begin() + position, order.end(),
+        [&](const auto &s) { return slot(s) == attempt_slot; });
+    require(planned_pos != order.end(), "attempt_schedule_out_of_order");
+    position = planned_pos - order.begin() + 1;
     auto &cfg = configs.at(id);
     const auto dir = attempt_directory(root, d);
     auto trial_baselines = image_baselines[id];

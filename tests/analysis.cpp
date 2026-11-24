@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <string_view>
 using turtle::artifact::Bytes;
 using turtle::artifact::integer;
 using turtle::artifact::Json;
@@ -458,6 +459,30 @@ const Json &metric_row(const Json &report, const char *name) {
   throw std::runtime_error(std::string("missing metric row: ") + name);
 }
 
+void reject_bad_schedules(const std::filesystem::path &root, const Json &valid) {
+  auto expect_rejection = [&](const Json &manifest, std::string_view reason) {
+    try {
+      turtle::analysis::regenerate_lifecycle(root, manifest);
+    } catch (const std::runtime_error &e) {
+      if (reason == e.what())
+        return;
+      throw;
+    }
+    throw std::runtime_error("accepted malformed schedule: " + std::string(reason));
+  };
+  auto duplicate = valid;
+  duplicate.at("order").push_back(valid.at("order").front());
+  expect_rejection(duplicate, "unknown_configuration_or_duplicate_schedule_slot");
+
+  auto reordered = valid;
+  std::swap(reordered.at("attempts").at(1), reordered.at("attempts").at(2));
+  expect_rejection(reordered, "attempt_schedule_out_of_order");
+
+  auto unplanned = valid;
+  unplanned.at("attempts").back()["repeat"] = 2;
+  expect_rejection(unplanned, "duplicate_or_unscheduled_attempt");
+}
+
 void lifecycle(const std::filesystem::path &root) {
   using turtle::artifact::load;
   using turtle::artifact::save;
@@ -559,6 +584,7 @@ void lifecycle(const std::filesystem::path &root) {
       lines += e.dump() + "\n";
     turtle::artifact::write_text(dir / "client/events.jsonl", lines);
   }
+  reject_bad_schedules(root, manifest);
   save(root / "manifest.json", manifest);
   require(turtle::analysis::regenerate(root),
           "optional_capture_absent_is_not_gate_failure");
