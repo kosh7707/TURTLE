@@ -1,8 +1,6 @@
 // Stock peer only. This program is never linked to the measured application.
-#include <algorithm>
 #include <arpa/inet.h>
-#include <array>
-#include <cerrno>
+#include <climits>
 #include <charconv>
 #include <csignal>
 #include <cstdio>
@@ -20,7 +18,7 @@
 #include <string>
 #include <string_view>
 #include <turtle/observe.h>
-#include <turtle/start.h>
+#include <turtle/endpoint.h>
 #include <unistd.h>
 
 namespace {
@@ -70,15 +68,14 @@ std::string selected_group() {
           "reference_group_unavailable");
   return group.name;
 }
-void event(const char *name) { turtle_observe_event(name); }
 struct Session {
   bool client, mutual;
   const char *peer;
   std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> ctx{
       SSL_CTX_new(TLS_method()), SSL_CTX_free};
   std::unique_ptr<SSL, decltype(&SSL_free)> tls{nullptr, SSL_free};
-  int fd = -1, gate = -1;
-  bool saw_hello = false, hrr = false, paused = false;
+  int fd = -1;
+  bool saw_hello = false, hrr = false;
   unsigned group = 0;
   bool own_finished = false, clean_tail = true, observing = false;
   uint64_t header_offset[2]{};
@@ -234,30 +231,60 @@ struct Session {
             s.group = u16(i);
           i += z;
         }
-      if (s.client && s.gate >= 0 && !s.paused) {
-        s.paused = true;
-        event("probe_paused"); // callback blocks before processing SH, hence
-                               // before CF
-        char release;
-        ssize_t rc;
-        do
-          rc = read(s.gate, &release, 1);
-        while (rc < 0 && errno == EINTR);
-        if (rc != 1 || release != 'G')
-          _exit(2);
-        event("probe_resumed");
-      }
     }
   }
-  void handshake() {
-    require(SSL_do_handshake(tls.get()) == 1, "handshake_failed");
-    event("hs_complete");
+  bool peer_verified() const {
+    return SSL_get_verify_result(tls.get()) == X509_V_OK &&
+           SSL_get0_peer_certificate(tls.get()) != nullptr;
+  }
+  static turtle_result failed(SSL *ssl, int rc, const char *where) {
+    const int error = SSL_get_error(ssl, rc);
+    fprintf(stderr, "reference: %s (SSL error %d)\n", where, error);
+    return error == SSL_ERROR_ZERO_RETURN ? TURTLE_CLOSED : TURTLE_ERROR;
+  }
+  static turtle_result handshake(void *conn, turtle_hs_point goal) {
+    auto &s = *static_cast<Session *>(conn);
+    SSL *ssl = s.tls.get();
+    ERR_clear_error();
+    if (goal == TURTLE_SERVER_CAN_SEND) {
+      if (s.client)
+        return TURTLE_UNSUPPORTED;
+      char scratch;
+      size_t n = 0;
+      int rc = SSL_read_early_data(ssl, &scratch, 1, &n);
+      if (rc == SSL_READ_EARLY_DATA_ERROR)
+        return failed(ssl, 0, "handshake_failed");
+      // The scenario does not admit client 0-RTT data.
+      if (rc != SSL_READ_EARLY_DATA_FINISH || n)
+        return TURTLE_ERROR;
+      return SSL_is_init_finished(ssl) ? TURTLE_UNSUPPORTED : TURTLE_OK;
+    }
+    int rc = SSL_do_handshake(ssl);
+    if (rc != 1)
+      return failed(ssl, rc, "handshake_failed");
+    if (!SSL_is_init_finished(ssl) ||
+        ((s.client || s.mutual) && !s.peer_verified()))
+      return TURTLE_ERROR;
+    turtle_observe_event("auth_accepted");
+    return TURTLE_OK;
+  }
+  static turtle_result write_plain(void *conn, turtle_hs_point at,
+                                   const void *buf, size_t len, size_t *n) {
+    auto *ssl = static_cast<Session *>(conn)->tls.get();
+    ERR_clear_error();
+    int rc = at == TURTLE_SERVER_CAN_SEND ? SSL_write_early_data(ssl, buf, len, n)
+                                          : SSL_write_ex(ssl, buf, len, n);
+    return rc == 1 ? TURTLE_OK : failed(ssl, rc, "write_failed");
+  }
+  static turtle_result read_plain(void *conn, void *buf, size_t cap, size_t *n) {
+    auto *ssl = static_cast<Session *>(conn)->tls.get();
+    ERR_clear_error();
+    int rc = SSL_read_ex(ssl, buf, cap, n);
+    return rc == 1 ? TURTLE_OK : failed(ssl, rc, "read_failed");
+  }
+  void report_negotiated() const {
     bool verify = client || mutual;
-    bool verified = verify && SSL_get_verify_result(tls.get()) == X509_V_OK &&
-                    SSL_get0_peer_certificate(tls.get());
-    require(!verify || verified, "peer_authentication_failed");
-    event("auth_accepted"); // local policy accepted; peer_verified remains
-                            // false on a server not authenticating clients
+    bool verified = verify && peer_verified();
     turtle_observe_fact("verify_peer", verify);
     turtle_observe_fact("peer_verified", verified);
     turtle_observe_fact("hrr", saw_hello ? int(hrr) : -1);
@@ -270,47 +297,7 @@ struct Session {
         SSL_CIPHER_get_protocol_id(SSL_get_current_cipher(tls.get())), group,
         verified ? peer : nullptr);
   }
-  void send_message(const std::string &expected, bool early = false) {
-    std::string data(expected.size(), '\0');
-    require(fread(data.data(), 1, data.size(), stdin) == data.size() &&
-                data == expected,
-            "stdin_payload_mismatch");
-    size_t i = 0;
-    while (i < data.size()) {
-      size_t n = 0;
-      turtle_observe_plain("write_attempt", data.data() + i, data.size() - i);
-      int rc =
-          early ? SSL_write_early_data(tls.get(), data.data() + i,
-                                       data.size() - i, &n)
-                : SSL_write_ex(tls.get(), data.data() + i, data.size() - i, &n);
-      require(rc == 1 && n > 0, "write_failed");
-      turtle_observe_plain("write_accepted", data.data() + i, n);
-      i += n;
-    }
-  }
-  void receive_message(const std::string &expected) {
-    std::string data(expected.size(), '\0');
-    size_t i = 0;
-    while (i < data.size()) {
-      size_t n = 0;
-      require(SSL_read_ex(tls.get(), data.data() + i, data.size() - i, &n) ==
-                      1 &&
-                  n > 0,
-              "read_failed");
-      turtle_observe_plain("read_return", data.data() + i, n);
-      i += n;
-    }
-    require(data == expected, "plaintext_mismatch");
-    turtle_observe_plain("validated", data.data(), i);
-    require(fwrite(data.data(), 1, i, stdout) == i && fflush(stdout) == 0,
-            "stdout_failed");
-  }
-  void run(int scenario) {
-    bool greeting = scenario == 2 || scenario == 4,
-         request = scenario == 1 || scenario >= 3, response = scenario >= 3;
-    std::string cad = env("TURTLE_REQUEST", "ping"),
-                sad1 = env("TURTLE_GREETING", "helo"),
-                sad2 = env("TURTLE_RESPONSE", "pong");
+  void run() {
     auto *bio = SSL_get_wbio(tls.get());
     require(bio && bio == SSL_get_rbio(tls.get()), "unexpected_peer_bio");
     BIO_set_callback_arg(bio, reinterpret_cast<char *>(this));
@@ -318,39 +305,15 @@ struct Session {
     observing = true;
     turtle_observe_coverage("library_io", 1);
     turtle_observe_coverage("header", 1);
-    event("ready");
-    require(turtle_wait_start() >= 0, "start_barrier_failed");
-    event("hs_begin");
-    if (!client && greeting) {
-      char scratch;
-      size_t bytes = 0;
-      require(SSL_read_early_data(tls.get(), &scratch, 1, &bytes) ==
-                      SSL_READ_EARLY_DATA_FINISH &&
-                  bytes == 0 && !SSL_is_init_finished(tls.get()),
-              "server_first_unavailable");
-      event("hs_progress");
-      send_message(sad1, true);
-      turtle_observe_fact("server_first", 1);
-    }
-    handshake();
-    if (client) {
-      if (request)
-        send_message(cad);
-      if (greeting)
-        receive_message(sad1);
-      if (response)
-        receive_message(sad2);
-    } else {
-      if (request)
-        receive_message(cad);
-      if (response)
-        send_message(sad2);
-    }
-    turtle_observe_fact("application_only_tail", own_finished && clean_tail);
-    event("end");
+    const turtle_endpoint endpoint{this, handshake, write_plain, read_plain};
+    auto result = turtle_run_endpoint(&endpoint);
     observing = false;
     turtle_observe_coverage("library_io", 0);
     turtle_observe_coverage("header", 0);
+    if (SSL_is_init_finished(tls.get()))
+      report_negotiated();
+    turtle_observe_fact("application_only_tail", own_finished && clean_tail);
+    require(result == TURTLE_OK, "endpoint_failed");
     SSL_shutdown(tls.get()); // one close_notify; do not wait for peer shutdown
   }
 };
@@ -359,8 +322,8 @@ int main(int argc, char **argv) try {
   signal(SIGPIPE, SIG_IGN);
   bool check = argc == 6 && argv[1] == "--role"sv && argv[3] == "--auth"sv &&
                argv[5] == "--check"sv;
-  require(check || (argc == 7 && argv[1] == "--native-stream"sv),
-          "expected --native-stream ROLE AUTH HOST PORT SCENARIO");
+  require(check || (argc == 6 && argv[1] == "--native-stream"sv),
+          "expected --native-stream ROLE AUTH HOST PORT");
   std::string_view role = argv[2], auth = argv[check ? 4 : 3];
   require((role == "client" || role == "server") &&
               (auth == "mtls" || auth == "server"),
@@ -370,16 +333,9 @@ int main(int argc, char **argv) try {
     puts("{\"ready\":true}");
     return 0;
   }
-  std::string_view scenario = argv[6];
-  require(scenario.size() == 2 && scenario[0] == 'S' && scenario[1] >= '0' &&
-              scenario[1] <= '4',
-          "invalid_scenario");
-  if (auto g = env("TURTLE_PROBE_GATE_FD")) {
-    require(peer.client, "client_gate_only");
-    peer.gate = number(g, INT_MAX);
-  }
+  require(env("TURTLE_ROLE", "") == role, "launcher_role_mismatch");
   peer.connect_to(argv[4], number(argv[5], 65535));
-  peer.run(scenario[1] - '0');
+  peer.run();
   return 0;
 } catch (const std::exception &e) {
   fprintf(stderr, "reference: %s\n", e.what());

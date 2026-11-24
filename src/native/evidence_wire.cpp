@@ -1,4 +1,5 @@
 #include "native/evidence_wire.hpp"
+#include "native/evidence.hpp"
 #include <algorithm>
 #include <array>
 #include <map>
@@ -313,12 +314,41 @@ void evaluate_wire(const J &c, J &r) {
   auto covered = [&](const Source &s) {
     return !ready.is_null() && !end.is_null() && s.started && !s.interrupted;
   };
+  auto transferred_both = [&](const Source &s) {
+    return covered(s) && s.dir[0].transferred && s.dir[1].transferred;
+  };
+  if (uses_endpoint_contract(c)) {
+    // One continuously observed transport source must actually transfer data
+    // in both directions. No peek, failed call or opposite endpoint can fill
+    // a missing direction. The buffer contents themselves are optional.
+    J source = nullptr;
+    bool seen = false, interrupted = false;
+    for (auto name : {"library_io", "socket"}) {
+      auto it = src.find(name);
+      if (it == src.end())
+        continue;
+      seen = true;
+      if (transferred_both(it->second)) {
+        source = name;
+        break;
+      }
+      interrupted |= it->second.interrupted;
+    }
+    const bool ok = !source.is_null();
+    wire["transport_hook"] = {
+        {"verified", ok ? J(true) : interrupted ? J(false) : J(nullptr)},
+        {"source", source},
+        {"reason", ok ? J(nullptr) : !seen ? J("hook_unobserved")
+                     : interrupted ? J("coverage_interrupted")
+                     : ready.is_null() || end.is_null() ? J("missing_lifecycle_window")
+                                                        : J("no_bidirectional_transfer")}};
+  }
   metrics["library_io"] = nullptr;
   if (src.count("library_io")) {
     const auto &io = src.at("library_io");
     if (io.interrupted)
       metrics["library_io"] = false;
-    else if (covered(io) && io.dir[0].transferred && io.dir[1].transferred)
+    else if (transferred_both(io))
       metrics["library_io"] = true;
   }
   if (src.count("socket")) {

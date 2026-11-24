@@ -1,4 +1,5 @@
 #include "measure/perf.hpp"
+#include "native/endpoint_observe.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
@@ -75,14 +76,14 @@ struct PreserveErrno {
   int saved = errno;
   ~PreserveErrno() { errno = saved; }
 };
-template <class F> void emit(turtle_observe_stamp t, F fields) noexcept {
+template <class F> uint64_t emit(turtle_observe_stamp t, F fields) noexcept {
   PreserveErrno keep;
   if (fd < 0)
-    return;
+    return 0;
   try {
     std::lock_guard lock(serial);
     if (lost)
-      return;
+      return 0;
     Json j = {{"v", 1},
               {"seq", ++sequence},
               {"role", env("TURTLE_ROLE")},
@@ -117,8 +118,10 @@ template <class F> void emit(turtle_observe_stamp t, F fields) noexcept {
     auto line = j.dump() + "\n";
     if (line.size() > 3 * 1024 * 1024 || !transmit(line))
       lost = true;
+    return lost ? 0 : sequence;
   } catch (
       ...) { /* A missing sequence invalidates the evidence, not the app. */
+    return 0;
   }
 }
 Json str(const char *p) { return p ? Json(p) : Json(nullptr); }
@@ -236,3 +239,26 @@ extern "C" void turtle_observe_plain(const char *n, const void *data,
                                      size_t len) {
   turtle_observe_plain_at(turtle_observe_now(), n, data, len);
 }
+
+namespace turtle::native::detail {
+uint64_t full_offer(const void *data, size_t length) {
+  return emit(turtle_observe_now(), [&] {
+    return Json{{"kind", "plain"}, {"name", "write_attempt"},
+                {"length", length}, {"hex", hex(data, length)}};
+  });
+}
+void suffix_offer(uint64_t seq, size_t offset, size_t length) {
+  emit(turtle_observe_now(), [&] {
+    return Json{{"kind", "plain"}, {"name", "write_attempt"},
+                {"length", length}, {"offer_ref", seq}, {"suffix_offset", offset}};
+  });
+}
+void read_first_event(turtle_observe_stamp stamp, bool confirmation) {
+  emit(stamp, [&] {
+    return Json{{"kind", "event"}, {"name", confirmation ? "hs_complete" : "hs_begin"},
+                {"message", nullptr}, {"offset", 0}, {"length", 0},
+                {confirmation ? "confirmed_by" : "first_operation",
+                 confirmation ? "handshake_until_local_complete" : "read_plain"}};
+  });
+}
+} // namespace turtle::native::detail

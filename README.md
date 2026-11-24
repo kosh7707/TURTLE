@@ -1,10 +1,43 @@
 # TURTLE — 내 TLS 클라이언트 또는 서버 하나를 측정하기
 
-TURTLE은 **이미 실행할 수 있는 TLS 응용**을 새 루프백 연결에서 시험한다. 사용자는 역할 하나와 실행 명령을 준다. 클라이언트면 서버를, 서버면 클라이언트를 맞은편에 준비한다. 기본 상대는 별도로 빌드하는 OpenSSL 피어다. 측정 대상의 소켓, TLS 상태, 오류 처리, 대기와 재시도는 응용이 계속 소유한다. TURTLE이 라이브러리 파일에서 시험용 응용을 만들어 주지는 않는다.
+TURTLE은 Linux에서 **내 TLS 클라이언트 또는 서버 하나**의 TLS 1.3 핸드셰이크와 응용 데이터 지연을 잰다. 앱은 평소처럼 TCP 연결과 TLS 정책을 준비한다. 첫 TLS 입출력 전에 [공개 C 인터페이스](include/turtle/endpoint.h)로 그 연결을 빌려주면, TURTLE이 반대편 역할을 준비하고 S0–S4의 호출 순서·평문 검증·계측을 맡는다. 기본 상대는 별도로 빌드하는 OpenSSL 피어다. DUT의 소스나 TLS 라이브러리를 TURTLE에 넣지 않는다.
 
-## 첫 실행: 수정하지 않은 GnuTLS 클라이언트
+## 내 앱에 연결하는 지점
 
-Linux, CMake 3.20+, C/C++20 도구 체인, nlohmann/json 3.12가 필요하다. 기본 피어에는 OpenSSL 개발 파일이, 로컬 시험 인증서 발급에는 `openssl` 명령이 필요하다. 이 예제는 별도로 설치한 `gnutls-cli`를 사용한다. 코어에 GnuTLS를 링크하지 않는다. 저장소 의존성 준비는 [고정 버전·해시 목록](tools/dependencies.json)을 참고한다.
+| 개발자가 제공 | TURTLE이 담당 |
+|---|---|
+| 준비된 연결과 `handshake_until` | 시나리오가 요구할 때 로컬 핸드셰이크를 완료한다. S2/S4 **서버에서만** SF 후 CF를 기다리지 않고 쓸 수 있는 시점도 요청한다. |
+| 일반 `read_plain`·`write_plain`의 실제 반환 바이트 수 | 부분 읽기·쓰기를 누적하고 첫 반환, 마지막 반환, 전체 내용 확인을 구별한다. 필요 없는 역할별 연산은 연결하지 않아도 된다. |
+| TLS와 TCP 사이 실제 송수신 훅 | 방향과 실제 바이트 범위로 전송 횟수·레코드 경계를 계측한다. 완전한 측정 표본에는 측정 대상의 연속된 송신·수신 훅이 필요하다. 훅이 없어도 시나리오 성공과 첫 평문 시각은 진단 자료로 남긴다. |
+
+**S2 클라이언트에는 별도의 early-read 함수가 없다.** SDK는 일반 읽기부터 걸고 첫 양수 평문 반환 직후를 기록한다. 이어서 로컬 핸드셰이크 완료를 확인한다. 읽기 내부에서 TLS가 핸드셰이크를 진행해도 된다. 앱이 먼저 핸드셰이크 완료까지 기다린 다음 읽은 경우, 첫 평문 시각은 남지만 새 계약의 S2 표본은 아니다. S4에서는 안내를 읽기 전에 클라이언트 요청 전체를 TLS가 수락해야 한다. 앱은 S2/S4로 분기하거나 서버의 CF 전 도달을 증명할 필요가 없다. [함수 선언·역할별 순서·전송 훅 예시](docs/endpoint.md)
+
+## 첫 실행: 독립 빌드한 C 클라이언트로 S2 측정
+
+Linux, CMake 3.20+, C/C++20 도구 체인, nlohmann/json 3.12를 사용한다. 아래 예제의 TLS 앱과 기본 피어에는 OpenSSL 3.5 이상 개발 파일이, 시험 인증서 발급에는 `openssl` 명령이 필요하다. 저장소 루트에서 실행한다.
+
+~~~sh
+work=$(mktemp -d)
+cmake -S . -B "$work/turtle" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cmake --build "$work/turtle" --parallel 2
+cmake --install "$work/turtle" --prefix "$work/sdk"
+
+# 독립 앱의 빌드: TURTLE 소스가 아니라 설치한 turtle::endpoint에 링크한다.
+cmake -S tests/endpoint-integration -B "$work/app" -DCMAKE_PREFIX_PATH="$work/sdk"
+cmake --build "$work/app"
+
+cat > "$work/s2.json" <<'JSON'
+{"v":1,"scenario":"S2","auth":"server","warmups":0,"repetitions":1,
+ "target":{"role":"client","argv":["./app/consumer","client","{host}","{port}","{ca}","{cert}","{key}","{peer_name}","--wire"]}}
+JSON
+TURTLE_BUILD_DIR="$work/turtle" ./bench.sh "$work/s2.json" "$work/results"
+~~~
+
+이 예시의 `--wire`는 시험 앱의 기존 BIO 훅을 켜는 인자이지 TURTLE 공통 옵션이 아니다. 이 [C 앱](tests/endpoint-integration/consumer.c)은 연결 예시를 재현하는 **시험용 소비자**이지 배포되는 OpenSSL DUT 드라이버가 아니다. 내 앱에서는 기존 CMake 대상에 `turtle::endpoint`를 연결하고 프로필의 `target.argv`를 내 실행 파일과 인자로 바꾸면 된다. 결과의 `attempt-1/analysis.json`에서 `participants.client.timeline.SAD1.first_read_return`은 첫 평문 반환, `validated`는 안내 전체 확인이다. 전자는 TCP 도착 시각이 아니다.
+
+## 앱을 수정하지 않는 방법: GnuTLS CLI
+
+기존 실행 파일이 stdin/stdout으로 평문을 교환한다면 SDK를 링크하지 않아도 된다. 이 방식은 앱이 이미 하는 일을 관찰하며, 없는 TLS 호출이나 내부 시각을 만들어 주지는 않는다. 아래 예제는 별도로 설치한 `gnutls-cli`를 사용한다. [저장소 의존성 목록](tools/dependencies.json)
 
 ~~~sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -34,8 +67,8 @@ work=$(mktemp -d)
 
 - **역할과 평문:** `target.role`은 `client` 또는 `server`다. `argv`로 직접 실행하며 stdin에는 보낼 평문, stdout에는 수신·전달된 평문만 둔다. 줄바꿈, 프레임, 배너를 추가하지 않는다. 앱은 지정한 주소와 포트로 연결하거나 IPv4 루프백에서 리슨해야 한다.
 - **설정:** `{host}`, `{port}`, `{ca}`, `{cert}`, `{key}`, `{peer_name}`은 문자열 치환이다. 앱의 실제 설정 문법·검증 방식은 그대로다. 서버 인증만 시험하면 클라이언트 인증서·키는 비어 있다. 사용하지 않는 옵션은 argv에 넣지 않는다.
-- **상대:** 프로필에 `"peer": {"argv": [...]}`를 넣으면 반대 역할에서 그 명령을 실행한다. 측정 역할은 하나다. 생략할 때만 기본 피어를 쓴다. 기본 피어를 DUT로 지정할 수 없다. `-DTURTLE_BUILD_REFERENCE=OFF`로 코어와 관찰 SDK만 빌드·설치할 수 있고 이때 실행에는 별도 피어가 필요하다.
-- **범위:** `scenario`는 S0(핸드셰이크), S1(클라이언트 단방향), S2(서버 선송신), S3(요청·응답), S4(선송신과 요청·응답)다. `auth`는 `server` 또는 `mtls`다. `application.request/greeting/response`로 해당 시나리오의 바이트를 지정한다. S2/S4는 별도 능력 시험과 **일반 시행의 실제 쓰기 순서**가 모두 필요하다. 평문을 받았다는 사실만으로 선송신으로 판정하지 않는다. [역할별 시나리오와 측정점](DESIGN.md#scenarios)
+- **상대:** 프로필에 `"peer": {"argv": [...]}`를 넣으면 반대 역할에서 그 명령을 실행한다. 측정 역할은 하나다. 생략할 때만 기본 피어를 쓴다. 기본 피어를 DUT로 지정할 수 없다. `-DTURTLE_BUILD_REFERENCE=OFF`로 기본 피어 없이 코어와 엔드포인트·관찰 SDK를 빌드·설치할 수 있고 이때 실행에는 별도 피어가 필요하다.
+- **범위:** `scenario`는 S0(핸드셰이크), S1(클라이언트 단방향), S2(서버 선송신), S3(요청·응답), S4(선송신과 요청·응답)다. `auth`는 `server` 또는 `mtls`다. `application.request/greeting/response`로 해당 시나리오의 바이트를 지정한다. S2/S4에서 TURTLE은 **본 시행의 서버 선송신 연산**과 **클라이언트의 실제 평문 반환**을 구별한다. 별도의 CF 전 도달 시험을 강제하지 않는다. [역할별 시나리오와 측정점](DESIGN.md#scenarios)
 
 기본 CA 발급 대신 기존 PEM 시험 신원을 쓰려면 프로필에 아래처럼 추가한다. 경로는 프로필 기준이다. 이 경우 `openssl` 발급 명령이나 스크립트는 호출하지 않는다. `server_name`과 `client_name`은 각각 검증할 상대 이름이다. 서버 인증 전용이면 `client`를 생략할 수 있다. 공개 파일은 인증서 PEM 블록만 허용한다. 개인 키는 임시 전용 디렉터리에서만 사용하며 출력에는 **경로**가 남을 수 있지만 키 본문이나 키 해시를 보관하지 않는다.
 
@@ -48,6 +81,8 @@ work=$(mktemp -d)
 ~~~
 
 ## 양쪽이 준비된 뒤에 시작하는 측정
+
+`turtle_run_endpoint`는 준비 알림과 공동 시작을 직접 처리한다. 다음 두 절의 수동 관찰 예시는 **SDK 시나리오 실행기를 쓰지 않는 기존 앱**에만 해당한다. SDK가 이미 기록하는 사건을 다시 보고하지 않는다.
 
 양쪽 역할의 TCP 연결·TLS 설정이 준비되기 전에 한쪽이 TLS를 시작한 시행을 동시 준비된 지연·PMU 표본으로 쓰지 않는다. 준비 시각을 **같은 Linux 시간 네임스페이스에서** 비교해, 양쪽 `ready`가 두 첫 TLS 진입보다 앞섰음이 확인되면 별도 동기화 호출은 필요 없다. 그렇지 않으면 엄밀한 시작을 원하는 응용은 준비 지점에서 [선택적 C API](include/turtle/start.h)를 한 번 호출할 수 있다.
 
@@ -93,7 +128,7 @@ target_link_libraries(my_existing_app PRIVATE turtle::observe)
 
 ## 결과 읽기와 검증
 
-- `manifest.json`: 실행 프로필, 선택한 대상·상대와 바이너리·인증 자료 식별자, 예열·능력 시험·본 시행 목록 및 원자료 해시.
+- `manifest.json`: 실행 프로필, 선택한 대상·상대와 바이너리·인증 자료 식별자, 시행 목록 및 원자료 해시. 새 실행에는 컨트롤러가 `profile.scenario_contract: "endpoint.v1"`을 기록한다. 이 표식은 사용자가 프로필에 넣는 옵션이 아니다. 구형 자료의 능력 시험은 당시 계약대로 재분석하며 새 계약으로 재시도하지 않는다.
 - `attempt-N/attempt.json`: 연결 ID, 실제 argv/PID와 이미지 증거, 호스트가 기록한 평문 범위·시각·종료 상태. 역할별 `*.stdin`, `*.stdout`, `*.stderr`, `*.ndjson`은 서로 분리한다. 시험 개인 키는 결과에 복사하지 않는다.
 - `analysis.json`: `measurement_count`는 본 시행 수, `successful_measurements`는 양쪽 과업 근거가 확인된 본 시행 수, `eligible_measurements`는 유효 측정 표본 수다. `application_exchange`는 응용 경계만, `scenario_support`는 실제 시나리오 입증 여부만 말한다. `collection_complete`는 회수를 끝냈다는 뜻이지 PMU 사용 가능이나 유효 표본을 뜻하지 않는다.
 - 하드웨어 카운터·상세 기록은 해당 근거가 있을 때만 사용한다. `required_metrics`에 `"perf_counters"` 또는 `"scenario_wall_ns"` 등을 지정해 그 근거를 요구할 수 있다. `recording`의 `basic`·`detailed`는 프로필 호환용 값으로, 앱에 전달하거나 수집량을 전환하지 않는다. 두 값으로 기록 비용을 비교할 수 없으며 실제 제공한 관측과 필수 지표가 자격을 결정한다. 같은 대상 스레드의 시작·끝에서 cycles와 instructions를 함께 확인할 수 없으면 기본 표본으로 채택하지 않는다. 계수 하나만 확인됐거나 multiplex되어 전체 구간을 직접 세지 않았다면 관측한 원자료만 남긴다. 나머지 조건이 충족돼도 이 조합은 `decision_required`이며, 미계측을 0으로 채우지 않는다. 호스트 파이프 시각을 TLS 반환 시각으로 바꾸지 않는다. 망 조건은 실제 적용 근거가 있어야 한다. 적용하지 않은 조건으로 대체하지 않는다. [네이티브 TLS 검증과 재현](docs/native-validation.md)

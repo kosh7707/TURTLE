@@ -28,7 +28,10 @@ jq -n --arg openssl "$openssl" '{
 jq -e '.complete and .collection_complete and .eligible_measurements==0 and
     .measurement_count==1 and .measured_role=="client" and
     (.attempts[0] | .application_exchange=="verified" and
-      .scenario_support=="unconfirmed" and .prepared_start.verified==null and
+      .scenario_support=="unconfirmed" and .measured_transport_hook.verified==null and
+      .measured_transport_hook.reason=="hook_unobserved" and
+      .participants.server.wire.transport_hook.verified==true and
+      .prepared_start.verified==null and
       .prepared_start.rendezvous=="unsynchronized_fallback" and .benchmark_timing_ns==null and
       .requested_metrics.perf_counters.available==null and
       .participants.server.negotiated.group==23)' basic/analysis.json >/dev/null
@@ -122,29 +125,46 @@ printf changed >>basic/attempt-1/client.stdout
 reject "$turtle" analyze basic
 grep -q 'invalid_attempt_inventory' rejection.log
 
-# The same server binary may negotiate a different suite with the paused
-# stock client than with the ordinary application. Never reuse that proof.
-jq '.scenario="S2" | .target.argv += ["-ciphersuites","TLS_AES_128_GCM_SHA256"]' profile.json > different-suite.json
-"$turtle" run different-suite.json different-suite
-jq -e '.attempts[0].capability_proof==true and
-    .attempts[0].participants.server.negotiated.suite!=.attempts[1].participants.server.negotiated.suite and
-    .attempts[1].separate_capability_proof==null and
-    (.attempts[1].capability_binding.differing_fields|index("suite")!=null)' different-suite/analysis.json >/dev/null
-cp different-suite/analysis.json live.json
-"$turtle" analyze different-suite
-cmp live.json different-suite/analysis.json
+# A new S2 trial is an ordinary connection, never a stopped-client capability
+# run. This unobserved client has no plaintext-return timestamp; the stock
+# server's local early write is not evidence of pre-CF client delivery.
+jq '.scenario="S2" | .target.argv += ["-ciphersuites","TLS_AES_128_GCM_SHA256"]' profile.json > early.json
+"$turtle" run early.json early
+jq -e '(.attempts|length)==1 and (.attempts[0] |
+    .purpose=="sample" and .capability_proof==null and .separate_capability_proof==null and
+    .participants.server.metrics.ordinary_server_first==true and
+    .participants.client.timing.wall_ns==null)' early/analysis.json >/dev/null
+cp early/analysis.json live.json
+"$turtle" analyze early
+cmp live.json early/analysis.json
 
 # Selecting the expected numeric ID restricts only our stock participants.
-jq '.expected.suite=4865' different-suite.json > same-suite.json
+jq '.expected.suite=4865' early.json > same-suite.json
 "$turtle" run same-suite.json same-suite
-jq -e '.attempts[0].capability_proof==true and .attempts[1].separate_capability_proof==true and
-    all(.attempts[];.participants.server.negotiated.suite==4865)' same-suite/analysis.json >/dev/null
+jq -e 'all(.attempts[];.participants.server.negotiated.suite==4865)' same-suite/analysis.json >/dev/null
+
+# The persisted contract must agree with the source attempt, not just the
+# mutable profile; unknown semantics and unsolicited capability schedules fail.
+for change in mismatch unknown probe; do
+    cp -R early "bad-$change"
+    mf="bad-$change/manifest.json"
+    case $change in
+        mismatch) expr='del(.profile.scenario_contract)'; reason=scenario_contract_mismatch ;;
+        unknown) expr='.profile.scenario_contract="future"'; reason=unsupported_scenario_contract ;;
+        probe) expr='.profile.probe_client=.profile.peer.argv'; reason=unexpected_probe_configuration ;;
+    esac
+    jq "$expr" "$mf" >edit.json && mv edit.json "$mf"
+    reject "$turtle" analyze "bad-$change"
+    grep -q "$reason" rejection.log
+done
 
 # Even a re-hashed source cannot launder an unbound reporter-selected PID.
-jq 'del(.pid.server)' same-suite/attempt-2/attempt.json > edit.json
-mv edit.json same-suite/attempt-2/attempt.json
-hash=$(sha256sum same-suite/attempt-2/attempt.json | cut -d' ' -f1)
-jq --arg hash "$hash" '.attempts[1].sha256["attempt.json"]=$hash' same-suite/manifest.json > edit.json
+dir=$(jq -er '.attempts[]|select(.purpose=="sample")|.directory' same-suite/manifest.json)
+raw="same-suite/$dir/attempt.json"
+jq 'del(.pid.server)' "$raw" > edit.json
+mv edit.json "$raw"
+hash=$(sha256sum "$raw" | cut -d' ' -f1)
+jq --arg hash "$hash" --arg dir "$dir" '(.attempts[]|select(.directory==$dir)|.sha256["attempt.json"])=$hash' same-suite/manifest.json > edit.json
 mv edit.json same-suite/manifest.json
 reject "$turtle" analyze same-suite
 grep -q 'unbound_completed_participant:server' rejection.log

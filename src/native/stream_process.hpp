@@ -60,7 +60,7 @@ public:
   FD in, out, ev, err, start;
   pid_t pid = -1;
   int status = -1;
-  App(const process::Args &args, process::Environment env, int gate = -1,
+  App(const process::Args &args, process::Environment env,
       bool hold_for_profile = false, const std::string &netns = {}) {
     Pipe i, o, e, d;
     int pair[2];
@@ -77,8 +77,6 @@ public:
     nonblock(e.r.fd);
     nonblock(d.r.fd);
     env["TURTLE_EVIDENCE_FD"] = "3";
-    if (gate >= 0)
-      env["TURTLE_PROBE_GATE_FD"] = "4";
     std::vector<char *> av;
     for (auto &a : args)
       av.push_back(const_cast<char *>(a.c_str()));
@@ -93,11 +91,6 @@ public:
       // standard descriptor closed.
       int dest = 0;
       std::array<int, 4> src{i.r.fd, o.w.fd, d.w.fd, e.w.fd};
-      if (gate >= 0) {
-        gate = fcntl(gate, F_DUPFD_CLOEXEC, 6);
-        if (gate < 0)
-          ::_exit(126);
-      }
       for (int &s : src) {
         s = fcntl(s, F_DUPFD_CLOEXEC, 6);
         if (s < 0)
@@ -109,10 +102,7 @@ public:
       for (int s : src)
         if (dup2(s, dest++) < 0)
           ::_exit(126);
-      if (gate >= 0 && dup2(gate, 4) < 0)
-        ::_exit(126);
-      if (gate < 0)
-        ::close(4);
+      ::close(4);
       if (dup2(start_fd, 5) < 0)
         ::_exit(126);
       if (::close_range(6, ~0U, 0))
@@ -179,14 +169,5 @@ inline unsigned port() {
       getsockname(s.fd, reinterpret_cast<sockaddr *>(&a), &n))
     throw std::runtime_error("loopback_port_failed");
   return ntohs(a.sin_port);
-}
-// Verify the socket belongs to the launched server. A diagnostic connection
-// would consume a single-use server's only accepted connection.
-inline unsigned socket_queue(pid_t pid, unsigned port, bool listener,
-                             const char *host) {
-  auto row = owned_socket(pid, host, port, listener, listener);
-  return row.is_null() ? 0
-         : listener    ? 1
-                       : row.at("recv_queue").get<unsigned>();
 }
 } // namespace turtle::native::detail

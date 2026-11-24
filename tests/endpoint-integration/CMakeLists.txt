@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(independent_tls_consumer LANGUAGES C)
+find_package(TURTLE REQUIRED CONFIG)
+find_package(OpenSSL 3.5 REQUIRED COMPONENTS SSL)
+add_executable(consumer consumer.c)
+target_compile_features(consumer PRIVATE c_std_11)
+target_compile_options(consumer PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(consumer PRIVATE turtle::endpoint OpenSSL::SSL)

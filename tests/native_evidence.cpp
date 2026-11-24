@@ -103,7 +103,7 @@ J run(J events, J c = context()) {
                                   c.at("peer_full_handshake_auth"));
   return report;
 }
-auto find(J &es, const std::string &n) {
+auto find(auto &es, const std::string &n) {
   auto it = std::find_if(es.begin(), es.end(),
                          [&](auto &e) { return e.value("name", "") == n; });
   ck(it != es.end(), "missing fixture event");
@@ -156,6 +156,151 @@ void lifecycle_tests(const J &events) {
   c["connection_id"] = "other";
   ck(run(events, c)["status"] == "invalid", "foreign connection");
   ck(run(J::array())["status"] == "unknown", "stock evidence missing");
+}
+// The new runner's ordinary TLS operations qualify tasks, not independent
+// security assertions. An unmarked archive must still use its original rules.
+void endpoint_contract_tests(const J &events) {
+  auto c = context();
+  c["capability_proof"] = nullptr;
+  J plain = J::array();
+  for (const auto &e : events) {
+    if (e.at("kind") == "identity" ||
+        (e.at("kind") == "fact" && e.value("name", "") != "server_first") ||
+        e.value("name", "") == "auth_accepted")
+      continue;
+    plain.push_back(e);
+  }
+  ck(run(plain, c)["status"] == "unknown", "historical evidence stays unknown");
+  c["scenario_contract"] = "endpoint.v1";
+  auto r = run(plain, c);
+  ck(r["status"] == "verified" && r["metrics"]["peer_task"] == true &&
+         r["metrics"]["ordinary_server_first"] == true &&
+         r["metrics"]["authentication"].is_null() &&
+         r["metrics"]["profile"].is_null() &&
+         r["metrics"]["full_handshake_auth"].is_null() &&
+         r["metrics"]["tls_flights"].is_null(),
+     "ordinary task without security queries or a CF delivery proof");
+  auto changed = plain;
+  changed.erase(find(changed, "server_first"));
+  ck(run(changed, c)["metrics"]["ordinary_server_first"].is_null() &&
+         run(changed, c)["status"] == "unknown",
+     "a delayed handshake confirmation alone does not prove early write");
+  changed = plain;
+  changed.erase(find(changed, "read_return"));
+  ck(run(changed, c)["metrics"]["peer_task"] != true,
+     "cannot validate a request missing actual returned bytes");
+  changed = plain;
+  find(changed, "validated")->at("hex") = "00000000";
+  ck(run(changed, c)["status"] == "contradicted", "wrong compared contents");
+  auto denied = *find(events, "peer_verified");
+  denied["value"] = false;
+  changed = plain;
+  changed.push_back(denied);
+  ck(run(changed, c)["status"] == "contradicted", "explicit failed authentication");
+  changed = plain;
+  auto resumed = *find(events, "resumed");
+  resumed["value"] = true;
+  changed.push_back(resumed);
+  ck(run(changed, c)["status"] == "contradicted", "resumption is not full TLS");
+  c["expected_group"] = 29;
+  ck(run(plain, c)["status"] == "unknown", "requested group not observed");
+  c["peer_negotiated"] = {{"group", 29}};
+  ck(run(plain, c)["status"] == "verified", "known matching requested group");
+  c["peer_negotiated"]["group"] = 23;
+  ck(run(plain, c)["status"] == "contradicted", "known wrong requested group");
+  c["scenario_contract"] = "future";
+  ck(run(plain, c)["status"] == "invalid", "unknown rules cannot qualify");
+}
+void endpoint_first_read_test(const J &events) {
+  auto c = context();
+  c.update(J{{"role", "client"}, {"scenario", "S2"},
+             {"scenario_contract", "endpoint.v1"},
+             {"messages", {{"CAD", 0}, {"SAD1", 4}, {"SAD2", 0}}}});
+  J es = J::array();
+  auto add = [&](const char *name, const char *bytes = nullptr) {
+    J row = *find(events, name);
+    row["role"] = "client";
+    row["ns"] = es.size() + 100;
+    if (bytes) {
+      row["hex"] = bytes;
+      row["length"] = std::strlen(bytes) / 2;
+    }
+    es.push_back(row);
+  };
+  add("ready");
+  add("hs_begin");
+  es.back()["first_operation"] = "read_plain";
+  add("read_return", "6865");
+  auto partial = run(es, c);
+  ck(partial["timing"]["end"]["seq"] == 3 && partial["metrics"]["timing"] == true &&
+         partial["metrics"]["task"].is_null() &&
+         partial["timeline"]["SAD1"]["validated"].is_null(),
+     "first usable bytes survive even an incomplete greeting");
+  add("read_return", "6c6f");
+  add("validated", "68656c6f");
+  add("hs_complete");
+  es.back()["confirmed_by"] = "handshake_until_local_complete";
+  add("end");
+  auto r = run(es, c);
+  ck(r["status"] == "verified" && r["metrics"]["s2_read_first"] == true &&
+         r["timing"]["end"]["seq"] == 3 &&
+         r["timeline"]["SAD1"]["validated"]["seq"] == 5 &&
+         r["lifecycle"]["hs_complete"]["seq"] == 6 &&
+         r["metrics"]["ordinary_server_first"].is_null(),
+     "S2: first ordinary read, validation, and local confirmation are separate");
+  auto late_tag = es;
+  late_tag[1].erase("first_operation");
+  late_tag[2]["first_operation"] = "read_plain"; // not first TLS entry
+  auto unproven = run(late_tag, c);
+  ck(unproven["metrics"]["s2_read_first"].is_null() &&
+         unproven["metrics"]["task"].is_null() &&
+         unproven["timing"]["end"]["seq"] == 3,
+     "a later reported read cannot identify the first TLS operation");
+  auto unconfirmed = es;
+  unconfirmed[5].erase("confirmed_by");
+  ck(run(unconfirmed, c)["metrics"]["s2_read_first"].is_null(),
+     "an ordinary TLS finish is not the SDK local completion confirmation");
+
+  auto reordered = es;
+  auto confirmation = reordered[5];
+  reordered.erase(5);
+  reordered.insert(reordered.begin() + 2, confirmation);
+  for (std::size_t i = 0; i < reordered.size(); ++i)
+    reordered[i]["ns"] = 100 + i;
+  ck(run(reordered, c)["metrics"]["s2_read_first"] == false &&
+         run(reordered, c)["timing"]["end"]["seq"] == 4,
+     "confirmation before first bytes contradicts read-first sequencing");
+  reordered[1].erase("first_operation");
+  reordered[2].erase("confirmed_by");
+  for (auto e : events)
+    if (e["kind"] == "identity" || e["kind"] == "fact" ||
+        e.value("name", "") == "auth_accepted") {
+      e["role"] = "client";
+      reordered.insert(reordered.end() - 1, e);
+    }
+  for (std::size_t i = 0; i < reordered.size(); ++i)
+    reordered[i]["ns"] = 100 + i;
+  auto historical = c;
+  historical.erase("scenario_contract");
+  ck(run(reordered, historical)["status"] == "verified" &&
+         run(reordered, c)["status"] == "unknown",
+     "historical H-then-read remains valid only under historical rules");
+  auto within = es;
+  auto accepted = *find(events, "auth_accepted");
+  accepted["role"] = "client";
+  accepted["ns"] = within[2]["ns"];
+  within.insert(within.begin() + 2, accepted);
+  ck(run(within, c)["metrics"]["s2_read_first"] == true,
+     "TLS may finish processing or accept policy within the ordinary read");
+  es[3]["hex"] = "0000"; // corrupt only the later fragment
+  auto wrong_tail = run(es, c);
+  ck(wrong_tail["timing"]["end"]["seq"] == 3 &&
+         wrong_tail["timeline"]["SAD1"]["validated"].is_null() &&
+         wrong_tail["metrics"]["task"] == false,
+     "wrong later bytes cannot erase a known matching first return or validate SAD");
+  es[2]["hex"] = "0000";
+  ck(run(es, c)["timing"]["end"].is_null(),
+     "a mismatching first chunk cannot qualify as first SAD");
 }
 void write_pair_tests(const J &base) {
   auto rows = base;
@@ -269,6 +414,49 @@ void wire_tests(const J &events) {
   outside.push_back(off);
   ck(run(outside)["metrics"]["transport_counts"] == true,
      "detach after end is outside coverage");
+}
+void endpoint_transport_tests(const J &events) {
+  auto c = context();
+  c["scenario_contract"] = "endpoint.v1";
+  auto hook = [&](const J &trace) { return run(trace, c)["wire"]["transport_hook"]; };
+  auto witnessed = wire(events);
+  ck(hook(events)["reason"] == "hook_unobserved" &&
+         hook(events)["verified"].is_null(), "plaintext without measured hook");
+  ck(hook(witnessed)["verified"] == true && hook(witnessed)["source"] == "socket",
+     "continuous socket sends and consuming receives");
+  ck(hook(wire(events, true))["verified"] == false &&
+         hook(wire(events, true))["reason"] == "coverage_interrupted",
+     "interrupted measured hook cannot qualify");
+  for (auto &e : witnessed)
+    if (e.value("source", "") == "socket") {
+      e["source"] = "library_io";
+      if (e["kind"] == "io") e["hex"] = nullptr; // counts alone are sufficient
+    }
+  ck(hook(witnessed)["source"] == "library_io" && hook(witnessed)["verified"] == true,
+     "real bidirectional BIO call intervals; no ciphertext collection necessary");
+  auto declaration = events;
+  declaration.insert(declaration.begin(), witnessed.front());
+  ck(hook(declaration)["verified"].is_null() &&
+         hook(declaration)["reason"] == "no_bidirectional_transfer",
+     "coverage declaration alone is not an observed call");
+  for (auto &e : witnessed)
+    if (e["kind"] == "io" && e["sent"] == false) e["peek"] = true;
+  ck(hook(witnessed)["verified"].is_null(), "peek alone is not received data");
+  auto split = wire(events);
+  auto lib_on = split.front();
+  lib_on["source"] = "library_io";
+  split.insert(split.begin(), lib_on);
+  for (auto &e : split)
+    if (e["kind"] == "io" && e["sent"] == true) e["source"] = "library_io";
+  ck(hook(split)["reason"] == "no_bidirectional_transfer",
+     "one-sided observations at different layers do not form one continuous hook");
+  auto failed = wire(events);
+  for (auto &e : failed)
+    if (e["kind"] == "io" && e["sent"] == true) e["result"] = -1;
+  ck(hook(failed)["verified"].is_null(),
+     "failed send attempt and positive read do not count as a bidirectional transfer");
+  ck(!run(wire(events))["wire"].contains("transport_hook"),
+     "do not rewrite the archived qualification contract");
 }
 std::string octet(unsigned x) {
   constexpr char alphabet[] = "0123456789abcdef";
@@ -498,6 +686,11 @@ void source_tests(const J &es) {
          r["wire"]["flights"]["SH"]["anchor"].is_null(),
      "byte-only layouts are not timed");
   ck(r["metrics"]["library_io"].is_null(), "byte stream is not library I/O");
+  auto endpoint = c;
+  endpoint["scenario_contract"] = "endpoint.v1";
+  for (const auto *only : {&headers, &bytes})
+    ck(!run(*only, endpoint)["wire"]["transport_hook"]["verified"].is_boolean(),
+       "headers or a bare ciphertext stream cannot qualify measured hook calls");
   auto h = run(headers, c);
   ck(h["metrics"]["header_layout"] == true &&
          h["metrics"]["ciphertext_bytes"].is_null() &&
@@ -600,6 +793,17 @@ void combined_tests(const J &es) {
   auto resp = find(data, "read_return");
   (*resp)["hex"] = "706f6e67";
   (*resp)["length"] = 4;
+  // A write may block without accepting any CAD; its first attempt is not
+  // the benchmark boundary when the greeting was read before the retry.
+  auto overlap = data;
+  auto retry = *find(overlap, "write_attempt");
+  overlap.insert(find(overlap, "write_accepted"), greet);
+  overlap.insert(find(overlap, "write_accepted"), retry);
+  auto endpoint = c;
+  endpoint["scenario_contract"] = "endpoint.v1";
+  ck(run(overlap, c)["status"] == "verified" &&
+         run(overlap, endpoint)["metrics"]["task"] == false,
+     "S4 endpoint requires final CAD acceptance before the first SAD1 read");
   data.insert(find(data, "write_attempt"), greet);
   auto read_first = run(data, c);
   ck(read_first["metrics"]["task"].is_null() && read_first["status"] == "unknown",
@@ -725,8 +929,11 @@ int main(int argc, char **argv) try {
        "denied required PMU blocks warmup");
   }
   lifecycle_tests(es);
+  endpoint_contract_tests(es);
+  endpoint_first_read_test(es);
   write_pair_tests(es);
   wire_tests(es);
+  endpoint_transport_tests(es);
   named_tests(es);
   settled_auth_test(es);
   close_notify_test(es);

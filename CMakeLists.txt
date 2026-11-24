@@ -46,12 +46,12 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 include(GNUInstallDirs)
-add_library(turtle_observe SHARED src/native/observe.cpp src/native/start.cpp src/measure/perf.cpp)
+add_library(turtle_observe SHARED src/native/endpoint.cpp src/native/observe.cpp src/native/start.cpp src/measure/perf.cpp)
 add_library(turtle::observe ALIAS turtle_observe)
 set_target_properties(turtle_observe PROPERTIES EXPORT_NAME observe CXX_EXTENSIONS OFF
     VERSION ${PROJECT_VERSION} SOVERSION 1)
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/observe.map"
-    CONTENT "TURTLE_OBSERVE_1 { global: turtle_observe_*; turtle_wait_start; local: *; };\n")
+    CONTENT "TURTLE_OBSERVE_1 { global: turtle_observe_*; turtle_wait_start; turtle_run_endpoint; local: *; };\n")
 target_link_options(turtle_observe PRIVATE "LINKER:--version-script,${CMAKE_CURRENT_BINARY_DIR}/observe.map")
 target_include_directories(turtle_observe PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>" "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -60,6 +60,11 @@ target_link_libraries(turtle_observe PRIVATE "$<BUILD_INTERFACE:nlohmann_json::n
 if(TURTLE_WITH_PMU STREQUAL "OFF" OR NOT TURTLE_PMU_INTERFACE)
     target_compile_definitions(turtle_observe PRIVATE TURTLE_NO_PMU)
 endif()
+add_library(turtle_endpoint INTERFACE)
+add_library(turtle::endpoint ALIAS turtle_endpoint)
+set_target_properties(turtle_endpoint PROPERTIES EXPORT_NAME endpoint)
+target_link_libraries(turtle_endpoint INTERFACE turtle_observe)
+
 option(TURTLE_BUILD_REFERENCE "Build the stock TLS peer" ON)
 if(TURTLE_BUILD_REFERENCE)
     add_subdirectory(reference)
@@ -123,9 +128,9 @@ if(TARGET turtle-reference)
     install(TARGETS turtle-reference RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 install(TARGETS turtle RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES include/turtle/observe.h include/turtle/start.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/turtle)
+install(FILES include/turtle/endpoint.h include/turtle/observe.h include/turtle/start.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/turtle)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/build_info.hpp" DESTINATION ${CMAKE_INSTALL_DATADIR}/turtle)
-install(TARGETS turtle_observe EXPORT turtleTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS turtle_observe turtle_endpoint EXPORT turtleTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(EXPORT turtleTargets FILE TURTLEConfig.cmake NAMESPACE turtle::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TURTLE)
 

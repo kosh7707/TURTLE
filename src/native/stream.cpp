@@ -79,10 +79,9 @@ Json normalize(Json p, const fs::path &base, const fs::path &self) {
   auto stock = [&](std::string who) {
     return Json::array({(self.parent_path() / "turtle-reference").string(),
                         "--native-stream", who, p.value("auth", "mtls"),
-                        "{host}", "{port}", p.value("scenario", "S3")});
+                        "{host}", "{port}"});
   };
-  if (access((self.parent_path() / "turtle-reference").c_str(), X_OK) == 0)
-    p["probe_client"] = stock("client");
+  p["scenario_contract"] = endpoint_contract_id;
   if (p["stock_peer"] == true)
     p["peer"] = {{"argv", stock(other(role))}};
   else
@@ -290,6 +289,8 @@ Json context(const Json &p, const Json &raw, std::string role, bool proof) {
       {"capability_proof", proof ? Json(true) : Json(nullptr)},
       {"plaintext",
        {{"CAD", hex(m.cad)}, {"SAD1", hex(m.sad1)}, {"SAD2", hex(m.sad2)}}}};
+  if (uses_endpoint_contract(p))
+    j["scenario_contract"] = endpoint_contract_id;
   j["pid"] = 0; // absence cannot authorize a reporter-selected process
   if (raw.contains("pid") && raw.at("pid").contains(role))
     j["pid"] = raw.at("pid").at(role);
@@ -349,8 +350,8 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
   fs::create_directory(dir);
   auto portnum = port();
   auto role = p.at("target").at("role").get<std::string>();
-  bool probe = purpose == "capability";
   Json raw = {{"v", 1},
+              {"scenario_contract", p.at("scenario_contract")},
               {"run_id", run},
               {"connection_id", random_id()},
               {"purpose", purpose},
@@ -362,7 +363,7 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
   ch["server"];
   ch["client"];
   std::unique_ptr<FunctionProfile> profiler;
-  auto launch = [&](std::string who, int gated = -1) {
+  auto launch = [&](std::string who) {
     bool server = who == "server";
     std::string cert = (keys / (who + ".crt")).string(),
                 key = (keys / (who + ".key")).string();
@@ -378,42 +379,34 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
                                  {"{cert}", cert},
                                  {"{key}", key},
                                  {"{peer_name}", name}};
-    auto args = expand(probe && !server
-                           ? p.at("probe_client")
-                           : p.at(who == role ? "target" : "peer").at("argv"),
-                       vars);
+    auto args = expand(p.at(who == role ? "target" : "peer").at("argv"), vars);
     process::Environment env = {
         {"TURTLE_CA", ca},
         {"TURTLE_CERT", cert},
         {"TURTLE_KEY", key},
         {"TURTLE_PEER_NAME", name},
         {"TURTLE_ROLE", who},
+        {"TURTLE_SCENARIO", p.at("scenario")},
         {"TURTLE_RUN_ID", run},
         {"TURTLE_CONNECTION_ID", raw["connection_id"]},
         {"TURTLE_ATTEMPT_ID", raw["connection_id"]},
         {"TURTLE_REQUEST", p["application"]["request"]},
         {"TURTLE_GREETING", p["application"]["greeting"]},
         {"TURTLE_RESPONSE", p["application"]["response"]}};
-    if ((p.at("stock_peer") == true && who != role) || (probe && !server)) {
+    if (p.at("stock_peer") == true && who != role) {
       for (auto [key, variable] :
            {std::pair{"group", "TURTLE_EXPECTED_GROUP_ID"},
             {"suite", "TURTLE_EXPECTED_SUITE_ID"}})
         if (p.at("expected").contains(key))
           env[variable] = p.at("expected").at(key).dump();
     }
-    if (server && (p.at("scenario") == "S2" || p.at("scenario") == "S4")) {
-      raw["server_bindings"] = vars;
-      for (auto name : {"ca.crt", "server.crt", "client.crt"})
-        if (fs::exists(keys / name))
-          raw["fixture_sha256"][name] = process::digest(keys / name);
-    }
-    if (who == role && !(probe && !server))
+    if (who == role)
       env["TURTLE_PMU"] = "1";
     raw["argv"][who] = args;
     raw["binary_sha256"][who] = process::digest(args.front());
     bool diagnostic = purpose == "diagnostic" && who == role;
     ch[who].child =
-        std::make_unique<App>(args, env, gated, diagnostic, network.netns(who));
+        std::make_unique<App>(args, env, diagnostic, network.netns(who));
     if (diagnostic) {
       profiler = std::make_unique<FunctionProfile>(dir);
       profiler->attach(*ch[who].child, p.at("measurement").at("cpu_samples"),
@@ -432,8 +425,9 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
   try {
     network.start(p);
     launch("server");
-    while (
-        !socket_queue(ch["server"].child->pid, portnum, true, network.host())) {
+    // A test connection would consume a single-use server's only accept.
+    while (owned_socket(ch["server"].child->pid, network.host(), portnum,
+                        true, true).is_null()) {
       clock_check();
       require(!ch["server"].child->done(), "server_exited_before_listen");
       poll(nullptr, 0, 5);
@@ -441,16 +435,9 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
     network.listen(ch["server"].child->pid, portnum);
     raw["images"]["server"] = process::image_inventory(ch["server"].child->pid,
                                                        ch["server"].child->pid);
-    std::unique_ptr<Pipe> gate;
-    if (probe)
-      gate = std::make_unique<Pipe>();
-    launch("client", gate ? gate->r.fd : -1);
-    if (gate)
-      gate->r.reset();
-    auto release_by = Clock::now() + (end - Clock::now()) / 2;
-    const auto thaw_by=release_by+(end-release_by)/2;
+    launch("client");
     PreparedStart startup(raw, end, p.at("network") == "netem");
-    bool changed = false, frozen = false;
+    bool changed = false;
     while (true) {
       clock_check();
       bool finished = true;
@@ -520,119 +507,6 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
           raw["images"]["client"] = process::image_inventory(app.pid, app.pid);
         if (!app.done() || app.out.fd >= 0 || app.err.fd >= 0 || app.ev.fd >= 0)
           finished = false;
-      }
-      if (gate && gate->w.fd >= 0 && (changed || Clock::now() >= release_by)) {
-        Json extent =
-            before_gate(p, raw, ch["client"].evidence, ch["server"].evidence);
-        if (!extent.is_null() || Clock::now() >= release_by) {
-          auto server = ch["server"].child->pid;
-          Json queue = nullptr;
-          uint64_t stopped_ns = 0, queue_ns = 0;
-          if (!extent.is_null() && ::kill(-server, SIGSTOP) == 0) {
-            for (;;) {
-              clock_check();
-              siginfo_t status{};
-              auto w = waitid(P_PID, server, &status,
-                              WSTOPPED | WEXITED | WNOHANG | WNOWAIT);
-              if (w == 0 && status.si_pid == server) {
-                require(status.si_code == CLD_STOPPED, "server_not_stopped");
-                frozen = true;
-                stopped_ns = ns();
-                break;
-              }
-              require(w >= 0 || errno == EINTR, "server_stop_failed");
-              ::poll(nullptr, 0, 1);
-            }
-            // Account for events already written between the positive prefix
-            // and SIGSTOP. A partial final evidence line isn't a stable
-            // boundary.
-            auto &server_channel = ch["server"];
-            std::array<char, 8192> buffer;
-            for (;;) {
-              auto n = read(server_channel.child->ev.fd, buffer.data(),
-                            buffer.size());
-              if (n > 0) {
-                require(server_channel.evidence.size() + size_t(n) <=
-                            16 * 1024 * 1024,
-                        "evidence_limit");
-                server_channel.evidence.append(buffer.data(), n);
-              } else if (n < 0 && errno == EINTR)
-                continue;
-              else
-                break;
-            }
-            extent = server_channel.evidence.ends_with('\n')
-                         ? before_gate(p, raw, ch["client"].evidence,
-                                       server_channel.evidence)
-                         : Json(nullptr);
-            // TCP may still deliver in-flight bytes after the server stops.
-            // Wait for complete coverage, not merely the first readable byte.
-            while (!extent.is_null()) {
-              clock_check();
-              queue = owned_socket(ch["client"].child->pid, network.host(),
-                                   portnum, false, false);
-              queue_ns = ns();
-              if (!queue.is_null() &&
-                  (extent.at("server_source").is_null()
-                       ? artifact::integer(queue.at("recv_queue")) > 0
-                       : pre_cf_arrived(extent, artifact::integer(
-                                                    queue.at("recv_queue")))))
-                break;
-              if (Clock::now() >= release_by)
-                break;
-              ::poll(nullptr, 0, 1);
-            }
-            if (queue.is_null() || extent.is_null() ||
-                (!extent.at("server_source").is_null() &&
-                 !pre_cf_arrived(extent,
-                                 artifact::integer(queue.at("recv_queue"))))) {
-              require(::kill(-server, SIGCONT) == 0, "server_resume_failed");
-              frozen = false;
-            }
-          }
-          raw["gate"] = {{"client_bytes", ch["client"].evidence.size()},
-                         {"server_bytes", ch["server"].evidence.size()},
-                         {"client_recv_queue",
-                          queue.is_null() ? Json(0) : queue.at("recv_queue")},
-                         {"queue_socket", queue},
-                         {"pre_cf", extent},
-                         {"host_server_stopped_ns", stopped_ns},
-                         {"host_queue_sample_ns", queue_ns},
-                         {"server_stopped", frozen},
-                         {"host_before_release_ns", ns()}};
-          require(::write(gate->w.fd, "G", 1) == 1, "probe_gate_failed");
-          gate->w.reset();
-        }
-      }
-      if (frozen) {
-        const auto &log = ch["client"].evidence;
-        auto last = log.rfind('\n');
-        auto prefix = last == log.npos ? "" : log.substr(0, last + 1);
-        auto result =
-            analyze_evidence(prefix, context(p, raw, "client", false));
-        if (result["status"] != "invalid" &&
-            !result.at("timeline").at("SAD1").at("validated").is_null()) {
-          const auto &g = raw.at("gate");
-          raw["gate"]["delivery"] = pre_cf_delivery(
-              result,
-              gate_report(p, raw, "server",
-                          ch["server"].evidence.substr(
-                              0, artifact::integer(g.at("server_bytes")))),
-              g.at("pre_cf"), artifact::integer(g.at("client_recv_queue")));
-          raw["gate"]["before_server_resume_client_bytes"] = prefix.size();
-          raw["gate"]["host_before_server_resume_ns"] = ns();
-          require(::kill(-ch["server"].child->pid, SIGCONT) == 0,
-                  "server_resume_failed");
-          frozen = false;
-        } else if (Clock::now() >= thaw_by) {
-          // In particular, a sender may have accepted plaintext only into an
-          // application buffer. Resume without proof; retain the ordinary
-          // completion/failure instead of deadlocking this probe.
-          raw["gate"]["delivery"] = nullptr;
-          require(::kill(-ch["server"].child->pid, SIGCONT) == 0,
-                  "server_resume_failed");
-          frozen = false;
-        }
       }
       const bool exchanged = ch["client"].received == m.sad1 + m.sad2 &&
                              ch["server"].received == m.cad &&
@@ -812,10 +686,17 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
   const auto network = assess_network(p, raw, dir, participants);
   bool network_ok = network.value("verified", Json(nullptr)) != false &&
                     network.value("capture_verified", Json(nullptr)) != false;
-  bool required = network_ok, other_required = network_ok;
+  const bool endpoint = uses_endpoint_contract(p);
+  const bool ids_ok = !endpoint || p.at("expected").empty() ||
+                      metric(dut, "requested_negotiation");
+  bool required = network_ok && ids_ok, other_required = required;
   bool early = p.at("scenario") == "S2" || p.at("scenario") == "S4";
   bool unsupported = early && participants.at("server").at("facts").value(
                                   "server_first", Json(nullptr)) == false;
+  if (endpoint)
+    for (const auto &participant : participants)
+      unsupported |= participant.at("facts").value(
+                         "endpoint_unsupported", Json(nullptr)) == true;
   Json requested_metrics = Json::object();
   const auto start_proof=prepared_start_proof(raw,participants);
   const bool synchronized=start_proof.at("verified")==true;
@@ -859,9 +740,17 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
   }
   bool task_success = valid && !invalid && !contradiction &&
                       metric(dut, "peer_task") && metric(peer, "peer_task") &&
-                      (!early || proof);
+                      (endpoint || !early || proof) && !unsupported;
+  Json measured_hook = nullptr;
+  if (endpoint) {
+    measured_hook = dut.at("status") == "invalid"
+                        ? Json{{"verified", nullptr}, {"source", nullptr},
+                               {"reason", "invalid_evidence"}}
+                        : dut.at("wire").at("transport_hook");
+  }
+  const bool hook_ok = !endpoint || measured_hook.at("verified") == true;
   bool otherwise_qualified =
-      task_success && synchronized && dut.at("status") == "verified";
+      task_success && synchronized && dut.at("status") == "verified" && hook_ok;
   bool qualified =
       otherwise_qualified && required && !partial && metric(dut, "pmu");
   bool gate = false;
@@ -929,12 +818,14 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
     qualification = "failed";
   else if(start_proof.at("verified")==false)
     qualification="unprepared_start";
+  else if (task_success && !hook_ok)
+    qualification = "transport_hook_unconfirmed";
   else if (partial && otherwise_qualified && other_required)
     qualification = "decision_required";
   else if (qualified)
     qualification = "qualified";
 
-  return {{"purpose", raw.at("purpose")},
+  Json assessment = {{"purpose", raw.at("purpose")},
           {"connection_id", raw.at("connection_id")},
           {"error", raw.at("error")},
           {"application_exchange", !valid                     ? "failed"
@@ -959,6 +850,9 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
           {"requested_metrics", requested_metrics},
           {"required_metrics_available", required},
           {"operation_ok", valid && !invalid && !contradiction && required}};
+  if (endpoint)
+    assessment["measured_transport_hook"] = std::move(measured_hook);
+  return assessment;
 }
 bool needs_probe(const Json &p) {
   return (p.at("scenario") == "S2" || p.at("scenario") == "S4") &&
@@ -1037,6 +931,9 @@ Json server_proof_key(const Json &manifest, const Json &raw, const Json &row) {
 Json assess_bound(const Json &manifest, const Json &raw, const fs::path &dir,
                   Json &proof) {
   const auto &p = manifest.at("profile");
+  const bool endpoint = uses_endpoint_contract(p);
+  require(endpoint == uses_endpoint_contract(raw), "scenario_contract_mismatch");
+  require(!endpoint || !raw.contains("gate"), "unexpected_probe_gate");
   for (const std::string who : {"client", "server"}) {
     if (raw.at("exit").at(who) != 0)
       continue; // retain unlaunched/failed evidence
@@ -1136,6 +1033,8 @@ void check_certificates(const fs::path &root, const Json &m) {
 // must see the same finalized sample as run/analyze, without changing its source.
 static Json verified_report(const fs::path &root, const Json &manifest) {
   const auto &p = manifest.at("profile");
+  require(!uses_endpoint_contract(p) || !p.contains("probe_client"),
+          "unexpected_probe_configuration");
   const auto &list = manifest.at("attempts");
   require(list.is_array() && !list.empty(), "no_native_attempts");
   check_certificates(root, manifest);
@@ -1352,9 +1251,6 @@ int execute(Json p, const fs::path &root, const fs::path &self, int cancel,
   if (!retry_of.is_null())
     manifest["retry_of"] = retry_of;
   manifest["controller_sha256"] = process::digest(self);
-  if (needs_probe(p))
-    manifest["probe_client_sha256"] =
-        process::digest(p.at("probe_client").at(0).get<std::string>());
   for (auto ep : {"target", "peer"})
     manifest["program_sha256"][ep] =
         process::digest(p.at(ep).at("argv").at(0).get<std::string>());
@@ -1379,15 +1275,12 @@ int execute(Json p, const fs::path &root, const fs::path &self, int cancel,
     artifact::save(root / "manifest.json", manifest);
     if (raw["error"] == "interrupted")
       throw std::runtime_error("interrupted");
-    if (purpose == "capability" || purpose == "warmup") {
+    if (purpose == "warmup") {
       auto row = assess_bound(manifest, raw, root / name, positive);
-      return purpose == "capability" || warmup_allows_measurement(row);
+      return warmup_allows_measurement(row);
     }
     return true;
   };
-  if ((p["scenario"] == "S2" || p["scenario"] == "S4") &&
-      p.contains("probe_client"))
-    run("capability");
   for (size_t i = 0; i < p["warmups"].get<size_t>(); ++i)
     if (!run("warmup")) {
       manifest["status"] = "warmup_failed";
@@ -1427,6 +1320,7 @@ int retry(const fs::path &source, const std::string &failed,
   require(m.at("controller_sha256") == process::digest(self),
           "retry_controller_changed");
   auto p = m.at("profile");
+  require(uses_endpoint_contract(p), "retry_requires_same_scenario_contract");
   std::string role = p.at("target").at("role");
   const auto report = verified_report(root, m);
   const auto &rows = report.at("attempts");
@@ -1464,7 +1358,7 @@ int retry(const fs::path &source, const std::string &failed,
   if (p.at("stock_peer") == true)
     p.erase("peer");
   p.erase("stock_peer");
-  p.erase("probe_client");
+  p.erase("scenario_contract");
   p["repetitions"] = 1;
   struct Restore {
     fs::path path = fs::current_path();

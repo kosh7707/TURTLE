@@ -74,6 +74,9 @@ if(TARGET turtle-reference)
     add_test(NAME native_cli_contract COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/native-cli-regression.sh"
         "$<TARGET_FILE:turtle>" "${OPENSSL_CLI}")
     set_tests_properties(native_cli_contract PROPERTIES TIMEOUT 60)
+    add_test(NAME endpoint_installed_tls_matrix COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/endpoint-integration.sh"
+        "${framework_binary}" "${CMAKE_CURRENT_BINARY_DIR}/endpoint-matrix")
+    set_tests_properties(endpoint_installed_tls_matrix PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
     add_executable(partial_request partial-request.cpp)
     target_link_libraries(partial_request PRIVATE turtle_process)
     add_test(NAME reference_rejects_invalid_request COMMAND partial_request "${OPENSSL_CLI}"
@@ -124,3 +127,10 @@ add_test(NAME native_prepared_start COMMAND turtle-native-prepared)
 add_executable(turtle-native-probe-test native-probe.cpp)
 target_link_libraries(turtle-native-probe-test PRIVATE turtle_native)
 add_test(NAME native_prefinished_queue_bound COMMAND turtle-native-probe-test)
+
+add_executable(turtle-endpoint-runner-test endpoint-runner.c)
+target_link_libraries(turtle-endpoint-runner-test PRIVATE turtle::endpoint)
+add_executable(turtle-endpoint-runner-replay endpoint-runner-replay.cpp)
+target_link_libraries(turtle-endpoint-runner-replay PRIVATE turtle_native_evidence)
+add_test(NAME endpoint_runner COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/endpoint-runner.sh"
+    "$<TARGET_FILE:turtle-endpoint-runner-test>" "$<TARGET_FILE:turtle-endpoint-runner-replay>")

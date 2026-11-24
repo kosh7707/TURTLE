@@ -5,6 +5,8 @@
 #include "process/process.hpp"
 #include <arpa/inet.h>
 #include <filesystem>
+#include <fcntl.h>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <unistd.h>
@@ -63,8 +65,16 @@ void trial(const std::string &cli, const std::string &ep, const fs::path &root,
               getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &len) == 0,
           "listener");
   std::string port = std::to_string(ntohs(addr.sin_port));
+  // Preserve the exact plaintext reads: a generic endpoint error alone cannot
+  // show that the deliberately malformed bytes actually reached the test.
+  auto evidence = dir / "server.ndjson";
+  int trace = open(evidence.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  require(trace >= 0, "create_evidence");
   Environment env{
-      {"TURTLE_LISTEN_FD", std::to_string(fd)},
+      {"TURTLE_EVIDENCE_FD", std::to_string(trace)},      {"TURTLE_LISTEN_FD", std::to_string(fd)},
+      {"TURTLE_ROLE", "server"},
+      {"TURTLE_SCENARIO", scenario},
+      {"TURTLE_REQUEST", "ping"},
       {"TURTLE_CA",
        path((identity == "missing" ? "client" : identity) + ".pem")},
       {"TURTLE_CERT", path("localhost.pem")},
@@ -73,8 +83,9 @@ void trial(const std::string &cli, const std::string &ep, const fs::path &root,
       {"TURTLE_GREETING", "hello\n"},
       {"TURTLE_RESPONSE", "wrongly-sent-response\n"}};
   Child server(
-      {ep, "--native-stream", "server", "mtls", "127.0.0.1", port, scenario},
+      {ep, "--native-stream", "server", "mtls", "127.0.0.1", port},
       env, dir / "server.stderr");
+  close(trace);
   close(fd);
   server.send((scenario == "S4" ? std::string("hello\n") : "") +
               "wrongly-sent-response\n");
@@ -108,11 +119,22 @@ void trial(const std::string &cli, const std::string &ep, const fs::path &root,
   require(server.wait(end) != 0, "incomplete_or_incorrect_request_accepted");
   require(server.collect(end).empty(),
           "unauthenticated_or_wrong_request_published");
-  const std::string cause = identity != "client" ? "handshake_failed"
-                            : bytes.size() < 4   ? "read_failed"
-                                                 : "plaintext_mismatch";
-  require(server.errors().find(cause) != std::string::npos,
-          "unexpected_server_error");
+  std::ifstream records(evidence);
+  std::string line, received;
+  bool rejected_before_application = identity != "client";
+  while (std::getline(records, line)) {
+    const auto event = turtle::artifact::Json::parse(line);
+    if (event.at("kind") == "plain" && event.at("name") == "read_return")
+      received += event.at("hex").get<std::string>();
+    if (event.at("kind") == "plain")
+      require(event.at("name") != "validated", "wrong_request_validated");
+  }
+  const char *expected = rejected_before_application ? ""
+                         : bytes == "pi" ? "7069" : "70697878";
+  require(received == expected, "unexpected_decrypted_request");
+  if (rejected_before_application)
+    require(server.errors().find("handshake_failed") != std::string::npos,
+            "expected_tls_authentication_failure");
 }
 } // namespace
 int main(int argc, char **argv) {

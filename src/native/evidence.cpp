@@ -49,8 +49,10 @@ struct Trace {
   // There is no retry/result protocol: a new native offer supersedes an
   // unanswered one on the same thread; a positive return consumes it once.
   struct Offer {
-    uint64_t seq, ns, offset;
+    uint64_t seq, ns, offset, root_seq, root_offset;
     std::string bytes;
+    // Nonzero only after the last offer's accepted prefix was verified.
+    uint64_t next = 0;
   };
   std::map<uint64_t, Offer> pending;
   J write_errors = J::array();
@@ -60,30 +62,62 @@ struct Trace {
     require(tx || op == "read_return" || op == "validated",
             "invalid_plain_operation");
     auto n = u(raw, "length");
-    auto bytes = raw.at("hex");
-    require(n > 0 && n <= 1048576 && bytes.is_string() &&
-                bytes.get_ref<const std::string &>().size() == 2 * n,
-            "invalid_plain_bytes");
+    require(n > 0 && n <= 1048576, "invalid_plain_bytes");
     uint64_t &cursor = tx ? sent : op == "validated" ? validated : received;
     auto start = cursor, end = start + n;
     J offer_seq = nullptr, match_offer = nullptr;
-    if (tx) {
+    const bool suffix =
+        raw.contains("offer_ref") || raw.contains("suffix_offset");
+    std::string_view bytes;
+    if (suffix) {
+      require(uses_endpoint_contract(c) && op == "write_attempt" &&
+                  !raw.contains("hex"),
+              "invalid_offer_reference");
+      auto it = pending.find(u(raw, "tid"));
+      require(it != pending.end(), "unknown_offer_reference");
+      auto &offer = it->second;
+      const auto skip = u(raw, "suffix_offset");
+      const size_t full_size = offer.bytes.size() / 2;
+      require(offer.root_seq == u(raw, "offer_ref") && offer.next == start &&
+                  start > offer.root_offset &&
+                  skip == start - offer.root_offset && skip < full_size &&
+                  n == full_size - skip && u(raw, "ns") >= offer.ns,
+              "invalid_offer_suffix");
+      offer.seq = u(raw, "seq");
+      offer.ns = u(raw, "ns");
+      offer.offset = start;
+      offer.next = 0;
+    } else {
+      const auto &encoded = raw.at("hex");
+      require(encoded.is_string(), "invalid_plain_bytes");
+      bytes = encoded.get_ref<const std::string &>();
+      require(bytes.size() == 2 * n, "invalid_plain_bytes");
+    }
+    if (tx && !suffix) {
       auto tid = u(raw, "tid");
-      if (op == "write_attempt")
-        pending.insert_or_assign(tid, Offer{u(raw, "seq"), u(raw, "ns"), start,
-                                            bytes.get<std::string>()});
-      else if (auto it = pending.find(tid); it != pending.end()) {
-        const auto &offer = it->second;
-        const auto &returned = bytes.get_ref<const std::string &>();
+      if (op == "write_attempt") {
+        auto seq = u(raw, "seq");
+        pending.insert_or_assign(tid, Offer{seq, u(raw, "ns"), start, seq,
+                                            start, std::string(bytes)});
+      } else if (auto it = pending.find(tid);
+                 it != pending.end() && !it->second.next) {
+        auto &offer = it->second;
+        auto offered = std::string_view(offer.bytes).substr(
+            2 * (offer.offset - offer.root_offset));
         offer_seq = offer.seq;
-        if (offer.ns > u(raw, "ns") || !offer.bytes.starts_with(returned)) {
+        if (offer.ns > u(raw, "ns") || !offered.starts_with(bytes)) {
           match_offer = false;
           write_errors.push_back({{"reason", "write_return_contradicts_offer"},
                                   {"offer_seq", offer_seq},
                                   {"return_seq", raw.at("seq")}});
         } else if (offer.offset == start)
           match_offer = true;
-        pending.erase(it);
+        if (match_offer == true && offered.size() > bytes.size() &&
+            c.contains("scenario_contract")) {
+          offer.next = end;
+          offer.ns = u(raw, "ns");
+        } else
+          pending.erase(it);
       }
     }
     uint64_t base = 0;
@@ -97,9 +131,13 @@ struct Trace {
         const auto &expected =
             c.at("plaintext").at(label).get_ref<const std::string &>();
         require(expected.size() == 2 * length, "invalid_plain_expectation");
-        if (bytes.get_ref<const std::string &>().compare(
-                2 * (lo - start), 2 * (hi - lo), expected, 2 * (lo - base),
-                2 * (hi - lo))) {
+        // The entire referenced full offer already underwent this comparison
+        // at root_offset. No new bytes are introduced by a checked suffix.
+        const auto span = 2 * (hi - lo);
+        const bool matches =
+            suffix || bytes.substr(2 * (lo - start), span) ==
+                          std::string_view(expected).substr(2 * (lo - base), span);
+        if (!matches) {
           plain_mismatch = true;
           wrong_content.insert(label);
         }
@@ -109,6 +147,8 @@ struct Trace {
                    {"message", label},
                    {"offset", lo - base},
                    {"length", hi - lo}});
+        if (op == "read_return" && c.contains("scenario_contract"))
+          e["matches_expected"] = matches;
         if (op == "write_accepted") {
           e["offer_seq"] = offer_seq;
           e["offer_match"] = match_offer;
@@ -269,6 +309,7 @@ void evaluate(Trace &t, const J &c, J &r) {
   auto s = c.at("scenario").get<std::string>();
   require(s.size() == 2 && s[0] == 'S' && s[1] >= '0' && s[1] <= '4',
           "invalid_scenario");
+  const bool endpoint = uses_endpoint_contract(c);
   J core = all({before(e["ready"], e["hs_begin"]),
                 before(e["hs_begin"], e["hs_complete"]),
                 before(e["hs_complete"], e["end"])});
@@ -292,11 +333,16 @@ void evaluate(Trace &t, const J &c, J &r) {
   J profile = all({match(f["hrr"], false), match(f["early_data"], false),
                    match(f["resumed"], false), match(dest["version"], 0x304),
                    present(dest["suite"]), present(dest["group"])});
+  J requested_ids = true;
+  bool ids_requested = false;
   for (auto key : {"suite", "group"}) {
     auto expected = "expected_" + std::string(key);
-    if (c.contains(expected) && !c[expected].is_null() && c[expected] != 0)
-      profile = all({profile, match(dest[key], c[expected])});
+    if (c.contains(expected) && !c[expected].is_null() && c[expected] != 0) {
+      ids_requested = true;
+      requested_ids = all({requested_ids, match(dest[key], c[expected])});
+    }
   }
+  profile = all({profile, requested_ids});
   J timeline = !t.plain_mismatch, peer_task = !t.plain_mismatch;
   for (auto msg : {"CAD", "SAD1", "SAD2"}) {
     bool cad = std::string_view(msg) == "CAD",
@@ -354,6 +400,18 @@ void evaluate(Trace &t, const J &c, J &r) {
       consistent &= validations.size() == 1 && u(valid, "offset") == 0 &&
                     u(valid, "length") == size;
     }
+    if (endpoint && !send) {
+      // A later wrong fragment disqualifies the task, not a genuine first
+      // return of the expected prefix. Never label a wrong prefix as SAD/CAD.
+      if (!fragments.empty() && fragments.front().at("offset") == 0 &&
+          fragments.front().at("matches_expected") == true)
+        first = fragments.front();
+      auto ordered = before(last, valid);
+      if (!consistent || ordered != true) {
+        consistent &= ordered != false;
+        valid = nullptr;
+      }
+    }
     item = {{"first_write_attempt", attempt},
             {"final_write_accept", send ? last : J(nullptr)},
             {"first_read_return", send ? J(nullptr) : first},
@@ -364,6 +422,8 @@ void evaluate(Trace &t, const J &c, J &r) {
     J task = all({J(consistent), J(pairs != false),
                   send ? present(last) : present(valid),
                   before(send ? last : valid, e["end"])});
+    if (endpoint && !send)
+      task = all({task, before(last, valid)});
     if (!first.is_null())
       detail = all({detail, before(e["hs_begin"], first)});
     timeline = all({timeline, detail});
@@ -382,6 +442,19 @@ void evaluate(Trace &t, const J &c, J &r) {
   auto greeting = point("SAD1", "final_write_accept"),
        response = point("SAD2", "first_write_attempt");
   J ordering = true;
+  if (endpoint && client && s == "S2") {
+    // Only the actual first-entry and explicit local callback return may
+    // identify these operations. TLS can finish internally inside the read.
+    const auto &begin = e["hs_begin"], &done = e["hs_complete"];
+    J first_op = begin.is_null() ? J(nullptr) : begin.value("first_operation", J(nullptr));
+    J confirmed = done.is_null() ? J(nullptr) : done.value("confirmed_by", J(nullptr));
+    J confirmation = match(confirmed, "handshake_until_local_complete");
+    if (confirmation == true)
+      confirmation = before(point("SAD1", "validated"), done);
+    ordering = all({match(first_op, "read_plain"),
+                    before(begin, point("SAD1", "first_read_return")), confirmation});
+    m["s2_read_first"] = ordering;
+  }
   if (client && (s == "S1" || s == "S3" || s == "S4"))
     ordering = before(e["hs_complete"], cad_write);
   if (client && (s == "S3" || s == "S4"))
@@ -389,24 +462,37 @@ void evaluate(Trace &t, const J &c, J &r) {
                                      point("SAD2", "first_read_return"))});
   if (!client && (s == "S3" || s == "S4"))
     ordering = all({before(e["hs_complete"], response),
-                    before(e["auth_accepted"], response),
+                    endpoint && e["auth_accepted"].is_null()
+                        ? J(true)
+                        : before(e["auth_accepted"], response),
                     before(cad_valid, response)});
   J early = nullptr;
   if (!client && (s == "S2" || s == "S4")) {
     early = before(greeting, e["hs_complete"]);
-    J proof = c.value("capability_proof", J(nullptr));
-    require(proof.is_null() || proof.is_boolean(), "invalid_capability_proof");
-    ordering = all({ordering, early, c.value("probe", false) ? J(true) : proof,
-                    f["server_first"] == false ? J(false) : J(true)});
+    if (endpoint) {
+      // An ordinary write before a *later confirmation* alone need not have
+      // used a pre-Finished send opportunity. Neither fact proves arrival.
+      early = all({early, match(f["server_first"], true)});
+      ordering = all({ordering, early});
+    } else {
+      J proof = c.value("capability_proof", J(nullptr));
+      require(proof.is_null() || proof.is_boolean(), "invalid_capability_proof");
+      ordering = all({ordering, early, c.value("probe", false) ? J(true) : proof,
+                      f["server_first"] != false});
+    }
   }
   if (s == "S4") {
     auto v1 = point("SAD1", "validated"), v2 = point("SAD2", "validated");
     auto same = !v1.is_null() && !v2.is_null() && v1.at("seq") == v2.at("seq");
     if (client) {
-      // Writing first proves CAD did not wait for SAD1. Reading an already
-      // available greeting first establishes order, not a causal dependency.
-      auto independent = before(cad_write, point("SAD1", "first_read_return"));
-      ordering = all({ordering, independent == true ? J(true) : J(nullptr)});
+      const auto read = point("SAD1", "first_read_return");
+      if (endpoint)
+        ordering = all({ordering, before(point("CAD", "final_write_accept"), read)});
+      else {
+        // Historical admission tested first write attempt, not acceptance.
+        auto independent = before(cad_write, read);
+        ordering = all({ordering, independent == true ? J(true) : J(nullptr)});
+      }
     }
     ordering = all({ordering, client ? (same ? J(true) : before(v1, v2))
                                      : before(greeting, response)});
@@ -416,7 +502,16 @@ void evaluate(Trace &t, const J &c, J &r) {
   m["full_handshake_auth"] = all({core, auth, profile});
   m["ordinary_server_first"] = early;
   m["message_timeline"] = timeline;
-  m["peer_task"] = all({m["full_handshake_auth"], peer_task, ordering});
+  J prerequisites = m["full_handshake_auth"];
+  if (endpoint) {
+    // A successful local handshake is not independent security evidence.
+    // Preserve known contradictions and explicitly requested negotiation IDs.
+    m["requested_negotiation"] = ids_requested ? requested_ids : J(nullptr);
+    prerequisites =
+        all({core, auth != false, profile != false, requested_ids,
+             f.value("endpoint_unsupported", J(nullptr)) != true});
+  }
+  m["peer_task"] = all({prerequisites, peer_task, ordering});
   m["task"] = all({m["peer_task"], timeline});
   J finish = e["hs_complete"];
   if (s == "S1")
@@ -440,6 +535,13 @@ void evaluate(Trace &t, const J &c, J &r) {
   r["lifecycle"] = e;
 }
 } // namespace
+bool uses_endpoint_contract(const J &c) {
+  if (!c.contains("scenario_contract"))
+    return false;
+  require(c.at("scenario_contract") == endpoint_contract_id,
+          "unsupported_scenario_contract");
+  return true;
+}
 J analyze_evidence(const std::string &data, const J &c) {
   J r = {{"status", "unknown"},          {"timing", {{"wall_ns", nullptr}}},
          {"timeline", J::object()},      {"events", J::array()},

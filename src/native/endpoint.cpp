@@ -1,0 +1,190 @@
+#include "native/endpoint_observe.hpp"
+#include <turtle/endpoint.h>
+#include <turtle/observe.h>
+#include <turtle/start.h>
+
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <string_view>
+
+namespace {
+using View = std::string_view;
+View env(const char *key) {
+  const char *s = std::getenv(key);
+  return s ? View(s) : View{};
+}
+struct Failure {
+  turtle_result result;
+};
+void require(bool ok) {
+  if (!ok)
+    throw Failure{TURTLE_ERROR};
+}
+void check(turtle_result rc, bool early_server_action = false) {
+  switch (rc) {
+  case TURTLE_OK:
+    return;
+  case TURTLE_UNSUPPORTED:
+    if (early_server_action)
+      turtle_observe_fact("server_first", 0);
+    [[fallthrough]];
+  case TURTLE_CLOSED:
+    throw Failure{rc};
+  default:
+    throw Failure{TURTLE_ERROR};
+  }
+}
+std::string supplied(View expected) {
+  std::string input(expected.size(), '\0');
+  require(std::fread(input.data(), 1, input.size(), stdin) == input.size() &&
+          input == expected);
+  return input;
+}
+
+struct Scenario {
+  const turtle_endpoint &ep;
+  bool started = false, read_first = false;
+
+  void begin_tls(bool reading = false) {
+    if (!started) {
+      started = true;
+      read_first = reading;
+      if (reading)
+        turtle::native::detail::read_first_event(turtle_observe_now(), false);
+      else
+        turtle_observe_event("hs_begin");
+    }
+  }
+  void handshake(turtle_hs_point at) {
+    begin_tls();
+    auto rc = ep.handshake_until(ep.conn, at);
+    auto returned = turtle_observe_now();
+    check(rc, at == TURTLE_SERVER_CAN_SEND);
+    if (read_first) {
+      turtle::native::detail::read_first_event(returned, true);
+      return;
+    }
+    turtle_observe_event_at(returned, at == TURTLE_SERVER_CAN_SEND
+                                          ? "hs_progress"
+                                          : "hs_complete");
+  }
+
+  void send(View rest, turtle_hs_point at = TURTLE_LOCAL_COMPLETE) {
+    const size_t total = rest.size();
+    uint64_t anchor = 0;
+    while (!rest.empty()) {
+      size_t n = 0;
+      if (rest.size() == total)
+        anchor = turtle::native::detail::full_offer(rest.data(), total);
+      else
+        turtle::native::detail::suffix_offer(anchor, total - rest.size(), rest.size());
+      auto rc = ep.write_plain(ep.conn, at, rest.data(), rest.size(), &n);
+      auto returned = turtle_observe_now();
+      check(rc, at == TURTLE_SERVER_CAN_SEND);
+      require(n && n <= rest.size());
+      turtle_observe_plain_at(returned, "write_accepted", rest.data(), n);
+      rest.remove_prefix(n);
+    }
+    if (at == TURTLE_SERVER_CAN_SEND)
+      turtle_observe_fact("server_first", 1);
+  }
+
+  // A single real TLS return can straddle the greeting/response boundary.
+  // Record it once, then check and publish each complete message separately.
+  void receive(View first, View second = {}) {
+    std::string bytes(first.size() + second.size(), '\0');
+    const std::array<View, 2> messages{first, second};
+    size_t used = 0, published = 0, next = 0;
+    while (used != bytes.size()) {
+      size_t n = 0;
+      size_t cap = bytes.size() - used;
+      char *out = bytes.data() + used;
+      begin_tls(true);
+      auto rc = ep.read_plain(ep.conn, out, cap, &n);
+      auto returned = turtle_observe_now();
+      check(rc);
+      require(n && n <= cap);
+      turtle_observe_plain_at(returned, "read_return", out, n);
+      used += n;
+      while (next < messages.size() && !messages[next].empty() &&
+             used - published >= messages[next].size()) {
+        auto msg = View(bytes).substr(published, messages[next].size());
+        require(msg == messages[next]);
+        turtle_observe_plain("validated", msg.data(), msg.size());
+        require(std::fwrite(msg.data(), 1, msg.size(), stdout) == msg.size() &&
+                std::fflush(stdout) == 0);
+        published += msg.size();
+        ++next;
+      }
+    }
+  }
+
+  void run() {
+    View role = env("TURTLE_ROLE"), scenario = env("TURTLE_SCENARIO");
+    require(role == "client" || role == "server");
+    require(scenario.size() == 2 && scenario[0] == 'S' && scenario[1] >= '0' &&
+            scenario[1] <= '4');
+    const bool client = role == "client";
+    const bool response = scenario == "S3" || scenario == "S4";
+    const bool request = scenario == "S1" || response;
+    const bool greeting = scenario == "S2" || scenario == "S4";
+    View cad = env("TURTLE_REQUEST"), sad1 = env("TURTLE_GREETING"),
+         sad2 = env("TURTLE_RESPONSE");
+    auto valid = [](View s) { return !s.empty() && s.size() <= 16384; };
+    require((!request || valid(cad)) && (!greeting || valid(sad1)) &&
+            (!response || valid(sad2)));
+
+    if (!ep.handshake_until ||
+        ((client ? request : (greeting || response)) && !ep.write_plain) ||
+        ((client ? (greeting || response) : request) && !ep.read_plain))
+      throw Failure{TURTLE_UNSUPPORTED};
+
+    // CAD and the initial greeting are unconditionally supplied. Stage them
+    // outside the measured interval; the response is released only after CAD.
+    std::string outgoing;
+    if (client && request)
+      outgoing = supplied(cad);
+    if (!client && greeting)
+      outgoing = supplied(sad1);
+    turtle_observe_event("ready");
+    require(turtle_wait_start() >= 0);
+    if (!client && greeting) {
+      handshake(TURTLE_SERVER_CAN_SEND);
+      send(outgoing, TURTLE_SERVER_CAN_SEND);
+    }
+    if (client && scenario == "S2")
+      receive(sad1); // Arm an ordinary read, not a full-handshake barrier.
+    handshake(TURTLE_LOCAL_COMPLETE);
+    if (client && request)
+      send(outgoing);
+    if (!client && request)
+      receive(cad);
+    if (response) {
+      if (!client)
+        send(supplied(sad2));
+      else if (greeting)
+        receive(sad1, sad2);
+      else
+        receive(sad2);
+    }
+    turtle_observe_event("end");
+  }
+};
+} // namespace
+
+extern "C" turtle_result turtle_run_endpoint(const turtle_endpoint *ep) {
+  if (!ep)
+    return TURTLE_ERROR;
+  try {
+    Scenario{*ep}.run();
+    return TURTLE_OK;
+  } catch (const Failure &failure) {
+    if (failure.result == TURTLE_UNSUPPORTED)
+      turtle_observe_fact("endpoint_unsupported", 1);
+    return failure.result;
+  } catch (...) {
+    return TURTLE_ERROR; // Never propagate a C++ exception to the C caller.
+  }
+}
