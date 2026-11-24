@@ -9,6 +9,7 @@
 #include <set>
 #include <sstream>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/wait.h>
@@ -135,64 +136,129 @@ Json collect_images(pid_t launcher, pid_t participant, Deadline until) {
   }
   return inventory;
 }
+enum class Wait { complete, timeout, cancelled, failed };
+Wait wait_bounded(pid_t pid, Deadline until, int cancel_fd) {
+  pollfd cancel{cancel_fd, POLLIN, 0};
+  for (;;) {
+    siginfo_t info{};
+    auto rc = waitid(P_PID, static_cast<id_t>(pid), &info, WEXITED | WNOHANG | WNOWAIT);
+    if (rc == 0 && info.si_pid == pid)
+      return Wait::complete;
+    if (rc < 0 && errno != EINTR)
+      return Wait::failed;
+    auto ms = std::chrono::ceil<std::chrono::milliseconds>(
+        until - std::chrono::steady_clock::now()).count();
+    if (ms <= 0)
+      return Wait::timeout;
+    auto ready = poll(&cancel, 1, static_cast<int>(std::min<int64_t>(ms, 5)));
+    if (ready > 0)
+      return Wait::cancelled;
+    if (ready < 0 && errno != EINTR)
+      return Wait::failed;
+  }
+}
+pid_t reap(pid_t pid, int *status = nullptr) {
+  pid_t rc;
+  do {
+    rc = waitpid(pid, status, 0);
+  } while (rc < 0 && errno == EINTR);
+  return rc;
+}
+constexpr size_t limit = 8 * 1024 * 1024;
+// A private subreaper owns only the file scanner and its hash process tree.
+// It can reap them even when the scanner itself is killed during a file read.
+[[noreturn]] void monitor_images(pid_t launcher, pid_t participant, char *buffer,
+                                 Deadline until, int cancel_fd) {
+  if (prctl(PR_SET_CHILD_SUBREAPER, 1) < 0)
+    _exit(1);
+  const auto scanner = fork();
+  if (!scanner) {
+    close(cancel_fd);
+    if (setpgid(0, 0) < 0)
+      _exit(1);
+    try {
+      const auto text = collect_images(launcher, participant, until).dump();
+      if (text.size() >= limit)
+        _exit(1);
+      std::memcpy(buffer, text.c_str(), text.size() + 1);
+      _exit(0);
+    } catch (...) {
+      _exit(1);
+    }
+  }
+  if (scanner < 0)
+    _exit(1);
+  setpgid(scanner, scanner);
+  int status = 0;
+  const auto result = wait_bounded(scanner, until, cancel_fd);
+  // WNOWAIT pins this PID even on success. Clean up an inherited background
+  // hash helper before releasing the group ID, never another app's group.
+  kill(-scanner, SIGKILL);
+  if (result != Wait::complete)
+    kill(scanner, SIGKILL);
+  auto reaped = reap(scanner, &status);
+  while (reap(-1) > 0) {} // Only descendants of this private monitor.
+
+  if (result == Wait::timeout)
+    _exit(2);
+  _exit(reaped == scanner && result == Wait::complete && WIFEXITED(status) && !WEXITSTATUS(status) ? 0 : 1);
+}
 } // namespace
-Json image_inventory(pid_t launcher, pid_t participant, Deadline until, int cancel_fd) {
+ImageSnapshots::~ImageSnapshots() {
+  if (monitor_ > 0)
+    reap(monitor_);
+}
+Json ImageSnapshots::collect(pid_t launcher, pid_t participant, Deadline until, int cancel_fd) {
   auto unavailable = [&](const char *reason) -> Json {
     return {{"launcher_pid", launcher}, {"pid", participant}, {"available", false}, {"reason", reason}};
   };
-  // A cancelled helper may still be in a kernel file operation. Do not
-  // block joint release on waitpid, or accumulate more helpers behind it.
-  static thread_local pid_t stopping = -1;
-  if (stopping > 0) {
-    auto reaped = waitpid(stopping, nullptr, WNOHANG);
-    if (!reaped || (reaped < 0 && errno == EINTR))
+  if (monitor_ > 0) {
+    auto rc = waitpid(monitor_, nullptr, WNOHANG);
+    if (!rc || (rc < 0 && errno == EINTR))
       return unavailable("previous_image_snapshot_stopping");
-    stopping = -1;
+    monitor_ = -1;
   }
-  if (std::chrono::steady_clock::now() >= until)
+  // Reserve a slice of the existing budget for stopping work before release.
+  const auto stop_at = until - std::chrono::milliseconds(20);
+  if (std::chrono::steady_clock::now() >= stop_at)
     return unavailable("image_snapshot_timeout");
   // Only pages written by the helper are populated. A large inventory cannot
   // stall the helper on pipe capacity while its parent waits for completion.
-  constexpr size_t limit = 8 * 1024 * 1024;
   void *shared = mmap(nullptr, limit, PROT_READ | PROT_WRITE,
                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   if (shared == MAP_FAILED)
     return unavailable("image_snapshot_buffer_failed");
   auto unmap = [](char *p) { munmap(p, limit); };
   std::unique_ptr<char, decltype(unmap)> buffer(static_cast<char *>(shared), unmap);
-  const auto pid = fork();
-  if (!pid) {
-    if (setpgid(0, 0) != 0)
-      _exit(1);
-    try {
-      auto text = collect_images(launcher, participant, until).dump();
-      if (text.size() >= limit)
-        _exit(1);
-      std::memcpy(buffer.get(), text.c_str(), text.size() + 1);
-      _exit(0);
-    } catch (...) {
-      _exit(1);
-    }
+  int control[2];
+  if (pipe2(control, O_CLOEXEC) < 0)
+    return unavailable("image_snapshot_pipe_failed");
+  monitor_ = fork();
+  if (!monitor_) {
+    close(control[1]);
+    monitor_images(launcher, participant, buffer.get(), stop_at, control[0]);
   }
-  if (pid < 0)
+  close(control[0]);
+  if (monitor_ < 0) {
+    close(control[1]);
     return unavailable("image_snapshot_fork_failed");
-  setpgid(pid, pid);
-  pollfd cancel{cancel_fd, POLLIN, 0};
-  int status = 0;
-  for (;;) {
-    const auto rc = waitpid(pid, &status, WNOHANG);
-    if (rc == pid)
-      break;
-    if (rc < 0 && errno != EINTR)
-      return unavailable("image_snapshot_wait_failed");
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        until - std::chrono::steady_clock::now()).count();
-    if (ms > 0 && poll(&cancel, 1, static_cast<int>(std::min<int64_t>(ms, 5))) <= 0)
-      continue;
-    kill(-pid, SIGKILL); // includes sha256sum; never signal either TLS role
-    stopping = pid;
-    return unavailable(ms > 0 ? "image_snapshot_cancelled" : "image_snapshot_timeout");
   }
+  int status = 0;
+  const auto result = wait_bounded(monitor_, stop_at, cancel_fd);
+  close(control[1]); // EOF cancels only this inventory, not either TLS role.
+  if (result != Wait::complete) {
+    auto retire_by = std::min(until, std::chrono::steady_clock::now() + std::chrono::milliseconds(20));
+    if (wait_bounded(monitor_, retire_by, -1) == Wait::complete) {
+      reap(monitor_);
+      monitor_ = -1;
+    }
+    return unavailable(result == Wait::timeout ? "image_snapshot_timeout" :
+                       result == Wait::cancelled ? "image_snapshot_cancelled" : "image_snapshot_wait_failed");
+  }
+  reap(monitor_, &status);
+  monitor_ = -1;
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 2)
+    return unavailable("image_snapshot_timeout");
   if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
     return unavailable("image_snapshot_failed");
   auto inventory = Json::parse(buffer.get(), nullptr, false);

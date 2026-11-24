@@ -86,4 +86,5 @@ jq -e '.successful_measurements==1 and
      .measured_transport_hook=={verified:true,source:"library_io",reason:null} and
      .participants.server.metrics.library_io==null and (.pmu_status!="available" or .eligible==true))' "$run/analysis.json" >/dev/null
 replay "$run"
+sh "$fixture/../native-preparation-cancel.sh" "$turtle" "$work/client-mtls-S0.json" "$work/prepare"
 printf '20 wired role/auth/scenario cells, 2 asymmetric hook controls and identical replays: %s\n' "$work"

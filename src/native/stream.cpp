@@ -423,6 +423,7 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
     if (cancel >= 0 && ::poll(&f, 1, 0) > 0)
       throw std::runtime_error("interrupted");
   };
+  process::ImageSnapshots image_snapshots;
   try {
     network.start(p);
     // Neither app can enter its bounded start wait before its launch.
@@ -450,9 +451,12 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
       for (auto who : {"client", "server"}) {
         auto pid = ch[who].child->pid;
         auto begin = ns();
-        auto inventory = process::image_inventory(pid, pid, until, cancel);
+        auto inventory = image_snapshots.collect(pid, pid, until, cancel);
         inventory.update({{"phase", "prepared"}, {"host_begin_ns", begin}, {"host_end_ns", ns()}});
         raw["images"][who] = std::move(inventory);
+        // A missing inventory is optional; an interrupted attempt must not
+        // release either waiting participant into TLS.
+        clock_check();
       }
     };
     PreparedStart startup(raw, end, p.at("network") == "netem");
