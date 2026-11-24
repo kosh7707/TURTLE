@@ -17,6 +17,7 @@ Json counter_stamp(const Stamp &s) {
   auto j = stamp(s);
   const auto &p = s.perf;
   j.update({{"available", p.available},
+            {"tid", number(p.tid, p.tid > 0)},
             {"cycles", number(p.cycles, p.available)},
             {"instructions", number(p.instructions, p.available)},
             {"time_enabled_ns", number(p.enabled_ns, p.available)},
@@ -82,7 +83,9 @@ void write(const std::string &directory, const measure::Recorder &recorder,
   const auto &c = recorder.counters();
   Json counters = identity;
   counters.update(
-      {{"schema", "turtle.counters.v1"},
+      {{"schema", r.role_sdk ? "turtle.counters.v2" : "turtle.counters.v1"},
+       {"owner_tid", number(c.owner_tid(), c.owner_tid() > 0)},
+       {"collector", "linux_perf_event_open_group"},
        {"requested", c.requested()},
        {"availability", measure::name(c.availability())},
        {"reason", c.reason() ? Json(c.reason()) : Json(nullptr)},
@@ -193,6 +196,16 @@ void write(const std::string &directory, const measure::Recorder &recorder,
          {"wire_send_bytes", recorder.detailed() ? Json(r.scenario_wire_send) : Json(nullptr)},
          {"wire_receive_bytes", recorder.detailed() ? Json(r.scenario_wire_receive) : Json(nullptr)}}},
        {"streams", Json::object()}});
+  if (r.role_sdk) {
+    out["collection"]["role_contract"] = "pull.v1";
+    // Eligibility belongs to offline analysis; the endpoint cannot verify its peer.
+    out["collection"]["ordinary_timing_sample"] = nullptr;
+    out["collection"]["transport_hooks"] = {{"bound", r.counts_bound},
+        {"send_attempts", number(r.send_attempts, r.counts_bound)},
+        {"positive_receives", number(r.positive_receives, r.counts_bound)}};
+    out["capability"]["client_hello_bytes"] = r.client_hello_bytes;
+    out["capability"]["presend_begin"] = r.presend_begin;
+  }
   if (recorder.detailed()) for (auto layer : {Layer::tls, Layer::wire})
     for (auto direction : {Direction::receive, Direction::send}) {
       auto key = std::string(layer == Layer::tls ? "tls_" : "wire_") +

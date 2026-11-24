@@ -1,3 +1,2 @@
 #pragma once
-#include <turtle/implementation.h>
-namespace turtle_wolfssl { turtle_implementation implementation(); }
+namespace turtle_wolfssl { int run(int argc, char** argv); }

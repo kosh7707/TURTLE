@@ -1,4 +1,5 @@
-#include <turtle/implementation.h>
+#include <turtle/role.h>
+#include <openssl/x509v3.h>
 #include "implementation.hpp"
 #include "configure.hpp"
 
@@ -14,7 +15,7 @@ struct State {
     std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context{nullptr, SSL_CTX_free};
     std::unique_ptr<SSL, decltype(&SSL_free)> ssl{nullptr, SSL_free};
     turtle_transport transport{};
-    bool eof = false, first_ready = false;
+    bool eof = false;
     char early_scratch = 0;
 };
 
@@ -78,7 +79,7 @@ long control(BIO* bio, int command, long, void*) {
     return 0;
 }
 
-void* prepare(turtle_role role, int argc, const char* const* argv, turtle_transport transport) {
+std::unique_ptr<State> make_tls(turtle_role role, int argc, const char* const* argv, turtle_transport transport) {
     turtle_openssl::Configuration config;
     if (!turtle_openssl::parse(config, role, argc, argv)) return nullptr;
     if ((role == TURTLE_SERVER ? config.trusted_certificate != nullptr : config.certificate != nullptr)
@@ -101,6 +102,11 @@ void* prepare(turtle_role role, int argc, const char* const* argv, turtle_transp
     const int verify = role == TURTLE_CLIENT ? SSL_VERIFY_PEER :
         transport.mutual_auth ? SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT : SSL_VERIFY_NONE;
     SSL_set_verify(state->ssl.get(), verify, nullptr);
+    SSL_set_mode(state->ssl.get(), SSL_MODE_ENABLE_PARTIAL_WRITE);
+    if (verify != SSL_VERIFY_NONE) {
+        SSL_set_hostflags(state->ssl.get(), X509_CHECK_FLAG_NEVER_CHECK_SUBJECT);
+        if (SSL_set1_host(state->ssl.get(), config.peer_name) != 1) return nullptr;
+    }
     BIO* bio = BIO_new(state->method.get());
     if (bio == nullptr)
         return nullptr;
@@ -117,91 +123,86 @@ void* prepare(turtle_role role, int argc, const char* const* argv, turtle_transp
         SSL_set_accept_state(state->ssl.get());
     } else {
         SSL_set_connect_state(state->ssl.get());
-        if (SSL_set_tlsext_host_name(state->ssl.get(), config.peer_name) != 1 ||
-            SSL_set1_host(state->ssl.get(), config.peer_name) != 1)
+        if (SSL_set_tlsext_host_name(state->ssl.get(), config.peer_name) != 1)
             return nullptr;
     }
-    return state.release();
+    return state;
 }
 
-void release(void* opaque) noexcept { delete static_cast<State*>(opaque); }
-
-int status(SSL* ssl, int rc) {
-    switch (SSL_get_error(ssl, rc)) {
-        case SSL_ERROR_WANT_READ: return TURTLE_WANT_READ;
-        case SSL_ERROR_WANT_WRITE: return TURTLE_WANT_WRITE;
-        case SSL_ERROR_ZERO_RETURN: return 0;
-        default: return -1;
-    }
+bool facts(SSL* ssl, bool mutual, turtle_handshake_info& info) {
+    if (!SSL_is_init_finished(ssl) ||
+        SSL_get_early_data_status(ssl) != SSL_EARLY_DATA_NOT_SENT) return false;
+    info = {static_cast<uint16_t>(SSL_version(ssl)), SSL_session_reused(ssl),
+            SSL_get_cipher_name(ssl), SSL_get0_group_name(ssl),
+            mutual ? TURTLE_PROFILE_MTLS_1RTT : TURTLE_PROFILE_SERVER_AUTH_1RTT,
+            (SSL_get_verify_mode(ssl) & SSL_VERIFY_PEER) && SSL_get0_peer_certificate(ssl) &&
+                SSL_get_verify_result(ssl) == X509_V_OK, TURTLE_UNPADDED_APPLICATION_TAIL};
+    return true;
 }
 
-int handshake(void* opaque) {
-    auto* ssl = static_cast<State*>(opaque)->ssl.get();
-    ERR_clear_error();
-    const int rc = SSL_do_handshake(ssl);
-    return rc == 1 ? 1 : status(ssl, rc);
-}
-
-int query(void* opaque, turtle_handshake_info* info) {
-    auto& state = *static_cast<State*>(opaque);
-    auto* ssl = state.ssl.get();
-    if (!SSL_is_init_finished(ssl) || SSL_get_early_data_status(ssl) != SSL_EARLY_DATA_NOT_SENT) return 0;
-    *info = {static_cast<uint16_t>(SSL_version(ssl)), SSL_session_reused(ssl),
-             SSL_get_cipher_name(ssl), SSL_get0_group_name(ssl),
-             state.transport.mutual_auth ? TURTLE_PROFILE_MTLS_1RTT : TURTLE_PROFILE_SERVER_AUTH_1RTT,
-             (SSL_get_verify_mode(ssl) & SSL_VERIFY_PEER) && SSL_get0_peer_certificate(ssl) &&
-                 SSL_get_verify_result(ssl) == X509_V_OK, TURTLE_UNPADDED_APPLICATION_TAIL};
-    return 1;
-}
-
-std::ptrdiff_t server_first(void* opaque, const void* buffer, std::size_t size) {
-    auto& s = *static_cast<State*>(opaque);
+int step(turtle_session* session, State& s, const turtle_action& a) {
     auto* ssl = s.ssl.get();
-    if (!size || !SSL_is_server(ssl) || SSL_is_init_finished(ssl)) return -1;
-    std::size_t n = 0;
-    if (!s.first_ready) {
+    size_t bytes = 0;
+    auto call = [&](auto&& operation) {
         ERR_clear_error();
-        const int rc = SSL_read_early_data(ssl, &s.early_scratch, 1, &n);
-        if (rc == SSL_READ_EARLY_DATA_ERROR) return status(ssl, 0);
-        if (rc != SSL_READ_EARLY_DATA_FINISH || n != 0 || SSL_is_init_finished(ssl)) return -1;
-        s.first_ready = true;
+        turtle_before(session);
+        const int rc = operation();
+        turtle_returned(session);
+        return rc;
+    };
+    int rc;
+    switch (a.op) {
+    case TURTLE_HS: rc = call([&] { return SSL_do_handshake(ssl); }); break;
+    case TURTLE_FIRST_HS:
+        rc = call([&] { return SSL_read_early_data(ssl, &s.early_scratch, 1, &bytes); });
+        // A SUCCESS here represents client 0-RTT data, forbidden in this profile.
+        if (rc == SSL_READ_EARLY_DATA_SUCCESS || bytes ||
+            (rc == SSL_READ_EARLY_DATA_FINISH && SSL_is_init_finished(ssl)))
+            return turtle_submit(session, {TURTLE_ERROR, 0, 0}, nullptr);
+        rc = rc == SSL_READ_EARLY_DATA_FINISH ? 1 : 0;
+        break;
+    case TURTLE_FIRST_WRITE: rc = call([&] { return SSL_write_early_data(ssl, a.out, a.size, &bytes); }); break;
+    case TURTLE_WRITE: rc = call([&] { return SSL_write_ex(ssl, a.out, a.size, &bytes); }); break;
+    case TURTLE_READ: rc = call([&] { return SSL_read_ex(ssl, a.in, a.size, &bytes); }); break;
+    case TURTLE_SHUTDOWN:
+        rc = call([&] { return SSL_shutdown(ssl); });
+        if (rc == 0) return turtle_submit(session, {TURTLE_AGAIN_READ, 0, 0}, nullptr);
+        break;
+    default: return -1;
     }
-    ERR_clear_error();
-    const int rc = SSL_write_early_data(ssl, buffer, size, &n);
-    return rc == 1 ? static_cast<std::ptrdiff_t>(n) : status(ssl, rc);
+    turtle_result result{TURTLE_OK, bytes, 0};
+    turtle_handshake_info negotiated{};
+    const turtle_handshake_info* evidence = nullptr;
+    if (rc != 1) {
+        switch (SSL_get_error(ssl, rc)) {
+        case SSL_ERROR_WANT_READ:
+            result = {TURTLE_AGAIN_READ, 0, a.op == TURTLE_WRITE || a.op == TURTLE_READ}; break;
+        case SSL_ERROR_WANT_WRITE: result = {TURTLE_AGAIN_WRITE, 0, 0}; break;
+        case SSL_ERROR_ZERO_RETURN: result = {TURTLE_EOF, 0, 0}; break;
+        default: result = {TURTLE_ERROR, 0, 0};
+        }
+    } else if (a.op == TURTLE_HS && facts(ssl, s.transport.mutual_auth, negotiated)) {
+        evidence = &negotiated;
+    }
+    return turtle_submit(session, result, evidence);
+}
 }
 
-std::ptrdiff_t read(void* opaque, void* buffer, std::size_t size) {
-    std::size_t received = 0;
-    ERR_clear_error();
-    auto* ssl = static_cast<State*>(opaque)->ssl.get();
-    const int result = SSL_read_ex(ssl, buffer, size, &received);
-    if (result == 1) return static_cast<std::ptrdiff_t>(received);
-    return status(ssl, result);
-}
-
-std::ptrdiff_t write(void* opaque, const void* buffer, std::size_t size) {
-    if (!size) return -1;
-    std::size_t sent = 0;
-    ERR_clear_error();
-    auto* ssl = static_cast<State*>(opaque)->ssl.get();
-    const int rc = SSL_write_ex(ssl, buffer, size, &sent);
-    return rc == 1 ? static_cast<std::ptrdiff_t>(sent) : status(ssl, rc);
-}
-
-int shutdown(void* opaque) {
-    auto* ssl = static_cast<State*>(opaque)->ssl.get();
-    ERR_clear_error();
-    int rc = SSL_shutdown(ssl);
-    if (rc == 0) return TURTLE_WANT_READ; // close_notify sent; await peer
-    return rc == 1 ? 1 : status(ssl, rc);
-}
-
-} // namespace
-
-turtle_implementation turtle_openssl::implementation() {
-    return {OpenSSL_version(OPENSSL_VERSION), prepare, release, handshake,
-            read, write, shutdown, query, server_first,
-            (1u << TURTLE_BIO_BEGIN) | (1u << TURTLE_BIO_END) |
-            (1u << TURTLE_RECORD_HEADER) | (1u << TURTLE_HANDSHAKE_MESSAGE)};
+int turtle_openssl::run(int argc, char** argv) {
+    constexpr unsigned hooks = (1u << TURTLE_BIO_BEGIN) | (1u << TURTLE_BIO_END) |
+        (1u << TURTLE_RECORD_HEADER) | (1u << TURTLE_HANDSHAKE_MESSAGE);
+    auto* session = turtle_session_open(argc, argv, OpenSSL_version(OPENSSL_VERSION), hooks, 1);
+    if (!session) return 1;
+    const auto* config = turtle_session_config(session);
+    turtle_transport io{};
+    {
+        auto tls = turtle_session_transport(session, &io) == 1
+            ? make_tls(config->role, config->argc, config->argv, io) : nullptr;
+        if (turtle_session_ready(session, tls != nullptr) == 1) {
+            turtle_action action{};
+            while (turtle_pull(session, &action) == 1 && action.op != TURTLE_DONE)
+                if (step(session, *tls, action) != 1) break;
+        }
+    }
+    return turtle_session_close(session);
 }

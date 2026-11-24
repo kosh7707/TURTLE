@@ -11,7 +11,8 @@ std::size_t number(std::string_view value) {
     if (error != std::errc{} || end != value.data() + value.size()) throw std::runtime_error("invalid_number");
     return n;
 }
-turtle::run::Options options(int argc, char** argv) {
+}
+turtle::run::Options turtle::run::options(int argc, char** argv) {
     turtle::run::Options o;
     bool role = false;
     for (int i = 1; i < argc; ++i) {
@@ -58,16 +59,4 @@ turtle::run::Options options(int argc, char** argv) {
     if (!o.check && !o.controlled) throw std::runtime_error("controlled_execution_required");
     if (!role || (!o.check && o.output.empty())) throw std::runtime_error("role_and_output_required");
     return o;
-}
-}
-extern "C" int turtle_endpoint_main(const turtle_implementation* api, int argc, char** argv) {
-    try {
-        if (!api || !api->name || !api->prepare || !api->release || !api->handshake || !api->read || !api->write || !api->query)
-            throw std::runtime_error("incomplete_function_table");
-        return turtle::run::run(*api, options(argc, argv));
-    } catch (const std::exception& e) {
-        std::cerr << e.what() << "\nusage: " << argv[0]
-                  << " --role client|server --output DIR [--host IPv4 --port N --controlled] -- IMPLEMENTATION_ARGS\n";
-        return 1;
-    }
 }

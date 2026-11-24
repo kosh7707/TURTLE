@@ -1,5 +1,5 @@
 #pragma once
-#include <turtle/implementation.h>
+#include <turtle/role_types.h>
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
 namespace turtle_wolfssl {
@@ -8,7 +8,7 @@ struct Configuration {
     const char* certificate = nullptr;
     const char* private_key = nullptr;
     const char* trusted_certificate = nullptr;
-    const char* peer_name = "localhost";
+    const char* peer_name = nullptr;
     int group = WOLFSSL_ECC_X25519;
 };
 bool parse(Configuration&, turtle_role, int, const char* const*);

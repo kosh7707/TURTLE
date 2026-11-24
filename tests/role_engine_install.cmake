@@ -1,0 +1,22 @@
+# The consumer has its own build tree; no project source/internal includes,
+# dependency checkout, or second scenario-specific build is available to it.
+cmake_minimum_required(VERSION 3.20)
+function(run)
+    execute_process(COMMAND ${ARGV} RESULT_VARIABLE rc)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "External role SDK command failed: ${ARGV}")
+    endif()
+endfunction()
+file(MAKE_DIRECTORY "${WORK}/consumer")
+configure_file("${SOURCE}" "${WORK}/consumer/main.cpp" COPYONLY)
+file(WRITE "${WORK}/consumer/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.20)
+project(native_app LANGUAGES C CXX)
+find_package(TURTLE CONFIG REQUIRED)
+add_executable(app main.cpp)
+target_link_libraries(app PRIVATE turtle::endpoint)
+]=])
+run("${CMAKE_COMMAND}" --install "${BUILD}" --prefix "${WORK}/sdk")
+run("${CMAKE_COMMAND}" -S "${WORK}/consumer" -B "${WORK}/external-build" "-DCMAKE_PREFIX_PATH=${WORK}/sdk")
+run("${CMAKE_COMMAND}" --build "${WORK}/external-build")
+run("${WORK}/external-build/app")

@@ -2,6 +2,7 @@
 #include "analysis/analysis.hpp"
 #include "build_info.hpp"
 #include "control/network.hpp"
+#include "control/one_side.hpp"
 #include "control/spec.hpp"
 #include "profiling/profiling.hpp"
 #include <algorithm>
@@ -21,6 +22,12 @@ namespace turtle::control {
 using artifact::Json;
 namespace fs = std::filesystem;
 namespace {
+// Opaque implementation arguments are interpreted by the app, relative to
+// the profile directory. The controller and output paths are absolute.
+struct ProfileDirectory {
+  fs::path original=fs::current_path();
+  ~ProfileDirectory() {std::error_code ignored;fs::current_path(original,ignored);}
+};
 unsigned parse_unsigned(std::string_view s, unsigned limit,
                         const char *reason) {
   unsigned n{};
@@ -303,9 +310,38 @@ Json perform(const fs::path &root, const Json &spec, const Json &c,
         throw;
     }
   };
-  auto r =
-      run_pair(c, root, a, prefixes, netem ? Topology::server_ip : "127.0.0.1",
-               spec.at("timeout_seconds"), cancel, collect);
+  Json active = c;
+  bool bound = c.contains("build_sha256");
+  bool probe = bound && a.at("purpose") == "capability";
+  if (probe)
+    active["client"] = c.at("probe_client");
+  auto binding = [&] {
+    auto raw = [&](const char *side) {
+      auto sha = digest(active.at(side).at("binary").get<std::string>());
+      if (sha != c.at("build_sha256")
+                     .at(probe && std::string_view(side) == "client"
+                             ? "probe_client"
+                             : side)
+                     .get_ref<const std::string &>())
+        throw std::runtime_error("endpoint_binary_changed:" +
+                                 std::string(side));
+      return sha;
+    };
+    return Json{{"run_id", a.at("run_id")},
+                {"configuration", a.at("configuration")},
+                {"purpose", a.at("purpose")},
+                {"server_sha256", raw("server")},
+                {"client_sha256", raw("client")},
+                {"fixture_sha256", c.at("fixture_sha256")},
+                {"probe_client_substituted", probe}};
+  };
+  if (bound)
+    artifact::save(root / "binding.json", binding());
+  auto r = run_pair(active, root, a, prefixes,
+                    netem ? Topology::server_ip : "127.0.0.1",
+                    spec.at("timeout_seconds"), cancel, collect);
+  if (bound)
+    binding();
   auto health = capture.finish();
   if (unavailable.contains("capture"))
     health = {{"availability", "unsupported"},
@@ -326,16 +362,48 @@ Json perform(const fs::path &root, const Json &spec, const Json &c,
 } // namespace
 
 int check(const fs::path &path) {
-  auto r = preflight(resolve_spec(artifact::load(path)));
+  auto spec = artifact::load(path);
+  ProfileDirectory location;
+  auto self = fs::canonical("/proc/self/exe");
+  if (spec.contains("target") || spec.contains("v")) {
+    fs::current_path(fs::absolute(path).parent_path());
+    spec = one_side(spec, fs::current_path(), self);
+  }
+  spec = resolve_spec(std::move(spec));
+  TrialIdentities fixtures;
+  fixtures.prepare(spec, self, -1);
+  auto r = preflight(spec);
   std::cout << r.dump(2) << '\n';
   return r.at("ready") == true ? 0 : 1;
 }
 int execute(const fs::path &spec_path, const fs::path &output,
             const std::string &self, int cancel) {
   auto spec = artifact::load(spec_path);
+  auto root = fs::absolute(output);
+  ProfileDirectory location;
+  if (spec.is_object() && !spec.contains("v") && !spec.contains("target") &&
+      !spec.contains("configurations") && spec.contains("client") &&
+      spec.contains("server")) {
+    auto bin = fs::path(self).parent_path() / "turtle-pair";
+    auto profile = fs::absolute(spec_path);
+    ::execl(bin.c_str(), bin.c_str(), profile.c_str(), root.c_str(),
+            static_cast<char *>(nullptr));
+    throw std::runtime_error("pair_launcher_unavailable");
+  }
+  if (spec.contains("target") || spec.contains("v")) {
+    fs::current_path(fs::absolute(spec_path).parent_path());
+    spec = one_side(spec, fs::current_path(), self);
+  }
   if (spec.contains("retry_of"))
     throw std::runtime_error("use_retry_command_for_linked_attempts");
-  return execute_spec(std::move(spec), output, self, cancel);
+  return execute_spec(std::move(spec), root, self, cancel);
+}
+int execute_target(const std::string &role, Json argv, const fs::path &output,
+                   const std::string &self, int cancel) {
+  Json input = {{"v", 1},
+                {"target", {{"role", role}, {"argv", std::move(argv)}}}};
+  return execute_spec(one_side(input, fs::current_path(), self), output, self,
+                      cancel);
 }
 int execute_spec(Json spec, const fs::path &output, const std::string &self,
                  int cancel) {
@@ -343,6 +411,9 @@ int execute_spec(Json spec, const fs::path &output, const std::string &self,
   auto root = fs::absolute(output);
   if (fs::exists(root) || !fs::create_directories(root))
     throw std::runtime_error("output_must_be_new");
+  TrialIdentities identities;
+  identities.prepare(spec, self, cancel);
+  identities.export_public(root);
   auto checks = preflight(spec, cancel);
   artifact::save(root / "check.json", checks);
   auto order = schedule(spec, checks);

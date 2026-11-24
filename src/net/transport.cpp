@@ -68,11 +68,22 @@ Connection::Connection(Socket socket, measure::Recorder& recorder, std::size_t c
             ::setsockopt(socket_.get(), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0 &&
             ::setsockopt(socket_.get(), IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) == 0, "socket_options_failed");
 }
+bool Connection::readable() const noexcept {
+    pollfd fd{socket_.get(), POLLIN, 0};
+    return ::poll(&fd,1,0)>0 && (fd.revents&(POLLIN|POLLHUP|POLLERR));
+}
 void Connection::wait(bool writing) const {
     pollfd fd{socket_.get(), static_cast<short>(writing ? POLLOUT : POLLIN), 0};
     int ready;
     do { ready = ::poll(&fd, 1, static_cast<int>(timeout_ * 1000)); } while (ready < 0 && errno == EINTR);
     require(ready > 0 && !(fd.revents & POLLNVAL), ready == 0 ? "socket_wait_timeout" : "socket_wait_failed");
+}
+int Connection::wait_either(bool first_writing, bool second_writing) const {
+    const short a = first_writing ? POLLOUT : POLLIN, b = second_writing ? POLLOUT : POLLIN;
+    pollfd fd{socket_.get(), static_cast<short>(a | b), 0};
+    int n; do { n=::poll(&fd,1,static_cast<int>(timeout_*1000)); } while (n<0 && errno==EINTR);
+    require(n>0 && !(fd.revents&POLLNVAL), n==0?"socket_wait_timeout":"socket_wait_failed");
+    return (fd.revents&(POLLHUP|POLLERR)) ? 3 : ((fd.revents&a)?1:0)|((fd.revents&b)?2:0);
 }
 std::uint64_t Connection::queued(std::uint64_t expected) const {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_);

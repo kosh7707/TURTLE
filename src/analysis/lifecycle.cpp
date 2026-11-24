@@ -1,6 +1,7 @@
 #include "analysis/analysis.hpp"
 #include "analysis/evidence.hpp"
 #include "profiling/profiling.hpp"
+#include "process/process.hpp"
 #include <algorithm>
 #include <cctype>
 #include <set>
@@ -15,6 +16,23 @@ using artifact::measurement;
 namespace {
 bool has(const Json &list, const std::string &value) {
   return std::find(list.begin(), list.end(), value) != list.end();
+}
+// Verify only raw files; analysis.json is derived anew. Never follow archived
+// symlinks or allow a missing manifest member to turn into unchecked evidence.
+void verify_evidence(const fs::path &dir, const Json &hashes) {
+  require(hashes.is_object() && !hashes.empty(), "raw_artifact_inventory_missing");
+  std::size_t seen = 0;
+  for (const auto &entry : fs::recursive_directory_iterator(dir)) {
+    require(!entry.is_symlink(), "raw_artifact_symlink");
+    if (entry.is_directory()) continue;
+    const auto name = entry.path().lexically_relative(dir).generic_string();
+    if (name == "analysis.json" || name == "client/cpu-samples.json" ||
+        name == "server/cpu-samples.json") continue;
+    require(entry.is_regular_file() && hashes.contains(name), "raw_artifact_unlisted");
+    require(process::digest(entry.path()) == hashes.at(name).get_ref<const std::string &>(), "raw_artifact_digest_mismatch");
+    ++seen;
+  }
+  require(seen == hashes.size(), "raw_artifact_missing");
 }
 Json elapsed(const Json &a, const Json &b, const std::string &clock) {
   if (!a.contains(clock) || !b.contains(clock) || a.at(clock).is_null() ||
@@ -94,7 +112,8 @@ void timing(const Task &task, Endpoint &ep) {
       verified = e;
       const auto b = integer(e.at("plaintext_end")),
                  a = integer(e.at("plaintext_begin"));
-      require(b == received && a < b, "verification_range_mismatch");
+      const bool shared_read = ep.summary.at("collection").value("role_contract", "") == "pull.v1" && client && task.name == "S4";
+      require((shared_read ? b <= received : b == received) && a < b, "verification_range_mismatch");
       if (!client) {
         require(a == 0 && b == task.request,
                 "request_verification_range_mismatch");
@@ -221,6 +240,7 @@ Json measurement_rows(const Json &role_report, const std::string &role,
 } // namespace
 Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
   Task t(config);
+  const bool combined = config.value("measurement_contract", "") == "counts-enough.v1";
   const auto purpose = scheduled.at("purpose").get<std::string>();
   const bool probe = purpose == "capability", profile = purpose == "profile";
   const auto required = config.value("required_metrics", Json::array());
@@ -238,6 +258,52 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
   for (auto k : {"records", "public_io", "headers", "capture", "perf_counters",
                  "cpu_samples"})
     observations[k] = measurement(nullptr, "not_collected", "not_observed");
+  if (combined) {
+    try {
+      verify_evidence(dir, scheduled.at("artifacts_sha256"));
+      if (config.contains("build_sha256")) {
+        const auto binding = artifact::load(dir / "binding.json");
+        const auto &pins = config.at("build_sha256");
+        for (auto name : {"ca", "client", "server"}) {
+          auto cert = dir.parent_path().parent_path() / "certificates" /
+                      (std::string(name) + ".crt");
+          require(!fs::is_symlink(cert.parent_path()) &&
+                      !fs::is_symlink(cert) && fs::is_regular_file(cert) &&
+                      config.at("fixture_sha256").at(name) ==
+                          process::digest(cert),
+                  "public_fixture_digest_mismatch");
+        }
+        require(binding.at("run_id") == scheduled.at("run_id") &&
+                    binding.at("purpose") == purpose &&
+                    binding.at("configuration") ==
+                        scheduled.at("configuration") &&
+                    binding.at("probe_client_substituted") == probe &&
+                    binding.at("server_sha256") == pins.at("server") &&
+                    binding.at("client_sha256") ==
+                        pins.at(probe ? "probe_client" : "client") &&
+                    binding.at("fixture_sha256") == config.at("fixture_sha256"),
+                "role_build_or_identity_binding_mismatch");
+      }
+    } catch (const std::exception &e) {
+      // Do not parse any data through a rejected inventory or symlink.
+      out = {{"schema", "turtle.attempt-report.v4"},
+             {"run_id", scheduled.at("run_id")},
+             {"purpose", purpose},
+             {"success", false},
+             {"eligible", false},
+             {"configuration_matches", false},
+             {"required_metrics_valid", false},
+             {"ordinary_timing_sample", false},
+             {"raw_evidence_valid", false},
+             {"observations", observations},
+             {"measurements", Json::array()},
+             {"roles", Json::object()},
+             {"invalid_reasons", Json::array({e.what()})}};
+      if (!fs::is_symlink(dir / "analysis.json")) artifact::save(dir / "analysis.json", out);
+      return out;
+    }
+    out["raw_evidence_valid"] = true;
+  }
   try {
     auto processes = artifact::load(dir / "processes.json");
     require(processes.at("run_id") == scheduled.at("run_id"),
@@ -264,6 +330,15 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
       if (s.contains("capability"))
         roles[role]["capability"] = s.at("capability");
       check_outcome(s, scheduled, t, role);
+      if (combined && role == t.role) {
+        require(s.at("collection").value("role_contract", "") == "pull.v1",
+                "target_call_boundary_contract_missing");
+        if (!probe) {
+          const auto &hooks = s.at("collection").at("transport_hooks");
+          require(hooks.at("bound") == true && integer(hooks.at("send_attempts")) > 0 &&
+                  integer(hooks.at("positive_receives")) > 0, "transport_hooks_not_observed");
+        }
+      }
     } catch (const std::exception &e) {
       task_errors.push_back(std::string(role) + ":" + e.what());
     }
@@ -282,6 +357,10 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
                   server_log.starts_with("LISTEN ") &&
                   server_log.ends_with("\nREADY\n" + presend),
               "presend_greeting_not_validated_while_server_paused");
+      if (combined)
+        require(integer(c.at("client_hello_bytes")) > 0 &&
+                    integer(s.at("server_submitted")) > integer(s.at("presend_begin")),
+                "presend_probe_ciphertext_boundaries_missing");
       require(t.greeting && c.at("client_paused") == true &&
                   s.at("server_presend") == true &&
                   integer(s.at("server_submitted")) > 0 &&
@@ -311,6 +390,11 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
                 "negotiation_not_observed");
         return canonical(prop.at("value"));
       };
+      if (combined && !expected.contains(k)) {
+        const auto &c = roles.at("client").at("negotiated").at(k);
+        const auto &s = roles.at("server").at("negotiated").at(k);
+        if (!available(c) || !available(s)) continue;
+      }
       auto actual = get("client");
       require(!actual.empty() && actual == get("server"),
               "peer_negotiation_mismatch");
@@ -386,19 +470,24 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
       metric_errors.push_back(k.get<std::string>() + ":" +
                               m.at("reason").dump());
   }
+  if (combined && !probe && !profile && !has(required, "perf_counters") &&
+      !available(observations.at("perf_counters")))
+    metric_errors.push_back("basic_run_requires_actual_counters");
   if (!probe && !available(observations.at("scenario_wall_ns")) &&
       !has(required, "scenario_wall_ns"))
     metric_errors.push_back("scenario_wall_ns:required_boundary_unavailable");
   bool success = task_errors.empty(),
        eligible = success && membership.empty() && metric_errors.empty();
   bool ordinary =
-      purpose == "measurement" && !counters_report.value("requested", false);
+      purpose == "measurement" && (combined || !counters_report.value("requested", false));
   auto &role = roles[t.role];
   role.update({{"metrics", ep.metrics},
                {"records", ep.records},
                {"event_links", ep.links},
                {"cpu_profile", cpu},
                {"counters", counters_report}});
+  if (combined && counters_report.value("reason", Json(nullptr)) == "instructions_open_failed")
+    out["basic_qualification"] = "undecided_instructions_unavailable";
   auto rows = measurement_rows(role, t.role, purpose, eligible, ordinary);
   Json reasons = task_errors;
   for (const auto &m : {membership, metric_errors})
@@ -507,7 +596,7 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
         row["valid_sample"] = false;
         row["excluded_reason"] = "prerequisite_attempt_not_verified";
       }
-      artifact::save(root / d / "analysis.json", r);
+      if (!fs::is_symlink(root / d / "analysis.json")) artifact::save(root / d / "analysis.json", r);
     }
     if (r.at("eligible") == true) {
       if (a.at("purpose") == "warmup")
@@ -528,7 +617,8 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
     bool optional_profile =
         a.at("purpose") == "profile" &&
         !has(configs.at(id).at("required_metrics"), "cpu_samples");
-    valid = valid && (r.at("eligible") == true || optional_profile);
+    valid = valid && r.value("raw_evidence_valid", true) &&
+            (r.at("eligible") == true || optional_profile);
     if (a.at("purpose") == "measurement") {
       attempts.push_back(row);
       ++samples[id];

@@ -80,7 +80,8 @@ Json counters(const std::filesystem::path &root, const Endpoint &ep) {
     if (ep.summary.at("collection").at("counters_file") != "counters.json")
       throw std::runtime_error("counters_file_not_declared");
     auto source = artifact::load(root / "counters.json");
-    if (source.at("schema") != "turtle.counters.v1" ||
+    const bool strict = ep.summary.at("collection").value("role_contract", "") == "pull.v1";
+    if (source.at("schema") != (strict ? "turtle.counters.v2" : "turtle.counters.v1") ||
         source.at("requested") != true)
       throw std::runtime_error("counter_contract_mismatch");
     for (auto k : {"run_id", "role", "pid", "tid"})
@@ -91,6 +92,12 @@ Json counters(const std::filesystem::path &root, const Endpoint &ep) {
                    {"errno", source.at("errno")}});
     std::string availability = source.at("availability");
     Json reason = source.at("reason");
+    if (strict && (source.at("collector") != "linux_perf_event_open_group" ||
+                   source.at("inherit") != false || source.at("exclude_kernel") != true ||
+                   source.at("exclude_hv") != true || source.at("scaled") != false))
+      throw std::runtime_error("counter_scope_mismatch");
+    if (strict && availability == "available" && source.at("owner_tid") != source.at("tid"))
+      throw std::runtime_error("counter_owner_thread_mismatch");
     const auto &snapshots = source.at("events");
     if (snapshots.size() != ep.events.size())
       throw std::runtime_error("counter_event_ids_mismatch");
@@ -98,6 +105,8 @@ Json counters(const std::filesystem::path &root, const Endpoint &ep) {
     std::set<std::pair<std::uint64_t, std::uint64_t>> reads;
     auto check_read = [&](const Json &p) {
       if (p.at("available") == true) {
+        if (strict && (p.at("tid") != source.at("owner_tid") || integer(p.at("tid")) == 0))
+          throw std::runtime_error("counter_thread_mismatch");
         auto a = integer(p.at("read_begin_ns")),
              b = integer(p.at("read_end_ns"));
         if (integer(p.at("wall_ns")) > a || a > b)
@@ -130,6 +139,11 @@ Json counters(const std::filesystem::path &root, const Endpoint &ep) {
         if (scenario.at(edge).at(k) != ep.summary.at("scenario").at(edge).at(k))
           throw std::runtime_error("counter_scenario_clock_mismatch");
       check_read(scenario.at(edge));
+      if (strict && ep.summary.at("scenario").at(std::string(edge) + "_event").is_number()) {
+        auto id = integer(ep.summary.at("scenario").at(std::string(edge) + "_event"));
+        if (scenario.at(edge) != snapshots.at(id - 1).at(edge))
+          throw std::runtime_error("counter_scenario_boundary_mismatch");
+      }
     }
     result["operations"]["scenario"] = counter_delta(
         scenario.at("begin"), scenario.at("end"), availability, reason);
@@ -156,6 +170,10 @@ Json counters(const std::filesystem::path &root, const Endpoint &ep) {
                                .at("scenario")
                                .at("cycles")
                                .at("availability") == "available";
+      if (strict && !result.at("complete").get<bool>() && reason.is_null())
+        result["reason"] = result.at("operations").at("scenario").at("cycles_raw").at("reason").is_null()
+            ? result.at("operations").at("scenario").at("cycles").at("reason")
+            : result.at("operations").at("scenario").at("cycles_raw").at("reason");
       return result;
     }
     for (const auto &phase : ep.phases.value("rows", Json::array())) {
@@ -233,6 +251,7 @@ Json counters(const std::filesystem::path &root, const Endpoint &ep) {
     result.update({{"availability", "missing"},
                    {"complete", false},
                    {"reason", e.what()},
+                   {"events", Json::array()},
                    {"operations", Json::object()},
                    {"phases", Json::object()}});
   }

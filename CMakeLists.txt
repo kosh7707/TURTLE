@@ -54,8 +54,7 @@ add_library(turtle_core STATIC
     src/measure/recorder.cpp
     src/measure/perf.cpp
     src/net/transport.cpp
-    src/artifact/endpoint.cpp
-    src/run/runner.cpp)
+    src/artifact/endpoint.cpp)
 if(TURTLE_WITH_PMU STREQUAL "OFF" OR NOT TURTLE_PMU_INTERFACE)
     target_compile_definitions(turtle_core PRIVATE TURTLE_NO_PMU)
 endif()
@@ -66,14 +65,16 @@ target_compile_features(turtle_core PUBLIC cxx_std_20)
 target_compile_options(turtle_core PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(turtle_core PROPERTIES CXX_EXTENSIONS OFF)
 
-add_library(turtle_endpoint STATIC src/endpoint/endpoint.cpp)
+add_library(turtle_endpoint STATIC src/endpoint/endpoint.cpp src/run/role.cpp src/run/runner.cpp)
 add_library(turtle::endpoint ALIAS turtle_endpoint)
 target_include_directories(turtle_endpoint PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(turtle_endpoint PUBLIC turtle::core)
+target_link_libraries(turtle_endpoint PUBLIC turtle::core PRIVATE turtle_artifact)
 target_compile_options(turtle_endpoint PRIVATE -Wall -Wextra -Wpedantic)
 
 set(TURTLE_IMPLEMENTATION_DIRS "" CACHE STRING
     "Semicolon-separated directories containing user-supplied CMakeLists.txt files")
+option(TURTLE_BUILD_REFERENCE "Build the default peer for one-sided benchmarks" ON)
+set(TURTLE_REFERENCE_RUNTIME_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 foreach(directory IN LISTS TURTLE_IMPLEMENTATION_DIRS)
     get_filename_component(source "${directory}" REALPATH BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
     if(NOT EXISTS "${source}/CMakeLists.txt")
@@ -83,6 +84,10 @@ foreach(directory IN LISTS TURTLE_IMPLEMENTATION_DIRS)
     string(SUBSTRING "${key}" 0 16 key)
     add_subdirectory("${source}" "${CMAKE_CURRENT_BINARY_DIR}/implementations/${key}")
 endforeach()
+
+if(TURTLE_BUILD_REFERENCE AND NOT TARGET turtle-reference)
+    add_subdirectory(implementations/openssl reference)
+endif()
 
 add_library(turtle_process STATIC src/process/process.cpp)
 target_link_libraries(turtle_process PUBLIC turtle_artifact)
@@ -104,8 +109,8 @@ add_library(turtle_analysis STATIC
     src/analysis/observations.cpp
     src/analysis/record_semantics.cpp
     src/analysis/tcp_evidence.cpp)
-target_link_libraries(turtle_analysis PUBLIC turtle_artifact PRIVATE turtle_capture turtle_profiling)
-add_library(turtle_control STATIC src/control/network.cpp src/control/spec.cpp src/control/controller.cpp src/control/retry.cpp)
+target_link_libraries(turtle_analysis PUBLIC turtle_artifact PRIVATE turtle_capture turtle_profiling turtle_process)
+add_library(turtle_control STATIC src/control/network.cpp src/control/spec.cpp src/control/controller.cpp src/control/retry.cpp src/control/one_side.cpp)
 target_link_libraries(turtle_control PUBLIC turtle_process PRIVATE turtle_analysis turtle_profiling turtle_capture)
 file(GLOB_RECURSE turtle_sources CONFIGURE_DEPENDS src/*.cpp src/*.hpp include/*.h cmake/*)
 list(APPEND turtle_sources "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
@@ -120,12 +125,26 @@ string(SHA256 turtle_source_sha256 "${turtle_source_fingerprints}")
 configure_file(cmake/build_info.hpp.in generated/build_info.hpp @ONLY)
 target_include_directories(turtle_control PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 add_executable(turtle src/cli/main.cpp)
+if(TARGET turtle-reference)
+    add_dependencies(turtle turtle-reference)
+endif()
 target_link_libraries(turtle PRIVATE turtle_control turtle_analysis turtle_capture)
 foreach(target turtle_artifact turtle_process turtle_capture turtle_profiling turtle_analysis turtle_control turtle)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
 endforeach()
 include(GNUInstallDirs)
+find_package(Threads REQUIRED)
+add_executable(turtle-pair src/pair/main.cpp src/pair/mock.cpp)
+target_compile_options(turtle-pair PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(turtle-pair PRIVATE turtle_process turtle::contract Threads::Threads)
+install(TARGETS turtle-pair RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+configure_file(examples/issue-test-leaves.sh turtle-issue-test-leaves.sh COPYONLY)
+install(PROGRAMS examples/issue-test-leaves.sh DESTINATION ${CMAKE_INSTALL_BINDIR}
+    RENAME turtle-issue-test-leaves.sh)
+if(TARGET turtle-reference)
+    install(TARGETS turtle-reference RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 install(TARGETS turtle RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/turtle DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     PATTERN "io_boundary.h" EXCLUDE)

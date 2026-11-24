@@ -98,7 +98,7 @@ Json certificates(const std::string &openssl, const fs::path &root,
   turtle::artifact::write_text(
       root / "client.ext",
       "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,"
-      "digitalSignature\nextendedKeyUsage=clientAuth\n");
+      "digitalSignature\nextendedKeyUsage=clientAuth\nsubjectAltName=DNS:client.turtle.test\n");
   invoke({"x509", "-req", "-in", (root / "client.csr").string(), "-CA",
           (root / "root.crt").string(), "-CAkey", (root / "root.key").string(),
           "-set_serial", "27", "-days", "2", "-extfile",

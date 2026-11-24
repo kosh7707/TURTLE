@@ -1,8 +1,18 @@
 #include "configure.hpp"
 #include <string_view>
+#include <cstdlib>
 namespace turtle_wolfssl {
 bool parse(Configuration& c, turtle_role role, int argc, const char* const* argv) {
     c.role = role;
+    auto setting = [](const char* name) {
+        const char* value = std::getenv(name);
+        return value && *value ? value : nullptr;
+    };
+    c.certificate = setting("TURTLE_CERT");
+    c.private_key = setting("TURTLE_KEY");
+    c.trusted_certificate = setting("TURTLE_CA");
+    c.peer_name = setting("TURTLE_PEER_NAME");
+    if (!c.peer_name) c.peer_name = role == TURTLE_CLIENT ? "localhost" : "client.turtle.test";
     for (int i = 0; i < argc; i += 2) {
         if (i + 1 == argc) return false;
         const std::string_view key(argv[i]), value(argv[i + 1]);
@@ -17,7 +27,7 @@ bool parse(Configuration& c, turtle_role role, int argc, const char* const* argv
             else return false;
         } else return false;
     }
-    return (c.certificate != nullptr) == (c.private_key != nullptr) &&
+    return *c.peer_name && (c.certificate != nullptr) == (c.private_key != nullptr) &&
            (role == TURTLE_SERVER ? c.certificate != nullptr : c.trusted_certificate != nullptr);
 }
 bool configure(WOLFSSL_CTX* context, const Configuration& c) {

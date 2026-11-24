@@ -22,6 +22,8 @@ public:
     Connection(Socket socket, measure::Recorder&, std::size_t chunk, unsigned timeout, bool probe = false);
     turtle_transport transport() noexcept { return stream_.transport(); }
     void wait(bool writing) const;
+    bool readable() const noexcept;
+    int wait_either(bool first_writing, bool second_writing) const;
     std::uint64_t queued(std::uint64_t expected) const;
     std::uint64_t submitted() const noexcept { return stream_.probe_sent(); }
 private:

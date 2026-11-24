@@ -1,5 +1,6 @@
 #pragma once
 #include <turtle/implementation.h>
+#include <turtle/role.h>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -17,5 +18,6 @@ struct Options {
     bool perf_counters = false, cpu_samples = false;
     std::vector<const char*> arguments;
 };
-int run(const turtle_implementation&, const Options&);
+Options options(int argc, char **argv);
+void mark_legacy(turtle_session *s);
 }

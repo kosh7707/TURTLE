@@ -36,6 +36,7 @@ void PerfCounters::fail(PerfAvailability status, const char* reason, int error) 
 }
 PerfCounters::PerfCounters(bool requested) noexcept : requested_(requested) {
     if (!requested) return;
+    owner_tid_ = syscall(SYS_gettid);
     perf_event_attr attr{};
     attr.size = sizeof(attr);
     attr.type = PERF_TYPE_HARDWARE;
@@ -63,7 +64,10 @@ PerfCounters::~PerfCounters() {
 }
 PerfSnapshot PerfCounters::snapshot() noexcept {
     PerfSnapshot out;
+    if (!requested_) return out;
+    out.tid = syscall(SYS_gettid);
     if (availability_ != PerfAvailability::available) return out;
+    if (out.tid != owner_tid_) { fail(PerfAvailability::missing, "counter_thread_mismatch", 0); return out; }
     std::array<std::uint64_t, 7> data{};
     if (!clock_ns(out.read_begin_ns)) { fail(PerfAvailability::missing, "counter_read_clock_failed", errno); return out; }
     ssize_t bytes;

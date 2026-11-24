@@ -17,7 +17,9 @@ struct Result {
   turtle_handshake_profile profile = TURTLE_PROFILE_UNSPECIFIED;
   int resumed = -1;
   bool scenario_complete = false, scenario_observations_complete = false;
-  bool cpu_samples = false;
+  bool cpu_samples = false, role_sdk = false, counts_bound = false;
+  std::uint64_t send_attempts = 0, positive_receives = 0;
+  std::uint64_t client_hello_bytes = 0, presend_begin = 0;
   measure::Stamp begin, end;
   std::uint64_t scenario_tls_send = 0, scenario_tls_receive = 0;
   std::uint64_t scenario_wire_send = 0, scenario_wire_receive = 0;

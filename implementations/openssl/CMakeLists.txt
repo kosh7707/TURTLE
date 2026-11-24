@@ -15,17 +15,22 @@ set(ENV{PKG_CONFIG_PATH} "${turtle_saved_pkg_config_path}")
 set(TURTLE_OPENSSL_CONFIG_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/configure.cpp"
     CACHE FILEPATH "OpenSSL context configuration source")
 
-add_library(turtle-openssl_implementation STATIC
-    implementation.cpp "${TURTLE_OPENSSL_CONFIG_SOURCE}")
-target_link_libraries(turtle-openssl_implementation PRIVATE
-    turtle::contract OpenSSL::SSL OpenSSL::Crypto)
-target_compile_features(turtle-openssl_implementation PRIVATE cxx_std_20)
-target_include_directories(turtle-openssl_implementation PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-
-add_executable(turtle-openssl main.cpp)
-set_target_properties(turtle-openssl PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-target_link_libraries(turtle-openssl PRIVATE turtle::endpoint turtle-openssl_implementation)
-foreach(target IN ITEMS turtle-openssl turtle-openssl_implementation)
-    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
-    set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
-endforeach()
+# Compile the native call path once. Only the target's configuration is
+# replaceable: changing it must never change the default opposite peer.
+add_library(turtle-openssl_driver OBJECT implementation.cpp)
+target_compile_features(turtle-openssl_driver PUBLIC cxx_std_20)
+target_link_libraries(turtle-openssl_driver PUBLIC turtle::endpoint OpenSSL::SSL OpenSSL::Crypto)
+function(turtle_openssl_program name configuration directory)
+    add_executable(${name} main.cpp "${configuration}")
+    target_link_libraries(${name} PRIVATE turtle-openssl_driver)
+    target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_target_properties(${name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${directory}" CXX_EXTENSIONS OFF)
+    target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic)
+endfunction()
+target_compile_options(turtle-openssl_driver PRIVATE -Wall -Wextra -Wpedantic)
+set_target_properties(turtle-openssl_driver PROPERTIES CXX_EXTENSIONS OFF)
+turtle_openssl_program(turtle-openssl "${TURTLE_OPENSSL_CONFIG_SOURCE}" "${CMAKE_BINARY_DIR}")
+if(NOT TURTLE_REFERENCE_RUNTIME_DIR)
+    set(TURTLE_REFERENCE_RUNTIME_DIR "${CMAKE_BINARY_DIR}")
+endif()
+turtle_openssl_program(turtle-reference "${CMAKE_CURRENT_SOURCE_DIR}/configure.cpp" "${TURTLE_REFERENCE_RUNTIME_DIR}")

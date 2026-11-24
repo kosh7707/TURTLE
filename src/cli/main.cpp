@@ -9,7 +9,8 @@
 namespace {
 constexpr auto usage =
     "usage: turtle check SPEC | turtle run SPEC OUTPUT | turtle analyze RUN | "
-    "turtle retry OLD_RUN FAILED_RUN_ID NEW_OUTPUT";
+    "turtle retry OLD_RUN FAILED_RUN_ID NEW_OUTPUT | turtle target "
+    "client|server OUTPUT APP [ARGS...]";
 }
 int main(int argc, char **argv) {
   try {
@@ -34,7 +35,8 @@ int main(int argc, char **argv) {
                  ? 0
                  : 1;
     bool retry = argc == 5 && std::string_view(argv[1]) == "retry";
-    if (!retry && (argc != 4 || std::string_view(argv[1]) != "run"))
+    bool target = argc >= 5 && std::string_view(argv[1]) == "target";
+    if (!retry && !target && (argc != 4 || std::string_view(argv[1]) != "run"))
       throw std::runtime_error(usage);
     ::signal(SIGPIPE, SIG_IGN);
     sigset_t mask;
@@ -53,6 +55,13 @@ int main(int argc, char **argv) {
     auto self = std::filesystem::canonical("/proc/self/exe").string();
     if (retry)
       return turtle::control::retry(argv[2], argv[3], argv[4], self, cancel);
+    if (target) {
+      auto args = turtle::artifact::Json::array();
+      for (int i = 4; i < argc; ++i)
+        args.push_back(argv[i]);
+      return turtle::control::execute_target(argv[2], args, argv[3], self,
+                                             cancel);
+    }
     return turtle::control::execute(argv[2], argv[3], self, cancel);
   } catch (const std::exception &e) {
     std::cerr << "turtle: " << e.what() << '\n';
