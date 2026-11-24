@@ -3,7 +3,11 @@ project(turtle VERSION 1.0.0 LANGUAGES C CXX)
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "TURTLE requires Linux")
 endif()
-find_package(nlohmann_json 3.12 REQUIRED CONFIG)
+find_package(nlohmann_json 3.12 QUIET CONFIG HINTS
+    "${CMAKE_CURRENT_SOURCE_DIR}/.deps/prepared/json-3.12.0/install")
+if(NOT nlohmann_json_FOUND)
+    message(FATAL_ERROR "Install nlohmann_json 3.12 or run: cmake -DNAME=json -DVERSION=3.12.0 -P tools/dependencies.cmake")
+endif()
 foreach(feature PCAP PMU)
     set(TURTLE_WITH_${feature} AUTO CACHE STRING "Enable ${feature}: AUTO, ON, or OFF")
     set_property(CACHE TURTLE_WITH_${feature} PROPERTY STRINGS AUTO ON OFF)
@@ -123,7 +127,10 @@ foreach(target turtle_artifact turtle_process turtle_capture turtle_profiling tu
 endforeach()
 include(GNUInstallDirs)
 install(TARGETS turtle RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(DIRECTORY include/turtle DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/turtle DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "io_boundary.h" EXCLUDE)
+install(FILES implementations/implementation.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/turtle
+    RENAME io_boundary.h)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/build_info.hpp" DESTINATION ${CMAKE_INSTALL_DATADIR}/turtle)
 # An adapter can build against an installed SDK without the controller, JSON headers
 # or any other adapter in its source tree.
@@ -134,3 +141,10 @@ install(TARGETS turtle_contract turtle_endpoint turtle_core turtle_artifact EXPO
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(EXPORT turtleTargets FILE TURTLEConfig.cmake NAMESPACE turtle::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TURTLE)
+
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    include(CTest)
+    if(BUILD_TESTING)
+        add_subdirectory(tests)
+    endif()
+endif()
