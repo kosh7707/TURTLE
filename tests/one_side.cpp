@@ -1,5 +1,6 @@
 #include "artifact/json.hpp"
 #include "process/process.hpp"
+#include "pmu_coverage.hpp"
 #include <filesystem>
 #include <iostream>
 #include <set>
@@ -107,6 +108,7 @@ int main(int argc, char **argv) {
     ok({cli, "analyze", out.string()});
     expect(artifact::load(out / "analysis.json") == summary,
            "offline summary unequal");
+    test_partial_coverage(out, root / "partial-coverage", cli);
     // Changing source bytes after collection must invalidate that attempt.
     auto tampered = root / "tamper";
     fs::copy(out, tampered, fs::copy_options::recursive);

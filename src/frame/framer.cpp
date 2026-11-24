@@ -4,6 +4,24 @@
 #include <cstring>
 namespace turtle::frame {
 using namespace measure;
+void SocketObservation::begin(Recorder &rec, bool tx, size_t n, size_t parent) noexcept {
+    if (rec.detailed())
+        event =
+            rec.begin(Kind::socket, Operation::none, tx ? Direction::send : Direction::receive, parent, n);
+}
+void SocketObservation::end(Recorder &rec, bool tx, const void *data, size_t n, ptrdiff_t raw,
+                            int error) noexcept {
+    if (!rec.detailed())
+        return;
+    rec.end(event, raw >= 0, raw >= 0 ? raw : -1);
+    if (event) {
+        auto &e = rec.event(event);
+        e.source = tx ? "send" : "recv";
+        e.error_number = raw < 0 ? error : 0;
+    }
+    if (raw > 0 && static_cast<size_t>(raw) <= n)
+        rec.capture(tx ? Direction::send : Direction::receive, data, raw);
+}
 turtle_transport Stream::transport() noexcept {
     turtle_transport out{};
     out.state = this;
@@ -17,23 +35,18 @@ turtle_transport Stream::transport() noexcept {
         };
     return out;
 }
-std::ptrdiff_t Stream::transfer(void* out, const void* in, std::size_t size) noexcept {
-    const auto dir = in ? Direction::send : Direction::receive;
-    if (chunk_) size = std::min(size, chunk_);
+std::ptrdiff_t Stream::transfer(void *out, const void *in, std::size_t size) noexcept {
+    if (chunk_)
+        size = std::min(size, chunk_);
     for (;;) {
-        const auto id = recorder_.detailed() ? recorder_.begin(Kind::socket, Operation::none, dir,
-                             public_call_ ? public_call_ : recorder_.active_call(), size) : 0;
+        if (in && counts_.before_send)
+            counts_.before_send(counts_.context);
+        SocketObservation call;
+        call.begin(recorder_, in != nullptr, size, public_call_ ? public_call_ : recorder_.active_call());
         const auto n = in ? io_.send(io_.state, in, size) : io_.receive(io_.state, out, size);
         const auto saved = errno;
-        if (recorder_.detailed()) {
-            recorder_.end(id, n >= 0, n >= 0 ? n : -1);
-            if (id) {
-                auto& e = recorder_.event(id);
-                e.source = in ? "send" : "recv";
-                e.error_number = n < 0 ? saved : 0;
-            }
-            if (n > 0 && static_cast<std::size_t>(n) <= size) recorder_.capture(dir, in ? in : out, n);
-        }
+        call.end(recorder_,in!=nullptr,in?in:out,size,n,saved);
+        if (!in && n>0 && counts_.after_receive) counts_.after_receive(counts_.context);
         if (probe_ && in && n > 0) probe_sent_ += n;
         errno = saved;
         if (n != interrupted) return n;

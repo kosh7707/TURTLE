@@ -1,96 +1,78 @@
-# TURTLE — 한쪽에서 재는 TLS 1.3 벤치마크
+# TURTLE — 내 TLS 클라이언트 또는 서버 하나를 측정하기
 
-TURTLE은 **TCP 연결 하나에서 클라이언트 또는 서버 한쪽만 계측**한다. 반대편도 인증과 응용 내용 확인 결과는 제출하지만, 시계·BIO 훅·소켓 이벤트·성능 카운터는 수집하지 않는다. 두 역할은 보통의 TLS 레코드를 주고받는다. 제어 신호는 표준 입출력 파이프에만 흐른다.
+TURTLE은 Linux에서 TLS 1.3 전체 핸드셰이크와 그 직후의 응용 데이터를 벤치마크한다. **측정할 역할 하나만 지정한다.** 클라이언트를 주면 기본 OpenSSL 서버가, 서버를 주면 기본 OpenSSL 클라이언트가 상대가 된다. 시간과 CPU는 지정한 쪽에서만 재고, 인증과 응용 내용은 양쪽에서 확인한다. 용도가 일반 TLS인지 PQTLS인지에 따라 시나리오를 다시 작성하지 않는다.
 
-## 첫 실행: 직접 발급 mTLS, S3, 캡처·perf 없음
+## 첫 실행
 
-아래 명령은 저장소 루트에서 실행한다. Linux, CMake ≥3.20, C/C++20 도구 체인과 nlohmann/json 3.12가 필요하다. 두 예제 어댑터의 기준 빌드는 x86-64 OpenSSL 3.5.9 및 wolfSSL 5.9.4다. 이미 준비한 설치 경로가 있으면 첫 단계를 생략한다.
+Linux, CMake 3.20 이상, C/C++20 도구 체인, nlohmann/json 3.12, OpenSSL 3.5 이상 개발 파일과 `openssl` 명령이 필요하다. 기본 실측에는 **대상 스레드에서 접근 가능한 하드웨어 cycles·instructions**가 필요하지만, `perf` 명령이나 libpcap은 필요 없다. 소스 배포물에 외부 라이브러리는 포함하지 않는다. 시스템에 없는 의존성은 [CMake 준비 도구](tools/dependencies.cmake)와 [고정 버전·해시 목록](tools/dependencies.json)을 참고한다.
+
+저장소 루트에서 다음을 실행한다. 먼저 동봉된 연동 앱을 측정 대상으로 써 보면 자기 앱의 통합과 환경 문제를 구분할 수 있다.
 
 ~~~sh
-# 선택 사항: tools/dependencies.json에 고정된 소스만 내려받고 SHA-256 검증 후 로컬 빌드.
-for action in fetch prepare; do
-  python3 tools/dependencies.py "$action" all --only json@3.12.0 \
-    --only openssl@3.5.9 --only wolfssl@5.9.4 --jobs 4
-done
-deps="$PWD/.deps/prepared"
-ossl="$deps/openssl-3.5.9/install"
-wolf="$deps/wolfssl-5.9.4/install"
-export LD_LIBRARY_PATH="$ossl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-cmake -S . -B out/build/native -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH="$deps/json-3.12.0/install" \
-  '-DTURTLE_IMPLEMENTATION_DIRS=implementations/openssl;implementations/wolfssl' \
-  -DOPENSSL_ROOT_DIR="$ossl" -DWOLFSSL_ROOT_DIR="$wolf"
-cmake --build out/build/native --parallel 4
-
-# 별도 말단 키, serverAuth/clientAuth 용도, 같은 테스트 CA가 직접 발급. 기존 디렉터리를 덮어쓰지 않는다.
-examples/issue-test-leaves.sh out/certificates "$ossl/bin/openssl"
-cli=out/build/native/turtle
-"$cli" check examples/mtls-s3.json
-"$cli" run examples/mtls-s3.json out/first-s3
-"$cli" analyze out/first-s3
-python3 tools/report/report.py out/first-s3 out/first-report  # 선택
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 2
+./bench.sh --client ./build/turtle-openssl
 ~~~
 
-기본 실행에 libpcap이나 외부 perf 실행 파일은 필요 없다. `TURTLE_WITH_PCAP`, `TURTLE_WITH_PMU`의 CMake 값은 `AUTO`(기본), `ON`(필요한 인터페이스가 없으면 구성 실패), `OFF`(빌드하지 않음)다.
+기본값은 **S3, mTLS, 예열 1회, 본 측정 2회**다. 일회용 CA가 서버·클라이언트에 서로 다른 인증서를 발급한다. 클라이언트가 `ping`을 쓰고, 서버가 인증과 4바이트 전체를 확인한 뒤 `pong`을 보낸다. 출력 첫 줄의 `Outputs:` 뒤에 새 결과 디렉터리가 나온다. 두 회는 사용법을 확인할 표본이지 성능 분포를 추정할 표본 크기가 아니다. **인자 없는 `./bench.sh`는 TLS 벤치마크가 아닌 소켓 훅 진단**이다.
 
-## 무엇이 한 표본인가?
+역할·시나리오를 파일로 남기려면 [단측 S3 명세](examples/one-sided-s3.json)를 사용한다. `target.argv[0]`의 상대 경로는 **명세 파일 위치** 기준이고, 나머지 인자는 셸 해석 없이 그대로 전달한다.
 
-1. **`check`**는 양쪽 엔드포인트를 각각 오프라인으로 준비·해제하고 암호 설정, 자격 자료, 선택한 계측 기능과 권한을 점검한다. TCP 연결이나 실제 TLS 협상은 하지 않는다.
-2. **S2/S4 능력 시험**은 별도 연결이다. 클라이언트가 ClientHello를 쓴 뒤 멈춘다. 서버가 보낸 암호문이 클라이언트 수신 큐에 들어왔는지 확인하고, *서버가 여전히 멈춰 있는 동안* 클라이언트가 안내 평문 전체를 읽어 검증해야 한다. 이 정지는 예열·본 측정에는 없다.
-3. **구성별 예열**은 기본 1회다. 최상위 `warmups` 또는 구성별 재정의로 횟수를 미리 정한다(0이면 생략). 예열과 측정은 같은 TLS/응용 경로를 쓰되, **각 시도마다 양쪽 새 프로세스, 새 TCP 연결, 새 TLS 객체와 ID**를 사용한다. 협상·인증·내용·필수 관측 실패는 해당 구성만 막는다.
-4. **본 측정**은 `repetitions`개의 블록에서 구성 순서를 시드로 섞어 실행한다. 성공과 별도로 구성 일치 여부, 지표 유효성, 누락 사유를 보존한다. 예열·능력 시험·별도 CPU 프로파일은 성공률, 반복 수, 지연 분포에 들어가지 않는다. 예열 시간이나 계측 비용을 측정값에서 빼지 않는다.
+~~~sh
+work=$(mktemp -d)
+./bench.sh examples/one-sided-s3.json "$work/s3"
+./build/turtle analyze "$work/s3"
+~~~
 
-| 시나리오 | 성립 조건 | 클라이언트 지연의 끝 |
+`analysis.json`의 `measurement_count`(시행), `successful_measurements`(과업 성공), `eligible_measurements`(유효 표본)를 구분한다. 각 `attempts/*/analysis.json`에는 제외 사유와 지표가 있다. 단조 시계의 시작·끝 사건은 측정 역할의 `endpoint.json`과 `events.jsonl`, 같은 구간의 원누계·TID·활성/실행 시간은 `counters.json`에서 확인한다. 예열·능력 시험·함수 프로파일은 일반 지연 표본이 아니다. 단측 실행의 `scenario_support`는 과업과 필요한 능력을 실제 입증한 `supported`, 서버가 선송신 미지원을 명시한 `unsupported`, 증거가 부족한 `unconfirmed`를 구분한다.
+
+## 내 구현체를 처음 연결할 때
+
+라이브러리나 BIO 포인터만 건넨다고 TURTLE이 핸드셰이크를 진행하거나 CAD/SAD를 쓸 수 있는 것은 아니다. 자신의 역할 앱이 **기존 공개 TLS 호출**을 엔진의 요청에 한 번 연결한다. 이미 연동된 앱이면 이 단계는 필요 없다. [여섯 가지 개발자 제공 항목](DESIGN.md#developer-handoff)과 [공개 C 헤더](include/turtle/role.h)가 계약이다.
+
+1. 앱이 TLS 객체를 만들고 역할별 시험 설정을 적용한다. `TURTLE_CA`, `TURTLE_CERT`, `TURTLE_KEY`, `TURTLE_PEER_NAME`은 로컬 시험 파일 경로와 기대 DNS 이름이다. 쓰지 않는 항목은 빈 값이다. 클라이언트는 서버 체인과 `localhost`를, mTLS 서버는 필수 클라이언트 인증서·체인과 `client.turtle.test`를 검증한다. 인증서 파일을 열었다는 사실만으로 인증 성공을 보고하지 않는다.
+2. SDK가 제공하는 비차단 TCP 경로를 BIO 등에 연결하거나, 앱이 소켓을 소유하고 실제 전송 경계에 [카운트 훅](implementations/implementation.h)을 붙인다. **송신 시도 직전**에는 실패할 시도도 세고, **수신 직후**에는 양수 반환만 센다. 상세 관측이나 선송신 증명이 필요하면 실제 처리한 암호문 바이트도 대응시킨다. 훅 호출 수는 레코드 수가 아니다.
+3. `turtle_pull`로 엔진이 요청한 동작을 받는다. `turtle_before` → 자기 TLS의 **호출 하나** → `turtle_returned` → 오류 해석 → `turtle_submit` 순서로 진행한다. 부분 성공, 재시도 방향, EOF·오류를 구별하고 핸드셰이크 성공 시 실제 협상·인증 근거를 붙인다. S2/S4의 서버에서만 CF를 기다리지 않는 공개 선송신 경로가 추가로 필요하다. 동작 순서, 재시도 버퍼, 평문 검증, 타임스탬프, PMU는 프레임워크 몫이다.
+
+새 연동에 일괄 `prepare/release/query` 함수표나 시나리오별 러너를 요구하지 않는다. SDK는 TLS 객체를 소유하지 않는다. 예: [OpenSSL 호출 연결](implementations/openssl/implementation.cpp), [wolfSSL 호출 연결](implementations/wolfssl/implementation.cpp). 수정 가능한 `turtle-openssl` 대상 설정과 기본 피어 `turtle-reference` 설정은 별도로 빌드한다.
+
+**기존 빌드 유지:** 소스를 TURTLE 트리로 옮길 필요가 없다. 아래는 설치된 SDK로 독립 OpenSSL 역할 앱을 빌드해 이번에는 서버를 측정하는 예다. 자기 CMake 프로젝트에서는 `find_package(TURTLE CONFIG REQUIRED)`와 `turtle::endpoint`를 사용한다.
+
+~~~sh
+cmake --install build --prefix "$PWD/out/sdk"
+cmake -S implementations/openssl -B out/my-openssl -DCMAKE_PREFIX_PATH="$PWD/out/sdk"
+cmake --build out/my-openssl --target turtle-openssl --parallel 2
+./bench.sh --server ./out/my-openssl/turtle-openssl
+~~~
+
+단측 프로필은 TURTLE 제어와 계측을 연동한 **실제 역할 앱**을 실행한다. 일반 채팅 앱이나 `openssl s_client` 명령행을 대상 경로에 넣는 것만으로는 계약이 충족되지 않는다. `proc-exec.v1`은 준비 완료 시점과 TLS 작업이 끝난 시점에 실제 역할 프로세스의 실행 파일과 실행 가능한 파일 매핑의 해시를 대조한다. 래퍼 이름만 일치해도 통과한다는 뜻은 아니며, 두 시점 사이에 잠깐 불러와 해제한 모듈까지 증명하지는 않는다. [독립 채팅 예제](mock/README.md)와 구형 `{client:[…],server:[…]}` 실행은 연동 전 동작 확인용이며, 프로세스 종료 성공을 TLS 성능 표본으로 승격하지 않는다.
+
+## 무엇을 어디까지 재는가?
+
+CAD는 클라이언트 요청, SAD는 서버 응용 데이터다. 클라이언트 지연의 시작은 준비된 TCP 연결에서 **자기 첫 핸드셰이크 호출 직전**이다. 각 행은 서버 단독 인증 및 mTLS에 적용한다.
+
+| 시나리오 | 요구하는 순서 | 클라이언트 대표 지연의 끝 |
 |---|---|---|
-| S0 | 양쪽 전체 핸드셰이크, 응용 데이터 없음 | 핸드셰이크 성공 반환 |
-| S1 | 클라이언트 요청 송신, 서버가 전체 내용 검증 | 마지막 평문 쓰기 성공 반환 |
-| S2 | 서버 선송신, 클라이언트가 안내 전체 검증 | 첫 안내 바이트가 포함된 읽기 반환 |
-| S3 | 서버가 인증·전체 요청 검증 후 응답, 클라이언트가 전체 응답 검증 | 첫 **응답** 바이트가 포함된 읽기 반환 |
-| S4 | 서버 선송신과 인증 후 요청·응답. 클라이언트는 안내를 기다리지 않고 요청을 보냄 | 안내를 제외한 첫 **응답** 바이트의 읽기 반환 |
+| S0 | 핸드셰이크만 | 자기 핸드셰이크 성공 반환 |
+| S1 | 클라이언트가 자기 핸드셰이크 후 CAD, 서버가 전체 검증 | 마지막 CAD 바이트를 수락한 쓰기 반환 |
+| S2 | 서버 Finished 뒤 첫 허용 기회에 SAD, CF를 기다리지 않음 | 첫 SAD 평문 읽기 반환 |
+| S3 | 서버가 핸드셰이크·인증·CAD 전체 검증 후 응답 | 첫 응답 평문 읽기 반환 |
+| S4 | 서버가 먼저 안내, 클라이언트는 안내를 기다리지 않고 CAD, 서버는 인증·CAD 검증 후 응답 | 안내를 제외한 첫 **응답** 평문 읽기 반환 |
 
-모든 지연은 **같은 역할의** 첫 TLS 진행 호출 직전부터 잰다. 서버 계측 시 S1은 요청 검증 완료, S2는 선송신 완료, S3/S4는 마지막 응답 쓰기 성공을 구별한다. S2/S4의 선송신 안내는 클라이언트 인증 전에도 노출될 수 있으므로 비밀을 담지 않는다.
+전체 내용 검증 완료와 첫 평문 반환은 별개다. S2/S4 지원은 **같은 서버를 사용한 별도 연결**에서 시험한다. 이를 본 측정에서 매번 SAD가 CF보다 먼저 도착했다는 증거로 쓰지 않는다. 상세 계측도 외부 TLS 레코드 헤더만 보고 암호화된 EE·Certificate·CertificateVerify·Finished 각각에 시각을 부여하지 않는다. TCP SEQ/ACK가 입증하는 특정 바이트의 전송·도달과 TLS 평문 반환도 다르다. 서버의 측정 끝점과 상세 판정은 [고정 시나리오](DESIGN.md#scenarios)를 따른다.
 
-## 명세와 원자료
+## 선택 계측과 다른 Linux 환경
 
-- 각 구성은 고유 `id`, `client/server.binary`와 그대로 전달할 `args`를 가진다. 파일 경로 기준은 **실행 시 작업 디렉터리**다. 입력 파일은 `inputs`에 나열하여 해시를 남긴다. `expected.group/cipher`에 명시한 값은 각 연결에서 실제 조회한 협상 결과와 비교한다.
-- `scenario`=`S0..S4`, `auth`=`server|mtls`, `measured_role`=`client|server`. `application.request/greeting/response` 기본값은 각각 `ping/helo/pong`; 비어 있지 않은 UTF-8 문자열, 각 16 KiB 이하. `app_chunk`는 **평문** 호출 상한, `io_chunk`는 **암호문 소켓** 호출 상한이다. 0은 강제 분할하지 않는다.
-- `recording`은 `off`(최소 구간 타이머), `basic`(공개 TLS 호출·평문 범위·검증 사건, 기본), `detailed`(공개 훅·소켓·암호문 스트림 추가)다. 셋 다 **동일한 TCP 경로**를 사용한다. OpenSSL의 BIO 전·후 통지와 그 안의 실제 시스템 호출은 다른 사건이다. wolfSSL에서는 공개 송수신 콜백을 기록한다.
-- `required_metrics`와 `optional_metrics`: `scenario_wall_ns`(항상 필수), `records`, `public_io`, `headers`, `capture`, `perf_counters`, `cpu_samples`. 레코드·BIO·패킷 대조는 `detailed`를 지정한다. 미지원 훅, 불완전한 스트림, 캡처 드롭, 권한 거부는 **0이 아니다**. 권한이 필요한 관측을 필수로 선언했으면 조용히 다른 측정으로 대체하지 않는다.
-- `network`는 `loopback`(기본) 또는 `netem`이다. 캡처 요청 시 실제 리슨 포트로 필터링하여 측정 역할의 인터페이스에서 SYN 전에 준비한다. [netem 예제](examples/compare.json). TLS 평문 처리나 첫 전송의 도달 순서를 임의의 재전송 사본 ACK로 입증하지 않는다.
-- [하드웨어 카운터](examples/perf-counters.json)는 대상 스레드의 사용자 공간 cycles/instructions와 enabled/running 시간을 남긴다. [함수 표본](examples/perf-sampling.json)은 **구성별 별도 프로파일 시도**에서 `perf record`로 수집하고 `perf script`로 복원한다. 카운터를 켠 연결의 시간도 일반 지연 표본에 섞지 않는다.
-- **`manifest.json`**: 확정 명세·실행 순서·목적·ID·진단 실패/차단 사유·회수 파일 해시. **`attempts/NNNNN/`**: 두 역할의 `endpoint.json`, 제어 로그, 요청한 원자료와 `analysis.json`. 시작/끝 사건은 측정 역할의 `endpoint.json → scenario.begin_event/end_event`를 `events.jsonl`의 ID에 연결하여 검산한다. 상세 기록에서는 방향별 레코드가 실제 소켓·공개 I/O 바이트 구간을 참조한다. Finished 경계는 **해당 연결**의 외부 헤더·AEAD·양쪽 어댑터가 선언한 무패딩 등 조건·응용 평문 총량이 맞을 때만 판정한다.
-- **루트 `analysis.json`**은 본 측정과 진단 목록을 분리한다. 원자료가 없어지거나 선행 시험이 더 이상 성립하지 않으면 `analyze`는 해당 표본을 채택하지 않는다. v2 매니페스트의 이전 TU 프레임 형식은 이전 분석 경로에서만 읽는다.
-- 실패한 **본 측정**을 다시 시도하려면 `turtle retry OLD_RUN FAILED_RUN_ID NEW_OUTPUT`을 쓴다. 기존 결과는 읽기만 하고 새 배치에서 사전 점검·필요한 진단을 다시 거친다. 새 측정은 `retry_of`로 원래 ID를 가리키며 기존 분모를 변경하지 않는다.
+- 기본값은 로컬 루프백이다. 상세 레코드는 `recording: "detailed"`, 필수 캡처는 이에 더해 `required_metrics: ["capture"]`로 요청한다. 요청한 캡처에는 libpcap과 권한이 필요하다.
+- 상세 시도의 `analysis.json`에서 `observations.tls_flights`의 `CH`, `SH`, `server_protected_flight`, `client_protected_flight`를 확인한다. 각 항목은 실제 레코드 범위와 로컬 송신 첫 바이트의 호출 진입 또는 수신 마지막 바이트의 호출 반환을 가리킨다. 보호 묶음의 개념적 구성원은 내부 메시지별 시각이 아니다. 경계를 입증하지 못하면 값은 `null`이다.
+- 추가 RTT와 손실은 **방향별**로 지정한다. 예를 들어 명세에 `"netem": {"additional_rtt_ms":16,"client_to_server":{"loss_pct":20},"server_to_client":{"loss_pct":0}}`를 넣으면 각 방향에 지연 8 ms를 더하고 **클라이언트→서버에만 손실 20%**를 적용한다. 방향별 `delay_ms`로 비대칭 지연을 지정할 수도 있지만 `additional_rtt_ms`와 함께 쓰지 않는다. 기저 RTT를 포함한 실측 RTT나 유한 표본의 드롭 비율이 정확히 그 값이 된다는 뜻은 아니다. 단측 실행의 `linux-netem.v1`은 `network.json`에 남긴 실행 전후의 실제 qdisc 설정·카운터를 요청 조건과 대조한다. 네임스페이스·망 설정 권한을 얻지 못하면 요청 조건으로 성공을 기록하지 않는다.
+- 함수 표본은 `cpu_samples`로 요청하는 별도 시도다. 선택 수집 불가와 필수 요청 실패를 구분한다. CLI 부재나 샘플링 실패가 기본 PMU 원누계 실패와 같은 사유는 아니다. cycles는 가능하나 instructions를 열 수 없는 환경은 `decision_required`로 남긴다. 이를 포괄적인 미지원으로 분류하거나 추정 계수로 채우지 않는다.
+- 다른 Linux 호스트에서는 **그 호스트**의 도구 체인·TLS 의존성으로 동일하게 빌드·실행한다. 결과 디렉터리 **전체**를 분석 PC로 복사한 뒤 그 버전의 `turtle analyze`에 복사한 디렉터리 경로를 준다. 재분석은 TLS를 다시 실행하지 않는다. 배포 소스에는 C, C++, 셸, Make/CMake만 사용하며 프레임워크가 커널 권한 설정을 바꾸지 않는다. **실물 ARM64 보드 실행과 보드→PC 재분석은 이번에 검증하지 않았다.**
 
-### 상세 계측 분석 코드를 읽는 순서
+[검증 결과와 원자료 검산](docs/validation.md) · [설계 기준](DESIGN.md) · [레거시 이관](docs/MIGRATION.md)
 
-1. [BIO·소켓·헤더 관측](src/analysis/observations.cpp) — 한 연결의 방향별 바이트 범위를 로컬 호출에 연결한다. BIO나 헤더 통지가 빠져도 검증된 소켓 기록은 남긴다.
-2. [TLS 레코드의 의미](src/analysis/record_semantics.cpp) — 같은 연결에서 양방향 Finished가 끝난 레코드를 판정하고, 이후의 평문 범위를 요청·선송신 안내·응답으로 구분한다. 전제가 맞지 않으면 경계를 추측하지 않는다.
-3. [TCP 전송 근거](src/analysis/tcp_evidence.cpp) — 캡처가 있을 때만 반복 바이트를 세고, 특정 패킷 사본의 ACK와 앞 단계에서 식별한 레코드를 대조한다. 다른 패킷의 ACK나 평문을 읽은 시각으로 그 사본의 선후를 대신 판정하지 않는다.
-
-## 외부 어댑터와 재현 시험
-
-[공개 C 계약](include/turtle/implementation.h)에는 준비·해제, 핸드셰이크 진행, 평문 읽기/쓰기, 살아 있는 연결의 최종 협상·인증 조회가 있다. 버퍼는 빌려 쓰며 부분 성공만 위치를 옮긴다. WANT_READ/WANT_WRITE이면 같은 버퍼와 길이로 재시도한다. 선송신과 상세 훅은 선택 사항이다. 예열용 진입점이나 OpenSSL 타입은 없다. `main`에서 함수표를 [turtle_endpoint_main](include/turtle/endpoint.h)에 넘긴다.
-
-~~~sh
-cmake --install out/build/native --prefix "$PWD/out/sdk"
-# 아래 소스 디렉터리 대신 저장소 밖으로 복사한 어댑터 디렉터리도 가능하다.
-cmake -S implementations/openssl -B out/external-openssl \
-  -DCMAKE_PREFIX_PATH="$PWD/out/sdk" -DOPENSSL_ROOT_DIR="$ossl"
-cmake --build out/external-openssl
-cmake -S implementations/wolfssl -B out/external-wolfssl \
-  -DCMAKE_PREFIX_PATH="$PWD/out/sdk" -DWOLFSSL_ROOT_DIR="$wolf"
-cmake --build out/external-wolfssl
-~~~
-
-어댑터 라이브러리에는 `turtle::contract`와 해당 TLS 라이브러리만, 엔드포인트 실행 파일에는 `turtle::endpoint`와 어댑터를 링크한다. 런타임은 C++이므로 C 어댑터도 최종 링크 프로젝트에서 C와 C++ 언어를 활성화한다.
-
-~~~sh
-cmake -S tests -B out/tests -DCMAKE_PREFIX_PATH="$deps/json-3.12.0/install" \
-  -DTURTLE_BINARY_DIR="$PWD/out/build/native" -DOPENSSL_ROOT_DIR="$ossl" \
-  -DTURTLE_TEST_OPENSSL=ON -DTURTLE_TEST_WOLFSSL=ON
-cmake --build out/tests --parallel 4
-ctest --test-dir out/tests --output-on-failure -j4
-~~~
-
-`TURTLE_TEST_NETEM=ON`은 네임스페이스·veth·qdisc 및 PCAP 권한이 필요하다. `TURTLE_TEST_PERF=ON`은 접근 가능한 PMU와 stock perf가 필요하다(`TURTLE_PERF_EXECUTABLE`로 지정 가능). `recording_cost`는 같은 구성에서 기록 끔·기본·상세의 별도 연결을 비교한다. [독립 strace 검산](tools/verify_socket_trace.py)과 [TShark 검산](tools/wireshark/check_lifecycle_capture.py)은 선택 시험이다. 외부 추적을 켠 실행의 지연은 성능 비교에 쓰지 않는다. **[실행으로 확인한 결과와 증거 위치](docs/validation.md)**
+앱이 소켓을 소유하고 레코드 계측까지 원한다면 각 실제 `send/recv`를
+`turtle_socket_before`와 `turtle_socket_returned`로 감싼다. EINTR 재시도도 별도 호출로 기록하며
+두 함수는 errno를 보존한다. 카운트 훅은 별도로 유지한다. 성공한 바이트만 알리는
+`turtle_session_wire`는 대안이지만 소켓 호출 시각을 증명하지 않으므로 `records` 필수 표본에 쓸 수 없다.
+완전한 양방향 바이트열만 있어도 `observations.record_layout`에는 외부 레코드의 길이와 오프셋이 남는다. 이 값에는 시각이나 암호화된 내부 메시지 식별 결과가 없다.

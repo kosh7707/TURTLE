@@ -131,6 +131,11 @@ if(TARGET turtle-reference AND TARGET turtle-openssl)
     find_package(OpenSSL REQUIRED COMPONENTS SSL Crypto)
     add_executable(turtle-one-side-fault one_side_fault.cpp)
     target_link_libraries(turtle-one-side-fault PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_library(turtle-image-module MODULE image_module.c)
+    add_executable(turtle-image-binding-test image_binding.cpp)
+    target_link_libraries(turtle-image-binding-test PRIVATE turtle_process)
+    add_test(NAME participant_image_binding COMMAND turtle-image-binding-test "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-openssl>" "$<TARGET_FILE:turtle-image-module>" "${CMAKE_CURRENT_BINARY_DIR}/artifacts/image-binding")
+    set_tests_properties(participant_image_binding PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
     add_executable(turtle-one-side-test one_side.cpp)
     target_link_libraries(turtle-one-side-test PRIVATE turtle_process)
     add_test(NAME one_sided_mtls_s3 COMMAND turtle-one-side-test "$<TARGET_FILE:turtle>"
@@ -141,3 +146,80 @@ endif()
 
 add_test(NAME pair_diagnostics COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/pair.sh" "$<TARGET_FILE:turtle-pair>")
 set_tests_properties(pair_diagnostics PROPERTIES TIMEOUT 60)
+
+add_executable(turtle-scenario-vectors scenario_vectors.cpp)
+target_link_libraries(turtle-scenario-vectors PRIVATE turtle_analysis)
+add_test(NAME scenario_s4_plaintext_vectors COMMAND turtle-scenario-vectors
+    "${CMAKE_CURRENT_BINARY_DIR}/artifacts/scenario-vectors")
+
+if(TARGET turtle-reference AND TARGET turtle-openssl)
+    add_executable(turtle-scenario-probe-fault scenario_probe_fault.cpp)
+    target_link_libraries(turtle-scenario-probe-fault PRIVATE turtle::endpoint)
+    add_executable(turtle-scenario-matrix scenario_matrix.cpp)
+    target_link_libraries(turtle-scenario-matrix PRIVATE turtle_process)
+    if(TARGET turtle-wolfssl)
+        set(matrix_target turtle-wolfssl)
+    else()
+        set(matrix_target turtle-openssl)
+    endif()
+    function(scenario_case name)
+        add_test(NAME "scenario_${name}" COMMAND turtle-scenario-matrix "$<TARGET_FILE:turtle>"
+            "$<TARGET_FILE:${matrix_target}>" "$<TARGET_FILE:turtle-scenario-probe-fault>"
+            "${CMAKE_CURRENT_BINARY_DIR}/artifacts/one-sided-matrix" ${ARGN})
+        set_tests_properties("scenario_${name}" PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    endfunction()
+    foreach(s S0 S1 S2 S3 S4)
+        foreach(auth server mtls)
+            foreach(role client server)
+                scenario_case("${s}_${auth}_${role}" "${s}" "${auth}" "${role}")
+            endforeach()
+        endforeach()
+    endforeach()
+    foreach(fault tamper absent late)
+        scenario_case("proof_${fault}" "${fault}")
+    endforeach()
+endif()
+
+if(TARGET turtle-openssl_driver AND TARGET turtle-scenario-matrix)
+    set(vendor "${CMAKE_CURRENT_SOURCE_DIR}/../implementations/openssl")
+    add_executable(turtle-stress-client "${vendor}/main.cpp" "${vendor}/configure.cpp" scenario_small_socket.cpp)
+    target_link_libraries(turtle-stress-client PRIVATE turtle-openssl_driver)
+    target_link_options(turtle-stress-client PRIVATE "LINKER:--wrap=socket")
+    add_test(NAME scenario_s4_small_socket_duplex COMMAND turtle-scenario-matrix "$<TARGET_FILE:turtle>"
+        "$<TARGET_FILE:turtle-stress-client>" "$<TARGET_FILE:turtle-scenario-probe-fault>"
+        "${CMAKE_CURRENT_BINARY_DIR}/artifacts/one-sided-matrix" duplex)
+    set_tests_properties(scenario_s4_small_socket_duplex PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+endif()
+add_executable(turtle-network-evidence network_evidence.cpp)
+target_link_libraries(turtle-network-evidence PRIVATE turtle_control)
+add_test(NAME netem_evidence COMMAND turtle-network-evidence)
+if(TURTLE_TEST_NETEM AND TARGET turtle-reference)
+    add_test(NAME netem_strict_condition COMMAND turtle-network-evidence --live
+        "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-reference>"
+        "${CMAKE_CURRENT_BINARY_DIR}/artifacts/netem-strict")
+    set_tests_properties(netem_strict_condition PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+endif()
+
+add_executable(turtle-atomic-artifact atomic_artifact.cpp)
+target_link_libraries(turtle-atomic-artifact PRIVATE turtle_analysis)
+add_test(NAME atomic_artifact COMMAND turtle-atomic-artifact
+    "${CMAKE_CURRENT_BINARY_DIR}/artifacts/atomic-writes")
+
+if(TARGET turtle-openssl)
+    add_test(NAME installed_app_owned_records COMMAND "${CMAKE_COMMAND}"
+        "-DBUILD=${CMAKE_BINARY_DIR}" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/app-owned-records"
+        "-DCLI=$<TARGET_FILE:turtle>" "-DSERVER=$<TARGET_FILE:turtle-openssl>"
+        "-DSSLROOT=${OPENSSL_ROOT_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/app_owned_records.cmake")
+    set_tests_properties(installed_app_owned_records PROPERTIES TIMEOUT 150 SKIP_REGULAR_EXPRESSION "Strict pass unavailable: actual PMU denied")
+endif()
+add_executable(turtle-profile-catalog profile_catalog.cpp)
+target_link_libraries(turtle-profile-catalog PRIVATE turtle_profiling)
+add_test(NAME profile_catalog COMMAND turtle-profile-catalog
+    "${CMAKE_CURRENT_BINARY_DIR}/artifacts/profile-catalog" "${CMAKE_CURRENT_LIST_DIR}/profile-catalog-tool.sh")
+if(TURTLE_TEST_NETEM AND TARGET turtle_pcap AND TARGET turtle-openssl)
+    add_test(NAME installed_app_owned_capture COMMAND "${CMAKE_SOURCE_DIR}/tools/netns-exec.sh"
+        "${CMAKE_COMMAND}" "-DBUILD=${CMAKE_BINARY_DIR}" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/app-owned-capture"
+        "-DCLI=$<TARGET_FILE:turtle>" "-DSERVER=$<TARGET_FILE:turtle-openssl>"
+        "-DSSLROOT=${OPENSSL_ROOT_DIR}" -DCAPTURE_ONLY=ON -P "${CMAKE_CURRENT_SOURCE_DIR}/app_owned_records.cmake")
+    set_tests_properties(installed_app_owned_capture PROPERTIES TIMEOUT 180)
+endif()

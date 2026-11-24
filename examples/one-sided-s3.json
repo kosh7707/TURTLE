@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "target": {"role": "client", "argv": ["../build/turtle-openssl"]},
+  "scenario": "S3",
+  "auth": "mtls",
+  "warmups": 1,
+  "repetitions": 2
+}

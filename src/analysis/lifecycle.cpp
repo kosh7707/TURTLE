@@ -1,7 +1,9 @@
+#include "artifact/network_evidence.hpp"
 #include "analysis/analysis.hpp"
 #include "analysis/evidence.hpp"
-#include "profiling/profiling.hpp"
+#include "process/images.hpp"
 #include "process/process.hpp"
+#include "profiling/profiling.hpp"
 #include <algorithm>
 #include <cctype>
 #include <set>
@@ -238,11 +240,14 @@ Json measurement_rows(const Json &role_report, const std::string &role,
   return rows;
 }
 } // namespace
-Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
+Json assess(const fs::path &dir, const Json &config, const Json &scheduled,
+            Json *image_baselines) {
   Task t(config);
   const bool combined = config.value("measurement_contract", "") == "counts-enough.v1";
   const auto purpose = scheduled.at("purpose").get<std::string>();
   const bool probe = purpose == "capability", profile = purpose == "profile";
+  const bool image_check = config.value("image_contract", "") == "proc-exec.v1";
+  Json cohort = Json::object();
   const auto required = config.value("required_metrics", Json::array());
   Json task_errors = Json::array(), membership = Json::array(),
        metric_errors = Json::array();
@@ -261,6 +266,8 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
   if (combined) {
     try {
       verify_evidence(dir, scheduled.at("artifacts_sha256"));
+      require(!fs::exists(dir / "images.json") || image_check,
+              "unexpected_image_contract");
       if (config.contains("build_sha256")) {
         const auto binding = artifact::load(dir / "binding.json");
         const auto &pins = config.at("build_sha256");
@@ -343,6 +350,42 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
       task_errors.push_back(std::string(role) + ":" + e.what());
     }
   }
+  if (image_check) {
+    try {
+      const auto raw = artifact::load(dir / "images.json");
+      require(raw.at("run_id") == scheduled.at("run_id") &&
+                  raw.at("schema") == "proc-exec.v1",
+              "image_run_mismatch");
+      for (auto role : {"client", "server"}) {
+        const std::string key =
+            probe && std::string_view(role) == "client" ? "probe_client" : role;
+        const auto pid =
+            artifact::load(dir / role / "endpoint.json").at("pid").get<pid_t>();
+        const auto &w = raw.at("roles").at(role);
+        const auto first = process::image_key(w.at("ready"), pid);
+        const auto last = process::image_key(w.at("finished"), pid);
+        require(first.at("exe") == last.at("exe"),
+                "participant_changed_during_trial");
+        for (const auto &[path, hash] : first.at("mapped").items())
+          require(!last.at("mapped").contains(path) ||
+                      last.at("mapped").at(path) == hash,
+                  "mapped_code_replaced_during_trial");
+        cohort[key] = {{"ready", first}, {"finished", last}};
+        require(image_baselines && (!image_baselines->contains(key) ||
+                                    image_baselines->at(key) == cohort.at(key)),
+                "participant_image_changed_between_trials");
+      }
+    } catch (const std::exception &e) {
+      membership.push_back(e.what());
+    }
+  }
+  if (config.value("network_contract", "") == "linux-netem.v1") {
+    try {
+      artifact::verify_netem(config.at("netem"), artifact::load(dir / "network.json"));
+    } catch (const std::exception &e) {
+      membership.push_back(std::string("netem_evidence_unverified:") + e.what());
+    }
+  }
   if (probe) {
     try {
       const auto &c = roles.at("client").at("capability"),
@@ -353,9 +396,10 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
           artifact::read_text(dir / "server" / "control.log");
       const auto presend =
           "PRESEND " + std::to_string(integer(s.at("server_submitted"))) + "\n";
-      require(client_log == "READY\nPAUSED\nGREETING\n" &&
+      const std::string terminal = image_check ? "IMAGES_DONE\n" : "";
+      require(client_log == "READY\nPAUSED\nGREETING\n" + terminal &&
                   server_log.starts_with("LISTEN ") &&
-                  server_log.ends_with("\nREADY\n" + presend),
+                  server_log.ends_with("\nREADY\n" + presend + terminal),
               "presend_greeting_not_validated_while_server_paused");
       if (combined)
         require(integer(c.at("client_hello_bytes")) > 0 &&
@@ -460,24 +504,43 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
   for (const auto &[key, why] : unavailable.items())
     if (observations.contains(key) && !available(observations.at(key)))
       observations[key] = measurement(nullptr, "unsupported", why);
+  const bool coverage_policy = combined && config.value("raw_coverage_contract", "") == "partial-decision.v1";
+  bool partial = false;
+  if (coverage_policy && !probe && !profile && !unavailable.contains("perf_counters") &&
+      counters_report.value("availability", "") == "available") {
+    const auto scope = counters_report.at("operations").value("scenario", Json::object());
+    if (scope.contains("cycles_raw") && available(scope.at("cycles_raw")) &&
+        available(scope.at("instructions_raw"))) {
+      const auto enabled = integer(scope.at("time_enabled_ns").at("value"));
+      const auto running = integer(scope.at("time_running_ns").at("value"));
+      partial = running > 0 && running < enabled;
+      out["pmu_coverage"] = {{"time_enabled_ns", enabled}, {"time_running_ns", running},
+                             {"running_fraction", static_cast<double>(running) / enabled}};
+    }
+  }
   for (const auto &k : required) {
     if (probe || (k == "cpu_samples" && !profile) ||
         (k == "perf_counters" && profile))
       continue;
     auto m =
         observations.value(k.get<std::string>(), missing("metric_unknown"));
-    if (!available(m))
+    if (!available(m) && !(partial && k == "perf_counters"))
       metric_errors.push_back(k.get<std::string>() + ":" +
                               m.at("reason").dump());
   }
-  if (combined && !probe && !profile && !has(required, "perf_counters") &&
+  if (combined && !partial && !probe && !profile && !has(required, "perf_counters") &&
       !available(observations.at("perf_counters")))
     metric_errors.push_back("basic_run_requires_actual_counters");
   if (!probe && !available(observations.at("scenario_wall_ns")) &&
       !has(required, "scenario_wall_ns"))
     metric_errors.push_back("scenario_wall_ns:required_boundary_unavailable");
   bool success = task_errors.empty(),
-       eligible = success && membership.empty() && metric_errors.empty();
+       verified = success && membership.empty() && metric_errors.empty(),
+       decision = partial && verified, eligible = verified && !partial;
+  if (coverage_policy) {
+    out["qualification"] = decision ? "decision_required" : eligible ? "eligible" : "invalid";
+    if (decision) out["qualification_reason"] = "pmu_partial_coverage";
+  }
   bool ordinary =
       purpose == "measurement" && (combined || !counters_report.value("requested", false));
   auto &role = roles[t.role];
@@ -489,6 +552,11 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
   if (combined && counters_report.value("reason", Json(nullptr)) == "instructions_open_failed")
     out["basic_qualification"] = "undecided_instructions_unavailable";
   auto rows = measurement_rows(role, t.role, purpose, eligible, ordinary);
+  if (image_check && verified && image_baselines) {
+    if (image_baselines->is_null())
+      *image_baselines = Json::object();
+    image_baselines->update(cohort);
+  }
   Json reasons = task_errors;
   for (const auto &m : {membership, metric_errors})
     for (const auto &r : m)
@@ -499,9 +567,9 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled) {
        {"purpose", purpose},
        {"success", success},
        {"configuration_matches", membership.empty()},
-       {"required_metrics_valid", metric_errors.empty()},
+       {"required_metrics_valid", decision ? Json(nullptr) : Json(metric_errors.empty())},
        {"eligible", eligible},
-       {"ordinary_timing_sample", ordinary},
+       {"ordinary_timing_sample", ordinary && (!combined || eligible)},
        {"invalid_reasons", reasons},
        {"task_invalid_reasons", task_errors},
        {"configuration_invalid_reasons", membership},
@@ -527,7 +595,7 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
   std::map<std::string, Json> configs;
   for (const auto &c : spec.at("configurations"))
     require(configs.emplace(c.at("id"), c).second, "duplicate_configuration");
-  bool valid = manifest.at("status") == "complete" &&
+  bool valid = (manifest.at("status") == "complete" || manifest.at("status") == "decision_required") &&
                manifest.value("blocked", Json::object()).empty();
   Json diagnostics = Json::array(), attempts = Json::array();
   std::set<std::string> ids, dirs;
@@ -555,10 +623,27 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
             "unknown_configuration_or_duplicate_schedule_slot");
   }
   std::map<std::string, std::size_t> samples, warmed;
-  std::set<std::string> proven, profiled;
+  std::set<std::string> proven, profiled, task_proven;
+  std::map<std::string, Json> image_baselines;
+  Json support = Json::object();
+  for (const auto &[id, c] : configs)
+    if (c.value("measurement_contract", "") == "counts-enough.v1")
+      support[id] = "unconfirmed";
+  if (!support.empty() && manifest.contains("preflight_sha256") &&
+      fs::is_regular_file(root / "check.json") &&
+      !fs::is_symlink(root / "check.json") &&
+      process::digest(root / "check.json") ==
+          manifest.at("preflight_sha256").get_ref<const std::string &>()) {
+    const auto checks = artifact::load(root / "check.json");
+    for (const auto &[id, c] : configs)
+      if (support.contains(id) &&
+          (c.at("scenario") == "S2" || c.at("scenario") == "S4") &&
+          has(checks.at("configurations").at(id).at("reasons"),
+              "server_first_adapter_unavailable"))
+        support[id] = "unsupported";
+  }
   std::size_t position = 0;
-  const auto canonical_root = fs::canonical(root);
-  std::size_t successes = 0, eligible = 0;
+  std::size_t successes = 0, eligible = 0, decisions = 0, unresolved_measurements = 0;
   for (const auto &a : manifest.at("attempts")) {
     auto id = a.at("configuration").get<std::string>();
     auto d = a.at("directory").get<std::string>();
@@ -572,17 +657,21 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
             "attempt_schedule_out_of_order");
     position = planned_pos - manifest.at("order").begin() + 1;
     auto &cfg = configs.at(id);
-    const fs::path declared(d);
-    const auto relative =
-        fs::canonical(root / declared).lexically_relative(canonical_root);
-    // Each slot is a direct child of the actual attempts directory. Reject
-    // absolute paths, dot segments, aliases and outward-pointing symlinks.
-    require(declared.parent_path() == "attempts" &&
-                !declared.filename().empty() && declared.filename() != "." &&
-                declared.filename() != ".." && relative == declared,
-            "attempt_directory_outside_run");
-    auto r = assess(root / d, cfg, a);
+    const auto dir = attempt_directory(root, d);
+    auto trial_baselines = image_baselines[id];
+    auto r = assess(dir, cfg, a, &trial_baselines);
     bool needs_probe = cfg.at("scenario") == "S2" || cfg.at("scenario") == "S4";
+    // Capability/support describes the TLS task, not whether an optional or
+    // mandatory performance counter was runnable on this particular machine.
+    if (r.at("success") == true && r.at("configuration_matches") == true) {
+      if (a.at("purpose") == "capability")
+        task_proven.insert(id);
+      else if (support.contains(id) &&
+               (a.at("purpose") == "warmup" ||
+                a.at("purpose") == "measurement") &&
+               (!needs_probe || task_proven.contains(id)))
+        support[id] = "supported";
+    }
     bool gate = (!needs_probe || proven.contains(id) ||
                  a.at("purpose") == "capability") &&
                 (a.at("purpose") != "measurement" ||
@@ -590,7 +679,10 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
                   (!has(cfg.at("required_metrics"), "cpu_samples") ||
                    profiled.contains(id))));
     if (!gate) {
+      if (r.contains("qualification")) r["qualification"] = "invalid";
+      r.erase("qualification_reason");
       r["eligible"] = false;
+      r["ordinary_timing_sample"] = false;
       r["invalid_reasons"].push_back("prerequisite_attempt_not_verified");
       for (auto &row : r.at("measurements")) {
         row["valid_sample"] = false;
@@ -598,7 +690,10 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
       }
       if (!fs::is_symlink(root / d / "analysis.json")) artifact::save(root / d / "analysis.json", r);
     }
-    if (r.at("eligible") == true) {
+    const bool pending = r.value("qualification", "") == "decision_required";
+    if (pending) ++decisions;
+    if (r.at("eligible") == true || pending) {
+      image_baselines[id] = std::move(trial_baselines);
       if (a.at("purpose") == "warmup")
         ++warmed[id];
       if (a.at("purpose") == "capability")
@@ -614,15 +709,17 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
                 {"complete", r.at("eligible")},
                 {"success", r.at("success")},
                 {"invalid_reasons", r.at("invalid_reasons")}};
+    if (r.contains("qualification")) row["qualification"] = r.at("qualification");
     bool optional_profile =
         a.at("purpose") == "profile" &&
         !has(configs.at(id).at("required_metrics"), "cpu_samples");
     valid = valid && r.value("raw_evidence_valid", true) &&
-            (r.at("eligible") == true || optional_profile);
+            (r.at("eligible") == true || pending || optional_profile);
     if (a.at("purpose") == "measurement") {
       attempts.push_back(row);
       ++samples[id];
       successes += r.at("success") == true;
+      unresolved_measurements += pending;
       eligible += r.at("eligible") == true;
     } else
       diagnostics.push_back(row);
@@ -631,14 +728,22 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
   for (const auto &[id, config] : configs)
     valid = valid && samples[id] == integer(spec.at("repetitions")) &&
             warmed[id] == integer(config.at("warmups"));
-  artifact::save(root / "analysis.json",
-                 {{"schema", "turtle.run-analysis.v2"},
-                  {"complete", valid},
+  Json summary = {{"schema", "turtle.run-analysis.v2"},
+                  {"complete", valid && decisions == 0},
                   {"measurement_count", attempts.size()},
                   {"successful_measurements", successes},
                   {"eligible_measurements", eligible},
                   {"attempts", attempts},
-                  {"diagnostics", diagnostics}});
-  return valid;
+                  {"diagnostics", diagnostics}};
+  if (decisions) {
+    summary["qualification"] = valid ? "decision_required" : "invalid";
+    summary["decision_required_measurements"] = unresolved_measurements;
+    summary["decision_required_attempts"] = decisions;
+    summary["collection_complete"] = seen == planned;
+  }
+  if (!support.empty())
+    summary["scenario_support"] = std::move(support);
+  artifact::save(root / "analysis.json", summary);
+  return valid && decisions == 0;
 }
 } // namespace turtle::analysis

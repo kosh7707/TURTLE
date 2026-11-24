@@ -344,6 +344,16 @@ Json attempt(const std::filesystem::path &root, Json error) {
   artifact::save(root / "analysis.json", result);
   return result;
 }
+std::filesystem::path attempt_directory(const std::filesystem::path &root,
+                                        const std::filesystem::path &declared) {
+  namespace fs = std::filesystem;
+  if (declared.parent_path() != "attempts" || declared.filename().empty() ||
+      declared.filename() == "." || declared.filename() == ".." ||
+      declared.native().find('\0') != std::string::npos ||
+      fs::canonical(root / declared).lexically_relative(fs::canonical(root)) != declared)
+    throw std::runtime_error("attempt_directory_outside_run");
+  return root / declared;
+}
 bool regenerate(const std::filesystem::path &root) {
   auto manifest = artifact::load(root / "manifest.json");
   if (manifest.at("schema") == "turtle.manifest.v3")
@@ -354,7 +364,7 @@ bool regenerate(const std::filesystem::path &root) {
                manifest.at("attempts").size() == manifest.at("order").size();
   Json rows = Json::array();
   for (const auto &a : manifest.at("attempts")) {
-    auto r = attempt(root / a.at("directory").get<std::string>(),
+    auto r = attempt(attempt_directory(root, a.at("directory").get<std::string>()),
                      a.value("error", Json(nullptr)));
     bool complete = r.at("success") == true && r.at("phase_complete") == true &&
                     r.at("perf_complete") == true &&

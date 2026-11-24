@@ -4,6 +4,7 @@
 #include "run/runner.hpp"
 #include <algorithm>
 #include <charconv>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -26,9 +27,9 @@ std::string command() {
 Mode mode(const run::Options &o) {
   if ((o.role == TURTLE_CLIENT) != (o.measured_role == "client"))
     return Mode::peer;
-  return o.recording == "off"     ? Mode::off
-         : o.recording == "basic" ? Mode::basic
-                                  : Mode::detailed;
+  if (o.recording == "off")
+    return Mode::off;
+  return o.recording == "basic" ? Mode::basic : Mode::detailed;
 }
 // Determine the full plaintext ClientHello boundary from actually submitted
 // ciphertext; do not assume one handshake per TLSPlaintext record or send.
@@ -89,7 +90,13 @@ struct turtle_session {
   std::unique_ptr<net::Connection> conn;
   turtle_transport raw{};
   turtle_io_boundary counts{};
+  enum WireMode { unset, bytes_only, intervals, builtin } wire_mode = unset;
+  bool lower_pending = false, lower_sending = false;
+  const void *lower_data = nullptr;
+  size_t lower_size = 0;
+  frame::SocketObservation lower;
   bool has_first, offline_io = false, ready = false, files = false;
+  bool image_barrier = false;
   bool first_hs = false, hs = false, finishing = false, done = false,
        started = false, alternate = false;
   unsigned hooks;
@@ -139,11 +146,19 @@ struct turtle_session {
     r.request_bytes = o.request.size();
     r.response_bytes = o.response.size();
     r.greeting_bytes = o.greeting.size();
-    input = client()
-                ? (early() ? o.greeting : "") + (response() ? o.response : "")
-                : (request() ? o.request : "");
-    output = client() ? (request() ? o.request : "")
-                      : (response() ? o.response : "");
+    if (client()) {
+      if (early())
+        input = o.greeting;
+      if (response())
+        input += o.response;
+      if (request())
+        output = o.request;
+    } else {
+      if (request())
+        input = o.request;
+      if (response())
+        output = o.response;
+    }
     readbuf.resize(input.size());
     if (!o.check) {
       std::filesystem::create_directories(o.output);
@@ -167,7 +182,7 @@ struct turtle_session {
     if (!tx || !probe())
       return;
     wire_sent += n;
-    if (probe() && client() && !r.client_paused) {
+    if (client() && !r.client_paused) {
       need(n <= 1024 * 1024 - ch.size(), "probe_client_hello_too_large");
       const auto *p = static_cast<const unsigned char *>(data);
       ch.insert(ch.end(), p, p + n);
@@ -407,6 +422,19 @@ template <class F> int checked(turtle_session *s, F fn) noexcept {
   }
   return -1;
 }
+void install_lower_counts(turtle_session *s) {
+  if (!s->conn)
+    return;
+  turtle_io_hooks hooks{};
+  if (s->wire_mode == turtle_session::builtin && s->r.counts_bound &&
+      !s->counts.set_hooks)
+    hooks = {
+        s, [](void *p) { ++static_cast<turtle_session *>(p)->r.send_attempts; },
+        [](void *p) {
+          ++static_cast<turtle_session *>(p)->r.positive_receives;
+        }};
+  s->conn->count_hooks(hooks);
+}
 void attach(turtle_session *s, net::Socket fd) {
   need(!s->conn && !s->ready && !s->o.check, "socket_already_attached");
   s->conn = std::make_unique<net::Connection>(std::move(fd), s->rec, s->o.chunk,
@@ -463,19 +491,58 @@ extern "C" int turtle_session_bind_counts(turtle_session *s,
            }});
       s->r.counts_bound = true;
     }
+    install_lower_counts(s);
   });
 }
 extern "C" int turtle_session_wire(turtle_session *s, int sending,
                                    const void *data, size_t n) {
   return checked(s, [&] {
     need(data && n && (sending == 0 || sending == 1), "invalid_wire_transfer");
+    need(s->wire_mode == turtle_session::unset ||
+             s->wire_mode == turtle_session::bytes_only,
+         "mixed_wire_sources");
+    s->wire_mode = turtle_session::bytes_only;
     s->wire(sending, data, n, true);
+  });
+}
+extern "C" int turtle_socket_before(turtle_session *s, int tx, const void *buf,
+                                    size_t n) {
+  return checked(s, [&] {
+    need(s->phase == turtle_session::calling && !s->lower_pending &&
+             (tx == 0 || tx == 1) && (buf || !n),
+         "socket_entry_out_of_order");
+    need(s->wire_mode == turtle_session::unset ||
+             s->wire_mode == turtle_session::intervals,
+         "mixed_wire_sources");
+    s->wire_mode = turtle_session::intervals;
+    s->lower_pending = true;
+    s->lower_sending = tx;
+    s->lower_data = buf;
+    s->lower_size = n;
+    s->lower.begin(s->rec, tx, n, s->rec.active_call());
+  });
+}
+extern "C" int turtle_socket_returned(turtle_session *s, ptrdiff_t raw) {
+  const int error = errno;
+  return checked(s, [&] {
+    need(s->lower_pending, "socket_return_without_entry");
+    s->lower.end(s->rec, s->lower_sending, s->lower_data, s->lower_size, raw,
+                 error);
+    s->lower_pending = false;
+    need(raw >= -1 && (raw <= 0 || static_cast<size_t>(raw) <= s->lower_size),
+         "invalid_socket_result");
+    if (raw > 0)
+      s->wire(s->lower_sending, s->lower_data, raw, false);
   });
 }
 extern "C" int turtle_session_transport(turtle_session *s,
                                         turtle_transport *out) {
   return checked(s, [&] {
     need(out && !s->ready, "invalid_transport_request");
+    need(s->wire_mode == turtle_session::unset ||
+             s->wire_mode == turtle_session::builtin,
+         "mixed_wire_sources");
+    s->wire_mode = turtle_session::builtin;
     if (!s->o.check && !s->conn) {
       if (s->client())
         attach(s, net::connect(s->cfg.host, s->cfg.port));
@@ -489,6 +556,7 @@ extern "C" int turtle_session_transport(turtle_session *s,
     s->r.counts_bound =
         s->r.role == s->o.measured_role; // the installed wrapper is the
                                          // TLS/lower-I/O boundary
+    install_lower_counts(s);
     *out = {s,
             [](void *p, void *buf, size_t n) -> ptrdiff_t {
               auto &x = *static_cast<turtle_session *>(p);
@@ -497,8 +565,6 @@ extern "C" int turtle_session_transport(turtle_session *s,
                 return -1;
               }
               auto rc = x.raw.receive(x.raw.state, buf, n);
-              if (rc > 0 && x.r.counts_bound && !x.counts.set_hooks)
-                ++x.r.positive_receives;
               return rc;
             },
             [](void *p, const void *buf, size_t n) -> ptrdiff_t {
@@ -507,8 +573,6 @@ extern "C" int turtle_session_transport(turtle_session *s,
                 x.offline_io = true;
                 return -1;
               }
-              if (x.r.counts_bound && !x.counts.set_hooks)
-                ++x.r.send_attempts;
               auto rc = x.raw.send(x.raw.state, buf, n);
               PreserveErrno guard;
               if (rc > 0 && checked(&x, [&] {
@@ -531,15 +595,18 @@ extern "C" int turtle_session_ready(turtle_session *s, int prepared) {
   int rc = checked(s, [&] {
     need(!s->ready, "ready_already_called");
     bool clock = measure::now().wall_available;
-    const char *err = !prepared       ? "prepare_failed"
-                      : s->offline_io ? "unexpected_prepare_io"
-                      : !clock && s->r.role == s->o.measured_role
-                          ? "monotonic_clock_unavailable"
-                      : !s->client() && s->early() && !s->has_first
-                          ? "server_first_unsupported"
-                      : s->r.role == s->o.measured_role && !s->r.counts_bound
-                          ? "transport_boundary_unbound"
-                          : nullptr;
+    const bool measured = s->r.role == s->o.measured_role;
+    const char *err = nullptr;
+    if (!prepared)
+      err = "prepare_failed";
+    else if (s->offline_io)
+      err = "unexpected_prepare_io";
+    else if (measured && !clock)
+      err = "monotonic_clock_unavailable";
+    else if (!s->client() && s->early() && !s->has_first)
+      err = "server_first_unsupported";
+    else if (measured && !s->r.counts_bound)
+      err = "transport_boundary_unbound";
     if (s->o.check) {
       const auto &pmu = s->rec.counters();
       auto has = [&](turtle_hook h) { return (s->hooks & (1u << h)) != 0; };
@@ -562,6 +629,12 @@ extern "C" int turtle_session_ready(turtle_session *s, int prepared) {
       throw std::runtime_error(err);
     if (!s->o.check) {
       need(s->conn != nullptr, "connected_socket_required");
+      s->image_barrier =
+          s->o.controlled && std::getenv("TURTLE_IMAGE_BARRIER") &&
+          std::string_view(std::getenv("TURTLE_IMAGE_BARRIER")) == "1";
+      if (s->image_barrier)
+        artifact::save(std::filesystem::path(s->o.output) / "participant.json",
+                       {{"pid", ::getpid()}, {"run_id", s->o.run_id}});
       std::cout << "READY" << std::endl;
       need(command() == "START", "start_barrier_failed");
     }
@@ -593,6 +666,7 @@ extern "C" void turtle_before(turtle_session *s) {
 extern "C" void turtle_returned(turtle_session *s) {
   checked(s, [&] {
     need(s->phase == turtle_session::calling, "return_out_of_order");
+    need(!s->lower_pending, "unclosed_socket_interval");
     s->stop = s->rec.end(s->event, false, 0);
     s->phase = turtle_session::returned;
   });
@@ -619,6 +693,10 @@ extern "C" int turtle_session_close(turtle_session *ep) {
       s->r.observation_reason = s->rec.reason();
     if (s->files)
       artifact::write(s->o.output, s->rec, s->r);
+    if (s->ready && s->image_barrier) {
+      std::cout << "IMAGES_DONE" << std::endl;
+      need(command() == "EXIT", "image_release_expected");
+    }
     return s->r.scenario_complete && s->r.invalid_reason.empty() ? 0 : 1;
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';

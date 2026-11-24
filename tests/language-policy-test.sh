@@ -19,6 +19,12 @@ reject() {
     rm "$1" "$root-log"
 }
 pass
+# Archive users run the benchmark before auditing their source tree.
+mkdir -p outputs/run.results/attempts/0/client src/outputs
+printf 'READY\n' > outputs/run.results/attempts/0/client/control.log
+pass
+touch src/outputs/leaked.py
+reject src/outputs/leaked.py
 foreign=py'thon3'
 printf '%s\n' 'print(1)' > probe.py
 reject probe.py
@@ -43,9 +49,12 @@ reject docs/evidence/probe.tar.gz
 ln -s main.c probe.hpp
 reject probe.hpp
 git init -q
-printf '%s\n' '/cache/' > .gitignore
+printf '%s\n' '/cache/' '/outputs/' > .gitignore
 mkdir cache
 printf 'bad\n' > cache/hidden.rs
 pass
 git add -f cache/hidden.rs
 reject cache/hidden.rs
+touch outputs/tracked.py
+git add -f outputs/tracked.py
+reject outputs/tracked.py

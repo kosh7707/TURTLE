@@ -17,6 +17,7 @@ public:
         const std::filesystem::path &error_file = {});
   ~Child();
   Child(const Child &) = delete;
+  pid_t pid() const noexcept { return pid_; }
   Child &operator=(const Child &) = delete;
   std::string line(Deadline, int cancel_fd = -1);
   std::string collect(Deadline, int cancel_fd = -1);

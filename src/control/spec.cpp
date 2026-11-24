@@ -1,3 +1,4 @@
+#include "artifact/network_evidence.hpp"
 #include "control/spec.hpp"
 #include "capture/capture.hpp"
 #include "profiling/profiling.hpp"
@@ -173,7 +174,12 @@ Json resolve_spec(Json spec) {
       c[key] = artifact::integer(c.value(key, Json(0)));
     c["application"] =
         resolve_application(c.value("application", Json::object()));
-    validate_netem(c.value("netem", Json::object()));
+    if (c.value("measurement_contract", "") == "counts-enough.v1" && spec.at("network") == "netem") {
+      c["netem"] = artifact::normalized_netem(c.value("netem", Json::object()));
+      c["network_contract"] = "linux-netem.v1";
+    } else {
+      validate_netem(c.value("netem", Json::object()));
+    }
     auto inputs = c.value("inputs", Json::array());
     require(inputs.is_array(), "invalid_inputs");
     for (const auto &path : inputs)
@@ -243,6 +249,19 @@ Json preflight(const Json &spec, int cancel) {
             endpoint_args(c, role, "measurement", flags),
             spec.at("timeout_seconds"),
             c.at(role).value("env", process::Environment{}), cancel);
+        if (c.contains("image_contract") &&
+            std::string_view(role) == "server" && server_first(c)) {
+          const auto ep = Json::parse(
+              r.at("stdout").get_ref<const std::string &>(), nullptr, false);
+          if (ep.is_object() && ep.contains("server_first") &&
+              ep.at("server_first") == false &&
+              (ep.value("ready", false) || ep.value("reason", std::string{}) ==
+                                               "server_first_unsupported")) {
+            endpoints[role] = ep;
+            reasons.push_back("server_first_adapter_unavailable");
+            continue;
+          }
+        }
         if (r.at("returncode") != 0)
           throw std::runtime_error(
               "endpoint_check_failed:" + r.at("stderr").get<std::string>() +
@@ -262,11 +281,14 @@ Json preflight(const Json &spec, int cancel) {
                            : ep.at(name) == true
                                ? Json(nullptr)
                                : Json("adapter_hook_unavailable")}};
-          if (requested(c, "perf_counters"))
+          if (requested(c, "perf_counters")) {
+            const bool incomplete = c.value("measurement_contract", "") == "counts-enough.v1" &&
+                                    ep.at("perf_reason") == "instructions_open_failed";
             features["perf_counters"] = {
-                {"availability",
-                 ep.at("perf_counters") == true ? "available" : "unsupported"},
+                {"availability", incomplete ? "decision_required" :
+                     ep.at("perf_counters") == true ? "available" : "unsupported"},
                 {"reason", ep.at("perf_reason")}};
+          }
         }
       } catch (const std::exception &e) {
         endpoints[role] = {{"ready", false}, {"reason", e.what()}};
@@ -306,11 +328,14 @@ Json preflight(const Json &spec, int cancel) {
     if (requested(c, "cpu_samples"))
       features["cpu_samples"] =
           profiling::probe(c.at("measurement").at("cpu_samples"), cancel);
-    for (const auto &name : c.at("required_metrics"))
-      if (features.value(name.get<std::string>(), Json::object())
-              .value("availability", "") != "available")
-        reasons.push_back("required_metric_unavailable:" +
-                          name.get<std::string>());
+    for (const auto &name : c.at("required_metrics")) {
+      auto key = name.get<std::string>();
+      auto availability = features.value(key, Json::object()).value("availability", "");
+      if (availability == "decision_required")
+        reasons.push_back("partial_pmu_policy_undecided");
+      else if (availability != "available")
+        reasons.push_back("required_metric_unavailable:" + key);
+    }
     checks[c.at("id").get<std::string>()] = {{"ready", reasons.empty()},
                                              {"reasons", reasons},
                                              {"endpoints", endpoints},

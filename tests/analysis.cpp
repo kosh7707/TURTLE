@@ -199,6 +199,133 @@ void raw_boundaries() {
               coalesced[0].at("record") == 1 && coalesced[1].at("record") == 2,
           "raw_record_intersections");
 }
+// A controlled mTLS server flight. One or several encrypted TLSCiphertexts
+// may carry EE/CR/Certificate/CertificateVerify/Finished. Public callbacks
+// can identify those messages within a TLS call, not within a record.
+void opaque_flight(const std::filesystem::path &dir, const Bytes &server) {
+  using namespace turtle::analysis;
+  const evidence::Task task({{"scenario", "S0"},
+                             {"auth", "mtls"},
+                             {"measured_role", "server"},
+                             {"recording", "detailed"},
+                             {"record_contract", "flight-boundaries.v1"},
+                             {"application", Json::object()}});
+  Json policy = {{"negotiated",
+                  {{"record_policy", 0},
+                   {"profile", 2},
+                   {"cipher", {{"value", "TLS_AES_256_GCM_SHA384"}}}}}};
+  Json peers = {{"client", policy}, {"server", policy}};
+  std::filesystem::create_directories(dir / "server");
+  Endpoint raw;
+  raw.events = {
+      {{"kind", "call"}, {"operation", "handshake"}, {"direction", "send"}}};
+  for (auto direction : {"send", "receive"}) {
+    bool send = std::string_view(direction) == "send";
+    Bytes body{3, 3};
+    body.resize(34);   // legacy_version and Random
+    body.push_back(0); // session ID
+    Bytes tail = send ? Bytes{0x13, 1, 0, 0, 6, 0, 43, 0, 2, 3, 4}
+                      : Bytes{0, 2, 0x13, 1, 1, 0, 0, 7, 0, 43, 0, 3, 2, 3, 4};
+    body.insert(body.end(), tail.begin(), tail.end());
+    Bytes hello{static_cast<unsigned char>(send ? 2 : 1), 0, 0,
+                static_cast<unsigned char>(body.size())};
+    hello.insert(hello.end(), body.begin(), body.end());
+    Bytes bytes{22, 3, 3, 0, 2, hello[0], hello[1], 22, 3, 3};
+    append(bytes, hello.size() - 2, 2);
+    bytes.insert(bytes.end(), hello.begin() + 2, hello.end());
+    bytes.insert(bytes.end(),
+                 {20, 3, 3, 0, 1, 1}); // separate compatibility CCS
+    const auto protected_wire = send ? server : protected_records({48});
+    bytes.insert(bytes.end(), protected_wire.begin(), protected_wire.end());
+    const auto key = std::string("wire_") + direction;
+    turtle::artifact::write_text(dir / "server" / (key + ".bin"),
+                                 std::string(bytes.begin(), bytes.end()));
+    raw.summary["streams"][key]["bytes"] = bytes.size();
+    raw.summary["scenario"][key + "_bytes"] = bytes.size();
+    raw.events.push_back({{"kind", "socket"},
+                          {"direction", direction},
+                          {"id", raw.events.size() + 1},
+                          {"call_id", 1},
+                          {"parent", 0},
+                          {"success", true},
+                          {"transferred", bytes.size()},
+                          {"wire_begin", 0},
+                          {"wire_end", bytes.size()},
+                          {"begin", {{"wall_ns", 100}}},
+                          {"end", {{"wall_ns", 120}}}});
+    for (const auto &record : turtle::capture::raw_records(bytes)) {
+      const auto start = bytes.begin() + integer(record.at("wire_begin"));
+      raw.events.push_back({{"kind", "header"},
+                            {"direction", direction},
+                            {"id", raw.events.size() + 1},
+                            {"call_id", 1},
+                            {"header", Bytes(start, start + 5)}});
+    }
+  }
+  Json obs, report;
+  auto headers_only = raw;
+  evidence::collect(dir, task, false, true, headers_only, peers, obs, report);
+  require(
+      evidence::available(obs.at("headers")) &&
+          !evidence::available(obs.at("message_notifications").at("send")) &&
+          !evidence::available(
+              obs.at("finished_boundary").at("server_to_client")),
+      "encrypted_flight_order_or_internal_times_guessed_from_record_headers");
+  for (const auto &r : headers_only.records.at("send"))
+    require(r.contains("header_event") && !r.contains("message_type") &&
+                !r.contains("terminates_finished"),
+            "protected_record_gained_inner_message_identity");
+  const auto &flights = obs.at("tls_flights");
+  require(flights.at("SH").at("value").at("records").size() == 2 &&
+              flights.at("SH").at("value").at("socket_anchor").at("wall_ns") ==
+                  100 &&
+              flights.at("CH").at("value").at("socket_anchor").at("wall_ns") ==
+                  120 &&
+              !evidence::available(flights.at("server_protected_flight")),
+          "fragmented_hello_or_unproven_finished_timestamp_incorrect");
+  for (unsigned type : {8u, 13u, 11u, 15u, 20u})
+    raw.events.push_back({{"kind", "message"},
+                          {"direction", "send"},
+                          {"call_id", 1},
+                          {"id", raw.events.size() + 1},
+                          {"message_type", type}});
+  evidence::collect(dir, task, false, true, raw, peers, obs, report);
+  require(
+      raw.records == headers_only.records &&
+          obs.at("message_notifications").at("send").at("value").size() == 5,
+      "native_message_notifications_reassigned_encrypted_record_boundaries");
+  // Cipher getters are not a prerequisite for record coverage.
+  peers["client"]["negotiated"]["record_policy"] = 1;
+  peers["server"]["negotiated"]["record_policy"] = 1;
+  evidence::collect(dir, task, false, true, raw, peers, obs, report);
+  const auto &group =
+      obs.at("tls_flights").at("server_protected_flight").at("value");
+  require(group.at("records").size() ==
+                  turtle::capture::raw_records(server).size() &&
+              group.at("records").front().at("record") == 4 &&
+              group.at("conceptual_members") ==
+                  Json{"EE", "CR", "SC", "SCV", "SF"} &&
+              group.at("inner_message_times").is_null() &&
+              group.at("public_io_anchor").is_null() &&
+              obs.at("tls_flights")
+                      .at("client_protected_flight")
+                      .at("value")
+                      .at("conceptual_members") == Json{"CC", "CCV", "CF"},
+          "opaque_group_mistook_ccs_or_inner_messages_for_records");
+  peers["client"]["negotiated"]["cipher"] = evidence::missing("unsupported");
+  evidence::collect(dir, task, false, true, raw, peers, obs, report);
+  require(evidence::available(obs.at("records")) &&
+              !evidence::available(
+                  obs.at("tls_flights").at("server_protected_flight")),
+          "missing_cipher_invalidated_independent_record_coverage");
+  auto wrong = raw.streams.at("send");
+  wrong[5] = 1; // same record headers and counts but not ServerHello bytes
+  turtle::artifact::write_text(dir / "server/wire_send.bin",
+                               std::string(wrong.begin(), wrong.end()));
+  evidence::collect(dir, task, false, true, raw, peers, obs, report);
+  require(!evidence::available(obs.at("tls_flights").at("SH")),
+          "outer_headers_only_accepted_as_server_hello");
+}
 // Synthetic record/copy evidence, not a live handshake: the four greeting
 // bytes span two records; the second may also carry two response bytes.
 void presend_order(const std::filesystem::path &dir, const std::string &role,
@@ -567,6 +694,8 @@ int main(int argc, char **argv) {
     std::filesystem::create_directories(argv[2]);
     phases(argv[1]);
     raw_boundaries();
+    opaque_flight(std::filesystem::path(argv[2]) / "opaque", protected_records({192}));
+    opaque_flight(std::filesystem::path(argv[2]) / "opaque", protected_records({16, 103, 73}));
     lifecycle(std::filesystem::path(argv[2]) / "replay");
     if (turtle::capture::probe("lo").value("reason", Json(nullptr)) !=
         "pcap_not_built") {

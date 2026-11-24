@@ -37,8 +37,11 @@ Json counter_delta(const Json &, const Json &, const std::string &,
 Json attempt(const std::filesystem::path &, Json error = nullptr);
 Json finished_boundary(const Json &records, std::uint64_t application_bytes,
                        const std::string &cipher, bool declared_unpadded_tail);
+bool is_hello_retry(const Bytes &hello);
 Json assess(const std::filesystem::path &, const Json &config,
-            const Json &scheduled);
+            const Json &scheduled, Json *image_baselines = nullptr);
 bool regenerate_lifecycle(const std::filesystem::path &, const Json &manifest);
+std::filesystem::path attempt_directory(const std::filesystem::path &root,
+                                        const std::filesystem::path &declared);
 bool regenerate(const std::filesystem::path &);
 } // namespace turtle::analysis

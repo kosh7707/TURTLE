@@ -74,6 +74,6 @@ if [ -e .git ]; then
     git ls-files -z --cached > "$list"
     git ls-files -z --others --exclude-standard -- . ':(exclude).vscode/**' >> "$list"
 else
-    find . \( -path './.git' -o -path './.deps' -o -path './.omx' -o -path './out' -o -path './build' -o -path './build-tests' -o -path './.vscode' -o -path './.vs' -o -path './docs/for-paper' -o -path './docs/temp' -o -path './docs/references' \) -prune -o \( -type f -o -type l \) -print0 > "$list"
+    find . \( -path './.git' -o -path './.deps' -o -path './.omx' -o -path './out' -o -path './outputs' -o -path './build' -o -path './build-tests' -o -path './.vscode' -o -path './.vs' -o -path './docs/for-paper' -o -path './docs/temp' -o -path './docs/references' \) -prune -o \( -type f -o -type l \) -print0 > "$list"
 fi
 xargs -0 -r sh "$self" --files < "$list"

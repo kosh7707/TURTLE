@@ -39,9 +39,16 @@ std::string build_id(const fs::path &p) {
       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return value;
 }
-bool virtual_module(const std::string &s) {
-  return s.starts_with("/tmp/perf-vdso.so-") || s == "[vdso]" ||
-         s == "[vdso32]" || s == "[vdsox32]";
+bool virtual_module(std::string_view name) {
+  if (name == "[vdso]" || name == "[vdso32]" || name == "[vdsox32]")
+    return true;
+  constexpr std::string_view prefix = "/tmp/perf-vdso.so-";
+  if (!name.starts_with(prefix))
+    return false;
+  name.remove_prefix(prefix.size());
+  return name.size() == 6 &&
+         name.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst"
+                                "uvwxyz0123456789") == name.npos;
 }
 } // namespace
 void validate_settings(const Json &options) {
@@ -161,7 +168,12 @@ void finish(const fs::path &root, int returncode) {
     while (std::getline(lines, line)) {
       std::smatch m;
       if (!std::regex_match(line, m, expression)) {
-        if (!line.empty() && !virtual_module(line)) {
+        // Some perf versions pad an empty build-id column for the kernel vDSO.
+        // Do not relax provenance requirements for any file-backed module.
+        const auto first = line.find_first_not_of(" \t");
+        if (!line.empty() &&
+            (first == line.npos ||
+             !virtual_module(std::string_view(line).substr(first)))) {
           unparsed.push_back(line);
           complete = false;
         }

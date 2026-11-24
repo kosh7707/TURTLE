@@ -2,6 +2,14 @@
 
 namespace turtle::analysis {
 using artifact::integer;
+bool is_hello_retry(const Bytes &hello) {
+  constexpr std::array<unsigned char, 32> retry{
+      0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11, 0xbe, 0x1d, 0x8c,
+      0x02, 0x1e, 0x65, 0xb8, 0x91, 0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb,
+      0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c};
+  return hello.size() >= 38 &&
+         std::equal(retry.begin(), retry.end(), hello.begin() + 6);
+}
 namespace {
 constexpr unsigned new_session_ticket = 4;
 constexpr unsigned finished = 20;
@@ -49,6 +57,108 @@ void label_application_tail(Json &records, const Json &boundary,
     }
     begin = end;
   }
+}
+
+// Count complete leading TLSPlaintext records that carry this one Hello.
+// The handshake header itself may straddle two or more record payloads.
+size_t hello_prefix(const Json &records, const Bytes &wire, bool client) {
+  Bytes hello;
+  size_t count = 0;
+  for (const auto &r : records) {
+    if (r.at("content_type") != 22)
+      break;
+    const auto a = integer(r.at("wire_begin")) + 5,
+               b = integer(r.at("wire_end"));
+    hello.insert(hello.end(), wire.begin() + a, wire.begin() + b);
+    ++count;
+  }
+  if (hello.size() < 38 || hello[0] != (client ? 1 : 2) || hello[4] != 3 ||
+      hello[5] != 3 || (!client && is_hello_retry(hello)))
+    return 0;
+  const auto size =
+      (size_t(hello[1]) << 16) | (size_t(hello[2]) << 8) | hello[3];
+  if (size != hello.size() - 4)
+    return 0;
+  for (auto i = count; i < records.size(); ++i)
+    if (records[i].at("content_type") == 22)
+      return 0;
+  return count;
+}
+
+// A transport anchor is a call boundary covering the boundary byte, not a
+// packet arrival or an internal handshake-message timestamp.
+Json flight(const Endpoint &ep, const Json &records, size_t first, size_t end,
+            bool send, bool public_trace) {
+  const auto &boundary = records.at(send ? first : end - 1);
+  auto anchor = [&](const char *source) -> Json {
+    if (!boundary.contains(source) || boundary.at(source).empty())
+      return nullptr;
+    const auto &ranges = boundary.at(source);
+    auto id = integer((send ? ranges.front() : ranges.back()).at("event_id"));
+    const auto &event = ep.events.at(id - 1);
+    const auto edge = send ? "begin" : "end";
+    if (!event.contains(edge) || event.at(edge).at("wall_ns").is_null())
+      return nullptr;
+    return {{"event_id", id},
+            {"edge", edge},
+            {"wall_ns", event.at(edge).at("wall_ns")}};
+  };
+  auto spans = Json::array();
+  for (auto i = first; i < end; ++i) {
+    const auto &r = records[i];
+    spans.push_back({{"record", r.at("number")},
+                     {"wire_begin", r.at("wire_begin")},
+                     {"wire_end", r.at("wire_end")}});
+  }
+  return {{"local_direction", send ? "send" : "receive"},
+          {"records", std::move(spans)},
+          {"socket_anchor", anchor("socket_ranges")},
+          {"public_io_anchor",
+           public_trace ? anchor("public_io_ranges") : Json(nullptr)}};
+}
+
+void describe_flights(const evidence::Task &task, Endpoint &ep,
+                      Json &observations, const char *local, bool client,
+                      const Json &finished) {
+  auto &flights = observations["tls_flights"];
+  auto &plain = flights[client ? "CH" : "SH"];
+  auto &opaque =
+      flights[client ? "client_protected_flight" : "server_protected_flight"];
+  const auto &records = ep.records.at(local);
+  const auto &wire = ep.streams.at(local);
+  size_t start = hello_prefix(records, wire, client);
+  if (!start) {
+    plain = opaque = evidence::missing("clear_hello_not_verified");
+    return;
+  }
+  const bool send = std::string_view(local) == "send";
+  const bool public_trace = evidence::available(observations.at("public_io"));
+  plain =
+      artifact::measurement(flight(ep, records, 0, start, send, public_trace));
+  if (!evidence::available(finished)) {
+    opaque = evidence::missing(finished.at("reason"));
+    return;
+  }
+  const auto stop = integer(finished.at("value").at("record"));
+  while (start < stop && records[start].at("content_type") == 20 &&
+         records[start].at("body_bytes") == 1 &&
+         wire.at(integer(records[start].at("wire_begin")) + 5) == 1)
+    ++start;
+  if (start >= stop ||
+      std::any_of(records.begin() + start, records.begin() + stop,
+                  [](const auto &r) { return r.at("content_type") != 23; })) {
+    opaque = evidence::missing("protected_flight_not_contiguous");
+    return;
+  }
+  auto group = flight(ep, records, start, stop, send, public_trace);
+  const bool mutual = task.auth == "mtls";
+  group["conceptual_members"] =
+      client ? (mutual ? Json{"CC", "CCV", "CF"} : Json{"CF"})
+             : (mutual ? Json{"EE", "CR", "SC", "SCV", "SF"}
+                       : Json{"EE", "SC", "SCV", "SF"});
+  group["inner_message_times"] = nullptr;
+  group["finished_record_basis"] = finished.at("basis");
+  opaque = artifact::measurement(std::move(group));
 }
 } // namespace
 
@@ -99,6 +209,9 @@ void annotate_tls_records(const Task &task, const Json &roles, Endpoint &ep,
                           Json &observations) {
   const auto &client = roles.at("client").at("negotiated");
   const auto &server = roles.at("server").at("negotiated");
+  const auto &suite = client.at("cipher").at("value");
+  const auto cipher =
+      suite.is_string() ? suite.get<std::string>() : std::string{};
   const bool declared = client.value("record_policy", 0) == 1 &&
                         server.value("record_policy", 0) == 1 &&
                         client.value("profile", 0) != 0 &&
@@ -110,14 +223,15 @@ void annotate_tls_records(const Task &task, const Json &roles, Endpoint &ep,
     if (has_unexpected_control(messages)) {
       observations["finished_boundary"][direction] =
           missing("unexpected_post_handshake_control");
-      continue;
+    } else {
+      observations["finished_boundary"][direction] = finished_boundary(
+          ep.records.at(local), task.sent(from_client), cipher, declared);
     }
-    observations["finished_boundary"][direction] =
-        finished_boundary(ep.records.at(local), task.sent(from_client),
-                          client.at("cipher").at("value"), declared);
     const auto &boundary = observations.at("finished_boundary").at(direction);
     if (available(boundary))
       label_application_tail(ep.records.at(local), boundary, task, from_client);
+    if (task.named_flights)
+      describe_flights(task, ep, observations, local, from_client, boundary);
   }
 }
 } // namespace evidence

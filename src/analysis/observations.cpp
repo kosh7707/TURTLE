@@ -36,6 +36,15 @@ void read_record_observations(const fs::path &dir, Endpoint &ep,
       reason != "nested_adapter_io" && reason != "unpaired_adapter_io";
   bool headers_complete = reason != "invalid_adapter_notification";
   Json batches = Json::object();
+  // Parse the independently witnessed bytes in BOTH directions before linking
+  // any clocks. Header-derived layout cannot supply a syscall entry or exit.
+  std::map<std::string, Bytes> streams;
+  Json layouts = Json::object();
+  const bool publish_layout =
+      ep.summary.contains("collection") &&
+      ep.summary.at("collection").value("role_contract", "") == "pull.v1";
+  if (publish_layout)
+    observations["record_layout"] = missing("wire_layout_incomplete");
   for (auto d : {"send", "receive"}) {
     auto stream =
         artifact::read_bytes(dir / (std::string("wire_") + d + ".bin"));
@@ -46,7 +55,22 @@ void read_record_observations(const fs::path &dir, Endpoint &ep,
     auto need = integer(
         ep.summary.at("scenario").at(std::string("wire_") + d + "_bytes"));
     require(need > 0 && need <= stream.size(), "scenario_stream_size_mismatch");
-    auto records = capture::raw_records(std::span(stream).first(need));
+    streams.emplace(d, std::move(stream));
+  }
+  // PCAP reassembly compares complete ciphertext, independent of the optional
+  // socket clocks. Publish both validated streams atomically before linking.
+  ep.streams = std::move(streams);
+  for (auto d : {"send", "receive"}) {
+    const auto need = integer(
+        ep.summary.at("scenario").at(std::string("wire_") + d + "_bytes"));
+    layouts[d] = capture::raw_records(std::span(ep.streams.at(d)).first(need));
+  }
+  if (publish_layout)
+    observations["record_layout"] = measurement(layouts);
+  for (auto d : {"send", "receive"}) {
+    const auto &stream = ep.streams.at(d);
+    auto records = std::move(layouts.at(d));
+    auto need = integer(records.back().at("wire_end"));
     Json headers = Json::array(), messages = Json::array(), io = Json::array();
     std::uint64_t next_socket = 0, next_public = 0;
     std::map<std::uint64_t, capture::Ranges> submissions;
@@ -139,7 +163,6 @@ void read_record_observations(const fs::path &dir, Endpoint &ep,
     batches[d] = messages.empty()
                      ? missing("no_handshake_message_notifications")
                      : measurement(std::move(messages));
-    ep.streams[d] = std::move(stream);
   }
   observations["records"] = measurement(true);
   observations["public_io"] = public_complete
@@ -161,9 +184,15 @@ void collect(const fs::path &dir, const Task &task, bool include_capture,
     try {
       read_record_observations(dir / task.role, ep, observations);
     } catch (const std::exception &e) {
+      if (observations.contains("record_layout") && !available(observations.at("record_layout")))
+        observations["record_layout"] = missing(e.what());
       for (auto key : {"records", "public_io", "headers"})
         observations[key] = missing(e.what());
     }
+    if (task.named_flights && (!available(observations.at("records")) || !task_matches))
+      for (auto key : {"CH", "SH", "client_protected_flight", "server_protected_flight"})
+        observations["tls_flights"][key] = missing(task_matches ? "raw_records_unavailable"
+                                                               : "authenticated_task_not_proven");
   }
   if (available(observations.at("records")) && task_matches)
     annotate_tls_records(task, roles, ep, observations);

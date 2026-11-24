@@ -64,12 +64,7 @@ Json classify(const Endpoints &endpoints) {
          (static_cast<std::size_t>(hello[2]) << 8) | hello[3]) !=
             hello.size() - 4)
       throw std::runtime_error("profile_requires_one_complete_hello");
-    constexpr std::array<unsigned char, 32> retry{
-        0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11, 0xbe, 0x1d, 0x8c,
-        0x02, 0x1e, 0x65, 0xb8, 0x91, 0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb,
-        0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c};
-    if (!client && hello.size() >= 38 &&
-        std::equal(retry.begin(), retry.end(), hello.begin() + 6))
+    if (!client && is_hello_retry(hello))
       throw std::runtime_error("hello_retry_request_outside_phase_profile");
     groups[client ? "client_hello" : "server_hello"] = plain;
     groups[client ? "client_finished" : "server_auth"] = encrypted;

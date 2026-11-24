@@ -16,10 +16,13 @@ inline bool available(const Json &m) {
 }
 struct Task {
   std::string name, auth, role, recording;
+  bool named_flights;
   std::size_t request, greeting, response;
   explicit Task(const Json &config)
       : name(config.at("scenario")), auth(config.at("auth")),
-        role(config.at("measured_role")), recording(config.at("recording")) {
+        role(config.at("measured_role")), recording(config.at("recording")),
+        named_flights(config.value("record_contract", "") ==
+                      "flight-boundaries.v1") {
     const auto &app = config.at("application");
     request = (name == "S1" || name == "S3" || name == "S4")
                   ? app.at("request").get_ref<const std::string &>().size()

@@ -4,6 +4,7 @@
 #include "control/network.hpp"
 #include "control/one_side.hpp"
 #include "control/spec.hpp"
+#include "process/images.hpp"
 #include "profiling/profiling.hpp"
 #include <algorithm>
 #include <charconv>
@@ -46,6 +47,9 @@ Json run_pair(const Json &config, const fs::path &root, const Json &attempt,
   auto end = deadline(timeout);
   const auto &measurement = config.at("measurement");
   const std::string purpose = attempt.at("purpose");
+  const bool image_check = config.value("image_contract", "") == "proc-exec.v1";
+  Json images = Json::object();
+  std::map<std::string, pid_t> participants;
   unsigned listen_port = 0;
   auto launch = [&](const std::string &role, unsigned port) {
     auto target = root / role;
@@ -78,6 +82,7 @@ Json run_pair(const Json &config, const fs::path &root, const Json &attempt,
     auto rest = endpoint_args(config, role, purpose, std::move(flags));
     args.insert(args.end(), rest.begin(), rest.end());
     auto env = ep.value("env", Environment{});
+    env["TURTLE_IMAGE_BARRIER"] = image_check ? "1" : "0";
     if (profile)
       for (const auto &[k, v] : profiling::environment(target))
         env[k] = v;
@@ -100,6 +105,18 @@ Json run_pair(const Json &config, const fs::path &root, const Json &attempt,
     launch("client", listen_port);
     line("server", "READY");
     line("client", "READY");
+    if (image_check)
+      for (auto role : {"client", "server"}) {
+        const auto file = root / role / "participant.json";
+        if (!fs::exists(file))
+          continue; // non-SDK participant: preserve task, withhold build proof
+        const auto p = artifact::load(file);
+        if (p.at("run_id") != attempt.at("run_id"))
+          throw std::runtime_error("participant_run_mismatch");
+        participants[role] = p.at("pid").get<pid_t>();
+        images[role]["ready"] = process::image_inventory(
+            children.at(role)->pid(), participants.at(role));
+      }
     if (purpose == "capability") {
       // Both pauses belong exclusively to the capability connection. While
       // server is held after its first write, the client must decrypt helo.
@@ -115,6 +132,17 @@ Json run_pair(const Json &config, const fs::path &root, const Json &attempt,
     } else {
       for (auto role : {"server", "client"})
         children.at(role)->send("START\n");
+    }
+    if (image_check) {
+      // Wait for BOTH roles to finish. Hashing the peer at its earlier boundary
+      // could otherwise perturb a target that is still being measured.
+      for (const auto &[role, pid] : participants)
+        line(role, "IMAGES_DONE");
+      for (const auto &[role, pid] : participants)
+        images[role]["finished"] =
+            process::image_inventory(children.at(role)->pid(), pid);
+      for (const auto &[role, pid] : participants)
+        children.at(role)->send("EXIT\n");
     }
     for (auto &[role, p] : children)
       p->close_input();
@@ -146,6 +174,13 @@ Json run_pair(const Json &config, const fs::path &root, const Json &attempt,
                  {"measurement", measurement},
                  {"returncodes", codes}};
   artifact::save(root / "processes.json", result);
+  if (image_check)
+    artifact::save(
+        root / "images.json",
+        {{"schema", "proc-exec.v1"},
+         {"scope", "file_backed_executable_mappings_at_ready_and_finish"},
+         {"run_id", attempt.at("run_id")},
+         {"roles", images}});
   return result;
 }
 Json provenance(const Json &spec, const std::string &self) {
@@ -430,7 +465,13 @@ int execute_spec(Json spec, const fs::path &output, const std::string &self,
       {"attempts", Json::array()},
       {"blocked", Json::object()},
       {"status", "running"}};
+  if (std::any_of(spec.at("configurations").begin(),
+                  spec.at("configurations").end(), [](const Json &c) {
+                    return c.value("image_contract", "") == "proc-exec.v1";
+                  }))
+    manifest["preflight_sha256"] = digest(root / "check.json");
   std::map<std::string, Json> configs;
+  std::map<std::string, Json> image_baselines;
   for (const auto &c : spec.at("configurations")) {
     auto id = c.at("id").get<std::string>();
     configs[id] = c;
@@ -440,6 +481,7 @@ int execute_spec(Json spec, const fs::path &output, const std::string &self,
                                  {"reason", check.at("reasons")}};
   }
   artifact::save(root / "manifest.json", manifest);
+  bool pending_qualification = false;
   bool interrupted = false, failed = !manifest.at("blocked").empty();
   for (std::size_t i = 0; i < order.size(); ++i) {
     pollfd stop{cancel, POLLIN, 0};
@@ -477,7 +519,7 @@ int execute_spec(Json spec, const fs::path &output, const std::string &self,
     }
     Json diagnostic;
     try {
-      diagnostic = analysis::assess(dir, c, a);
+      diagnostic = analysis::assess(dir, c, a, &image_baselines[id]);
     } catch (const std::exception &e) {
       // A failed collector or unwritable assessment must not leave the
       // manifest at "running" or cause another connection to replace this ID.
@@ -493,7 +535,9 @@ int execute_spec(Json spec, const fs::path &output, const std::string &self,
         std::find(c.at("required_metrics").begin(),
                   c.at("required_metrics").end(),
                   "cpu_samples") != c.at("required_metrics").end();
-    if (!eligible && diagnostic_required) {
+    const bool pending = diagnostic.value("qualification", "") == "decision_required";
+    pending_qualification |= pending;
+    if (!eligible && !pending && diagnostic_required) {
       failed = true;
       if (a.at("purpose") != "measurement")
         manifest["blocked"][id] = {
@@ -505,7 +549,7 @@ int execute_spec(Json spec, const fs::path &output, const std::string &self,
     artifact::save(root / "manifest.json", manifest);
     std::cout << i + 1 << '/' << order.size() << ' ' << id << ' '
               << a.at("purpose").get<std::string>() << ": "
-              << (eligible ? "ok" : diagnostic.at("invalid_reasons").dump())
+              << (eligible ? "ok" : pending ? "decision_required:pmu_partial_coverage" : diagnostic.at("invalid_reasons").dump())
               << std::endl;
     if (a.at("error") == "interrupted") {
       interrupted = true;
@@ -513,8 +557,7 @@ int execute_spec(Json spec, const fs::path &output, const std::string &self,
     }
   }
   manifest["status"] = interrupted ? "interrupted"
-                       : failed    ? "failed"
-                                   : "complete";
+                       : failed ? "failed" : pending_qualification ? "decision_required" : "complete";
   manifest["finished_utc"] = utc();
   artifact::save(root / "manifest.json", manifest);
   return analysis::regenerate(root) ? 0 : 1;

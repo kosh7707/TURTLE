@@ -1,5 +1,6 @@
 #include "frame/framer.hpp"
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -87,6 +88,30 @@ int main() {
         auto bare = raw.transport();
         check(!bare.observe && bare.send(bare.state, tls.data(), tls.size()) == static_cast<ptrdiff_t>(tls.size()));
         check(silent.events().empty() && silent.stream(Layer::wire, Direction::send).empty());
+    }
+    // EINTR is a new syscall attempt, never submitted bytes. Test both the
+    // count-only transport and detailed time/range observations.
+    for (auto mode : {Mode::basic, Mode::detailed}) {
+        struct Fixture {
+            unsigned calls = 0, count = 0;
+        } f;
+        Recorder rec(32, false, mode);
+        frame::Stream s({&f, nullptr,
+                         [](void *p, const void *, size_t) -> ptrdiff_t {
+                             auto &f = *static_cast<Fixture *>(p);
+                             if (++f.calls == 1) {
+                                 errno = EINTR;
+                                 return frame::interrupted;
+                             }
+                             return 2;
+                         }},
+                        rec, 0, true);
+        s.count_hooks({&f, [](void *p) { ++static_cast<Fixture *>(p)->count; }, nullptr});
+        auto t = s.transport();
+        check(t.send(t.state, tls.data(), 4) == 2 && f.calls == 2 && f.count == 2 && s.probe_sent() == 2);
+        if (mode == Mode::detailed)
+            check(rec.events().size() == 2 && rec.events()[0].error_number == EINTR &&
+                  rec.events()[1].wire_end == 2 && rec.total(Layer::wire, Direction::send) == 2);
     }
     std::cout << "raw wire identity, split/coalesced socket and public I/O ranges, readiness, and no-recording paths passed\n";
 }

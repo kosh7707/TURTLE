@@ -21,6 +21,7 @@ class Connection {
 public:
     Connection(Socket socket, measure::Recorder&, std::size_t chunk, unsigned timeout, bool probe = false);
     turtle_transport transport() noexcept { return stream_.transport(); }
+    void count_hooks(turtle_io_hooks hooks) noexcept { stream_.count_hooks(hooks); }
     void wait(bool writing) const;
     bool readable() const noexcept;
     int wait_either(bool first_writing, bool second_writing) const;

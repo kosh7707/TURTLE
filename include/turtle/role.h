@@ -50,6 +50,14 @@ int turtle_session_bind_counts(turtle_session *, const turtle_io_boundary *); /*
 /* App-owned native transports not using turtle_session_transport: notify a
  * successful ciphertext transfer (not the corresponding count hook). */
 int turtle_session_wire(turtle_session *, int sending, const void *, size_t);
+/* Optional alternative to wire() for detailed records with an app-owned fd.
+ * Bracket EACH real send/recv (including EINTR retries), not a BIO callback.
+ * before borrows the syscall buffer through returned; returned takes the raw
+ * syscall count (-1 on error) immediately, before translating errno. Both
+ * preserve errno. Keep count hooks separate. Never mix interval, byte-only
+ * and built-in wire sources on one connection. */
+int turtle_socket_before(turtle_session *, int sending, const void *buffer, size_t requested);
+int turtle_socket_returned(turtle_session *, ptrdiff_t syscall_result);
 int turtle_session_ready(turtle_session *, int prepared);
 /* One pull = one native TLS operation. FIRST_HS prepares the public server
  * flight; FIRST_WRITE uses the same validated server-first path. HS completes
