@@ -171,6 +171,10 @@ inline Json prepared_start_proof(const Json &raw, const Json &participants) {
         r.at("connection_id") != raw.at("connection_id"))
       throw std::runtime_error("wrong_prepared_start_binding");
     if (outcome == "joint_release") {
+      const auto &roles = r.at("roles");
+      if (roles.at("client").at("release_token") ==
+          roles.at("server").at("release_token"))
+        throw std::runtime_error("invalid_prepared_release");
       uint64_t got = 0, released = UINT64_MAX;
       for (auto role : {"client", "server"}) {
         auto &s = r.at("roles").at(role);

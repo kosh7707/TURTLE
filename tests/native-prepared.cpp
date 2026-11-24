@@ -56,15 +56,25 @@ int main() try {
   rendezvous["outcome"] = "unsynchronized_fallback";
   proof(nullptr);
   rendezvous["outcome"] = "joint_release";
-  rendezvous["roles"]["server"]["sender_pid"] = 20;
-  try {
-    proof(true);
-  } catch (const std::runtime_error &e) {
-    if (std::string(e.what()) == "invalid_prepared_release")
-      return 0;
-    throw;
-  }
-  return 1;
+  auto reject_release = [&] {
+    try {
+      (void)prepared_start_proof(raw, reports);
+    } catch (const std::runtime_error &e) {
+      if (std::string(e.what()) == "invalid_prepared_release")
+        return;
+      throw;
+    }
+    throw std::runtime_error("accepted_invalid_prepared_release");
+  };
+  auto &server = rendezvous["roles"]["server"];
+  server["ack_token"] = 10;
+  reject_release(); // ACK from opposite participant
+  server["release_token"] = 10;
+  reject_release(); // matching ACKs, but no distinct participant challenges
+  server["release_token"] = server["ack_token"] = 11;
+  server["sender_pid"] = 20;
+  reject_release();
+  return 0;
 } catch (const std::exception &e) {
   std::cerr << e.what() << '\n';
   return 1;
