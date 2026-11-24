@@ -227,9 +227,11 @@ inline Json prepared_start_proof(const Json &raw, const Json &participants) {
              artifact::integer(f.at("hs_begin").at("ns")) < local_a))
           release_conflict = true;
         auto domain = domains.value(role, "");
-        auto packet_domain = s.value("time_namespace", domain);
+        auto packet_domain = s.value("time_namespace", "");
         if (linux_clock(domain) && linux_clock(packet_domain) && domain != packet_domain)
           throw std::runtime_error("participant_start_clock_domain_conflict");
+        if (!linux_clock(packet_domain))
+          packet_domain = domain; // Missing or malformed packet metadata cannot erase a known clock.
         if (linux_clock(packet_domain)) {
           auto &bounds = phase_bounds.try_emplace(packet_domain, 0, UINT64_MAX).first->second;
           bounds.first = std::max(bounds.first, local_r);

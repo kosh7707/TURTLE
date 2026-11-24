@@ -78,6 +78,15 @@ int main() try {
     c["participant_ready_ns"] = 110;
     c["participant_ack_ns"] = 129;
     check("invalid_prepared_release_time");
+    for (auto unavailable : {"", "unknown"}) {
+      c["time_namespace"] = unavailable;
+      check("invalid_prepared_release_time"); // launch clock remains known
+    }
+    host["time_namespaces"].erase("client");
+    c["time_namespace"] = "time:[1]";
+    check("invalid_prepared_release_time"); // packet alone identifies host clock
+    host["time_namespaces"]["client"] = "time:[1]";
+    c.erase("time_namespace");
     c["participant_ack_ns"] = 141;
     check("invalid_prepared_release_time");
     c["participant_ack_ns"] = 135;
