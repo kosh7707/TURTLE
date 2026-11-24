@@ -10,14 +10,11 @@ case ${1-} in
 esac
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 build=${TURTLE_BUILD_DIR:-"$root/build"}
-if [ ! -x "$build/turtle" ]; then
-    # A new launcher build does not need the test suite. Respect any
-    # custom adapters and test configuration in an existing build tree.
-    if [ ! -f "$build/CMakeCache.txt" ]; then
-        cmake -S "$root" -B "$build" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-    fi
-    cmake --build "$build" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
+# Rebuild incrementally even when an older controller exists in this tree.
+if [ ! -f "$build/CMakeCache.txt" ]; then
+    cmake -S "$root" -B "$build" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 fi
+cmake --build "$build" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 if [ -z "$role" ] && [ "$#" = 2 ]; then
     out=$2
 else

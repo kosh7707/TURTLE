@@ -3,7 +3,7 @@
 #include <cstdint>
 
 namespace turtle::measure {
-enum class PerfAvailability { not_collected, unsupported, available, missing };
+enum class PerfAvailability { not_collected, unsupported, available, missing, partial };
 const char* name(PerfAvailability) noexcept;
 struct PerfSnapshot {
     std::uint64_t cycles = 0, instructions = 0, enabled_ns = 0, running_ns = 0;
@@ -13,11 +13,12 @@ struct PerfSnapshot {
 };
 class PerfCounters {
 public:
-    explicit PerfCounters(bool requested) noexcept;
+    explicit PerfCounters(bool requested, bool allow_cycles_only = false) noexcept;
     ~PerfCounters();
     PerfCounters(const PerfCounters&) = delete;
     PerfCounters& operator=(const PerfCounters&) = delete;
     PerfSnapshot snapshot() noexcept;
+    const std::array<std::uint64_t,2>& ids() const noexcept { return ids_; }
     long owner_tid() const noexcept { return owner_tid_; }
     bool requested() const noexcept { return requested_; }
     PerfAvailability availability() const noexcept { return availability_; }

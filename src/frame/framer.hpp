@@ -1,7 +1,7 @@
 #pragma once
 #include "measure/recorder.hpp"
-#include <turtle/implementation.h>
-#include <turtle/io_boundary.h>
+#include "frame/detail/role_types.h"
+#include "frame/detail/io_boundary.h"
 
 namespace turtle::frame {
 // A pass-through socket boundary. Record reconstruction is entirely offline.

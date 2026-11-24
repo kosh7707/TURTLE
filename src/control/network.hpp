@@ -30,6 +30,9 @@ public:
   void start();
   void finish() noexcept;
   Args prefix(const std::string &) const;
+  std::string namespace_path(const std::string &role) const {
+    return "/run/netns/" + names_.at(role);
+  }
   static constexpr const char *client_ip = "192.0.2.2";
   static constexpr const char *server_ip = "198.51.100.2";
 

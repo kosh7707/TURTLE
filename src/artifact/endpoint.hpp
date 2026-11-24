@@ -1,7 +1,7 @@
 #pragma once
 #include "measure/recorder.hpp"
 #include <string>
-#include <turtle/implementation.h>
+#include "frame/detail/role_types.h"
 namespace turtle::artifact {
 struct Result {
   std::string run_id, connection_id = "1", implementation, role, invalid_reason;
