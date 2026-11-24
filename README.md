@@ -35,6 +35,8 @@ TURTLE_BUILD_DIR="$work/turtle" ./bench.sh "$work/s2.json" "$work/results"
 
 이 예시의 `--wire`는 시험 앱의 기존 BIO 훅을 켜는 인자이지 TURTLE 공통 옵션이 아니다. 이 [C 앱](tests/endpoint-integration/consumer.c)은 연결 예시를 재현하는 **시험용 소비자**이지 배포되는 OpenSSL DUT 드라이버가 아니다. 내 앱에서는 기존 CMake 대상에 `turtle::endpoint`를 연결하고 프로필의 `target.argv`를 내 실행 파일과 인자로 바꾸면 된다. 결과의 `attempt-1/analysis.json`에서 `participants.client.timeline.SAD1.first_read_return`은 첫 평문 반환, `validated`는 안내 전체 확인이다. 전자는 TCP 도착 시각이 아니다.
 
+ARM64 교차 빌드용 [툴체인 파일](tools/linux-arm64.cmake)은 `tools/`에 있다. 예전 `cmake/` 경로로 구성한 빌드는 새 빌드 디렉터리에서 `-DCMAKE_TOOLCHAIN_FILE="$PWD/tools/linux-arm64.cmake"`를 지정한다.
+
 ## 앱을 수정하지 않는 방법: GnuTLS CLI
 
 기존 실행 파일이 stdin/stdout으로 평문을 교환한다면 SDK를 링크하지 않아도 된다. 이 방식은 앱이 이미 하는 일을 관찰하며, 없는 TLS 호출이나 내부 시각을 만들어 주지는 않는다. 아래 예제는 별도로 설치한 `gnutls-cli`를 사용한다. [저장소 의존성 목록](tools/dependencies.json)

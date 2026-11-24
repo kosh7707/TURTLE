@@ -95,8 +95,11 @@ add_library(turtle_native_evidence STATIC src/native/evidence.cpp src/native/evi
 target_link_libraries(turtle_native_evidence PUBLIC turtle_artifact)
 add_library(turtle_native STATIC src/native/stream.cpp src/native/network.cpp src/native/pre_cf.cpp src/native/packets.cpp src/control/network.cpp)
 target_link_libraries(turtle_native PUBLIC turtle_process PRIVATE turtle_native_evidence turtle_capture turtle_profiling)
-file(GLOB_RECURSE turtle_sources CONFIGURE_DEPENDS src/*.cpp src/*.hpp src/*.h include/*.h reference/*.cpp reference/CMakeLists.txt cmake/*)
-list(APPEND turtle_sources "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
+file(GLOB_RECURSE turtle_sources CONFIGURE_DEPENDS src/*.cpp src/*.hpp src/*.h include/*.h reference/*.cpp reference/CMakeLists.txt)
+list(APPEND turtle_sources
+    "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/build_info.hpp.in"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/linux-arm64.cmake")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${turtle_sources})
 set(turtle_source_fingerprints "")
 foreach(source IN LISTS turtle_sources)
@@ -105,7 +108,7 @@ foreach(source IN LISTS turtle_sources)
     string(APPEND turtle_source_fingerprints "${name}:${hash}\n")
 endforeach()
 string(SHA256 turtle_source_sha256 "${turtle_source_fingerprints}")
-configure_file(cmake/build_info.hpp.in generated/build_info.hpp @ONLY)
+configure_file(tools/build_info.hpp.in generated/build_info.hpp @ONLY)
 target_include_directories(turtle_native PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 add_executable(turtle src/cli/main.cpp)
 if(TARGET turtle-reference)
