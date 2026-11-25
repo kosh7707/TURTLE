@@ -10,22 +10,6 @@ if [ "${1-}" = --files ]; then
         [ ! -L "$file" ] || fail 'symlinks may hide unchecked sources'
         [ -e "$file" ] || continue  # tracked deletion
         [ -f "$file" ] || fail 'not a regular file'
-        case "$file" in
-            docs/evidence/*.tar.gz)
-                case "$file" in
-                    docs/evidence/mtls-s3-loopback.tar.gz) expected=e66b3f1ef6d111c3c88aaf4d867588a358f9861b909309adc88fb94b935644aa ;;
-                    docs/evidence/tcp-cases.tar.gz) expected=798e782661efbde93eec5155f2d34810cb7480e7ea7834494b0507607e410f00 ;;
-                    docs/evidence/scenario-flights.tar.gz) expected=b3060198094bda0f18b2d33c42c5641f64c43556e11fbc4eb69920059a77c523 ;;
-                    *) fail 'unreviewed archive' ;;
-                esac
-                actual=$(sha256sum < "$file")
-                [ "${actual%% *}" = "$expected" ] || fail 'archive differs from reviewed data-only evidence'
-                members=$(tar -tzf "$file") || fail 'unreadable archive'
-                if printf '%s\n' "$members" | grep -Ev '(/$|\.(jsonl?|csv|txt|md|tex|log|pcap|bin)$)' >&2; then
-                    fail 'unexpected archive member'
-                fi
-                continue ;;
-        esac
         base=${file##*/}
         header=$(head -c 2 < "$file")
         shell=false

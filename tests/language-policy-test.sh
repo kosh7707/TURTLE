@@ -4,7 +4,7 @@ guard=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/language-policy.sh
 root=$(mktemp -d)
 trap 'rm -rf "$root"; rm -f "$root-log"' EXIT
 cd "$root"
-mkdir -p docs/evidence
+mkdir -p docs
 printf '%s\n' '#!/bin/sh' 'printf "hello\\n"' > endpoint
 printf '%s\n' 'int main(void) { return 0; }' > main.c
 printf '%s\n' 'cmake_minimum_required(VERSION 3.20)' > CMakeLists.txt
@@ -44,8 +44,8 @@ printf '{"x":true}\ntrailing code\n' > probe.json
 reject probe.json
 printf 'hello\n' > probe.json
 reject probe.json
-touch docs/evidence/probe.tar.gz
-reject docs/evidence/probe.tar.gz
+tar -czf docs/probe.tar.gz main.c
+reject docs/probe.tar.gz
 ln -s main.c probe.hpp
 reject probe.hpp
 git init -q

@@ -124,8 +124,8 @@ add_executable(turtle-pair src/pair/main.cpp src/pair/mock.cpp)
 target_compile_options(turtle-pair PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(turtle-pair PRIVATE turtle_process Threads::Threads)
 install(TARGETS turtle-pair RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-configure_file(examples/issue-test-leaves.sh turtle-issue-test-leaves.sh COPYONLY)
-install(PROGRAMS examples/issue-test-leaves.sh DESTINATION ${CMAKE_INSTALL_BINDIR}
+configure_file(docs/examples/issue-test-leaves.sh turtle-issue-test-leaves.sh COPYONLY)
+install(PROGRAMS docs/examples/issue-test-leaves.sh DESTINATION ${CMAKE_INSTALL_BINDIR}
     RENAME turtle-issue-test-leaves.sh)
 if(TARGET turtle-reference)
     install(TARGETS turtle-reference RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

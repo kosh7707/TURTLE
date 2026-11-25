@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "scenario": "S0",
+  "auth": "server",
+  "warmups": 1,
+  "repetitions": 10,
+  "target": {
+    "role": "client",
+    "argv": ["consumer", "client", "{host}", "{port}", "{ca}", "{cert}", "{key}", "{peer_name}", "--wire"]
+  }
+}
