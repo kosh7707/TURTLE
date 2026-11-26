@@ -56,8 +56,22 @@ list=$(mktemp)
 trap 'rm -f "$list"' EXIT
 if [ -e .git ]; then
     git ls-files -z --cached > "$list"
-    git ls-files -z --others --exclude-standard -- . ':(exclude).vscode/**' >> "$list"
+    git ls-files -z --others --exclude-standard -- . ':(exclude,glob)implementations/*/**' >> "$list"
 else
-    find . \( -path './.git' -o -path './.deps' -o -path './.omx' -o -path './out' -o -path './outputs' -o -path './build' -o -path './build-tests' -o -path './.vscode' -o -path './.vs' -o -path './docs/for-paper' -o -path './docs/temp' -o -path './docs/references' \) -prune -o \( -type f -o -type l \) -print0 > "$list"
+    # Source archives have no index. Skip known root-local paths from
+    # .gitignore, without suppressing shared editor files or nested code.
+    find . \( -path './.git' \
+        -o \( -type d \( -path './.deps' -o -path './.omx' -o -path './.planning' -o -path './.vs' \
+            -o \( -path './.submission-example.????????' ! -path './*/*' \) \
+            -o -path './build' -o -path './build-tests' -o -path './cmake-build-*' \
+            -o -path './out' -o -path './outputs' -o -path './CMakeFiles' -o -path './Testing' \
+            -o -path './docs/for-paper' -o -path './docs/temp' -o -path './docs/references' \
+            -o -path './implementations/*' \) \) \
+        -o -path './.vscode/settings.json' -o -path './AGENTS.md' \
+        -o -path './CMakeCache.txt' -o -path './cmake_install.cmake' \
+        -o -path './CTestTestfile.cmake' -o -path './CMakeUserPresets.json' \
+        -o -path './DartConfiguration.tcl' -o -path './compile_commands.json' \
+        -o -path './build.ninja' -o -path './.ninja_deps' -o -path './.ninja_log' \
+        -o -path './install_manifest.txt' \) -prune -o \( -type f -o -type l \) -print0 > "$list"
 fi
 xargs -0 -r sh "$self" --files < "$list"

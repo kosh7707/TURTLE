@@ -95,16 +95,19 @@ Json collect_images(pid_t launcher, pid_t participant, Deadline until) {
       }
       unsigned maj, min;
       char last;
-      check(std::sscanf(device.c_str(), "%x:%x%c", &maj, &min, &last) == 2 &&
-                f->before.st_dev == makedev(maj, min) &&
-                f->before.st_ino == inode,
-            "image_mapping_replaced");
+      check(std::sscanf(device.c_str(), "%x:%x%c", &maj, &min, &last) == 2,
+            "image_map_malformed");
+      check(f->before.st_dev == makedev(maj, min) && f->before.st_ino == inode,
+            path == exe ? "participant_executable_replaced"
+                        : "image_mapping_replaced");
       check(files.size() <= 1024, "too_many_executable_images");
     }
     check(maps.eof() && files.contains(exe), "image_executable_unmapped");
     struct stat running{};
     check(stat((procdir / "exe").c_str(), &running) == 0 &&
-              files.at(exe)->before.st_dev == running.st_dev &&
+              S_ISREG(running.st_mode),
+          "participant_executable_stat_failed");
+    check(files.at(exe)->before.st_dev == running.st_dev &&
               files.at(exe)->before.st_ino == running.st_ino,
           "participant_executable_replaced");
     // Only the synchronous sha256sum child inherits these read-only
@@ -124,7 +127,8 @@ Json collect_images(pid_t launcher, pid_t participant, Deadline until) {
                 name == "/proc/self/fd/" + std::to_string(f->fd),
             "image_digest_malformed");
       struct stat after{};
-      check(fstat(f->fd, &after) == 0 && after.st_size == f->before.st_size &&
+      check(fstat(f->fd, &after) == 0, "image_file_restat_failed");
+      check(after.st_size == f->before.st_size &&
                 after.st_ctim.tv_sec == f->before.st_ctim.tv_sec &&
                 after.st_ctim.tv_nsec == f->before.st_ctim.tv_nsec,
             "image_changed_during_hash");

@@ -211,6 +211,79 @@ void endpoint_contract_tests(const J &events) {
   c["scenario_contract"] = "future";
   ck(run(plain, c)["status"] == "invalid", "unknown rules cannot qualify");
 }
+void submission_composite_greeting_test(const J &events) {
+  auto c = context();
+  c["scenario_contract"] = "endpoint.v1";
+  J trace = J::array();
+  bool complete = false;
+  for (const auto &e : events) {
+    const auto name = e.value("name", "");
+    complete |= name == "hs_complete";
+    if ((!complete && name != "ready" && name != "hs_begin") ||
+        name == "server_first")
+      continue;
+    trace.push_back(e);
+  }
+  auto report = run(trace, c);
+  ck(report["metrics"]["peer_task"] != true,
+     "an unobserved greeting alone does not prove a completed exchange");
+  auto fact = *find(events, "server_first");
+  fact["name"] = "submission_greeting_accepted";
+  fact["ns"] = find(trace, "hs_complete")->at("ns");
+  trace.insert(find(trace, "auth_accepted"), fact);
+  report = run(trace, c);
+  ck(report["metrics"]["peer_task"] == true &&
+         report["metrics"]["ordinary_server_first"].is_null() &&
+         report["timeline"]["SAD1"]["first_write_attempt"].is_null() &&
+         report["timeline"]["SAD1"]["final_write_accept"].is_null() &&
+         report["timeline"]["SAD1"]["complete"].is_null() &&
+         report["timeline"]["SAD2"]["final_write_accept"] ==
+             report["timing"]["end"] &&
+         report["metrics"]["message_timeline"].is_null(),
+     "composite S4 confirms task without synthesizing an early send boundary");
+  auto repeated = trace;
+  repeated.insert(find(repeated, "auth_accepted"), fact);
+  ck(run(repeated, c)["status"] == "invalid",
+     "the composite sender can account for its greeting only once");
+  auto premature = trace;
+  premature.erase(find(premature, "submission_greeting_accepted"));
+  premature.insert(find(premature, "hs_complete"), fact);
+  ck(run(premature, c)["status"] == "invalid",
+     "the composite sender can confirm its greeting only after accept returns");
+  // A submission may expose real short I/O for the greeting, in addition
+  // to confirming the whole composite operation on return.
+  auto observed = events;
+  observed.insert(find(observed, "auth_accepted"), fact);
+  auto sf = *find(observed, "hs_progress");
+  sf["name"] = "local_finished_message";
+  observed.insert(find(observed, "hs_progress"), sf);
+  auto cf = *find(observed, "hs_complete");
+  cf["name"] = "peer_finished_message";
+  observed.insert(find(observed, "hs_complete"), cf);
+  report = run(observed, c);
+  ck(report["metrics"]["peer_task"] == true &&
+         report["metrics"]["ordinary_server_first"] == true &&
+         report["timeline"]["SAD1"]["complete"] == true &&
+         report["timeline"]["SAD2"]["complete"] == true &&
+         report["lifecycle"]["local_finished_message"]["kind"] == "event" &&
+         report["lifecycle"]["peer_finished_message"]["kind"] == "event",
+     "observed greetings retain actual timing without double counting");
+  auto partial = observed;
+  partial.erase(find(partial, "peer_finished_message") - 1);
+  ck(run(partial, c)["status"] == "invalid",
+     "opaque acceptance must not fill a partially observed greeting");
+  c["scenario"] = "S2";
+  c["messages"] = {{"CAD", 0}, {"SAD1", 4}, {"SAD2", 0}};
+  const auto end = *find(trace, "end");
+  trace.erase(find(trace, "read_return"), trace.end());
+  trace.push_back(end);
+  report = run(trace, c);
+  ck(report["metrics"]["peer_task"] == true &&
+         report["metrics"]["ordinary_server_first"].is_null() &&
+         report["metrics"]["timing"].is_null() &&
+         report["timing"]["end"].is_null(),
+     "composite S2 does not substitute the accept return for greeting timing");
+}
 void endpoint_first_read_test(const J &events) {
   auto c = context();
   c.update(J{{"role", "client"}, {"scenario", "S2"},
@@ -930,6 +1003,7 @@ int main(int argc, char **argv) try {
   }
   lifecycle_tests(es);
   endpoint_contract_tests(es);
+  submission_composite_greeting_test(es);
   endpoint_first_read_test(es);
   write_pair_tests(es);
   wire_tests(es);

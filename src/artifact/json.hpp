@@ -1,13 +1,17 @@
 #pragma once
 #include <cstdint>
 #include <filesystem>
+#include <initializer_list>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 namespace turtle::artifact {
 using Json = nlohmann::json;
 using Bytes = std::vector<unsigned char>;
 Json load(const std::filesystem::path &);
+void require_only_fields(const Json &object,
+                         std::initializer_list<std::string_view> allowed);
 void save(const std::filesystem::path &, const Json &);
 Bytes read_bytes(const std::filesystem::path &);
 std::string read_text(const std::filesystem::path &);

@@ -53,7 +53,7 @@ set_target_properties(turtle_observe PROPERTIES EXPORT_NAME observe CXX_EXTENSIO
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/observe.map"
     CONTENT "TURTLE_OBSERVE_1 { global: turtle_observe_*; turtle_wait_start; turtle_run_endpoint; local: *; };\n")
 target_link_options(turtle_observe PRIVATE "LINKER:--version-script,${CMAKE_CURRENT_BINARY_DIR}/observe.map")
-target_include_directories(turtle_observe PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>" "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+target_include_directories(turtle_observe PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>" "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_features(turtle_observe PRIVATE cxx_std_20)
 target_link_libraries(turtle_observe PRIVATE "$<BUILD_INTERFACE:nlohmann_json::nlohmann_json>")
@@ -65,9 +65,27 @@ add_library(turtle::endpoint ALIAS turtle_endpoint)
 set_target_properties(turtle_endpoint PROPERTIES EXPORT_NAME endpoint)
 target_link_libraries(turtle_endpoint INTERFACE turtle_observe)
 
+foreach(role client server)
+    add_library(turtle-submission-${role} OBJECT EXCLUDE_FROM_ALL src/submission/role.cpp)
+    target_include_directories(turtle-submission-${role} PRIVATE src/include src)
+    target_compile_features(turtle-submission-${role} PRIVATE cxx_std_20)
+    target_compile_options(turtle-submission-${role} PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_definitions(turtle-submission-${role} PRIVATE TURTLE_SUBMISSION_SERVER=$<STREQUAL:${role},server>)
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/submission-${role}.o"
+        COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_OBJECTS:turtle-submission-${role}>" "${CMAKE_CURRENT_BINARY_DIR}/submission-${role}.o"
+        DEPENDS turtle-submission-${role} $<TARGET_OBJECTS:turtle-submission-${role}> VERBATIM)
+endforeach()
+add_custom_target(turtle-submission-roles DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/submission-client.o" "${CMAKE_CURRENT_BINARY_DIR}/submission-server.o")
+add_library(turtle_submission_evidence STATIC src/submission/connection_evidence.cpp)
+target_link_libraries(turtle_submission_evidence PUBLIC turtle_artifact)
+target_compile_options(turtle_submission_evidence PRIVATE -Wall -Wextra -Wpedantic)
+add_executable(turtle-submission-job EXCLUDE_FROM_ALL src/submission/job.cpp)
+target_link_libraries(turtle-submission-job PRIVATE turtle_process turtle_submission_evidence)
+target_compile_options(turtle-submission-job PRIVATE -Wall -Wextra -Wpedantic)
+
 option(TURTLE_BUILD_REFERENCE "Build the stock TLS peer" ON)
 if(TURTLE_BUILD_REFERENCE)
-    add_subdirectory(reference)
+    add_subdirectory(tools/reference)
 endif()
 
 add_library(turtle_process STATIC src/process/process.cpp src/process/images.cpp)
@@ -93,9 +111,16 @@ add_library(turtle_analysis STATIC
 target_link_libraries(turtle_analysis PUBLIC turtle_artifact PRIVATE turtle_capture turtle_profiling turtle_process)
 add_library(turtle_native_evidence STATIC src/native/evidence.cpp src/native/evidence_wire.cpp)
 target_link_libraries(turtle_native_evidence PUBLIC turtle_artifact)
-add_library(turtle_native STATIC src/native/stream.cpp src/native/network.cpp src/native/pre_cf.cpp src/native/packets.cpp src/control/network.cpp)
+add_library(turtle_native STATIC
+    src/native/stream.cpp
+    src/native/launch_profile.cpp
+    src/native/run_report.cpp
+    src/native/network.cpp
+    src/native/pre_cf.cpp
+    src/native/packets.cpp
+    src/control/network.cpp)
 target_link_libraries(turtle_native PUBLIC turtle_process PRIVATE turtle_native_evidence turtle_capture turtle_profiling)
-file(GLOB_RECURSE turtle_sources CONFIGURE_DEPENDS src/*.cpp src/*.hpp src/*.h include/*.h reference/*.cpp reference/CMakeLists.txt)
+file(GLOB_RECURSE turtle_sources CONFIGURE_DEPENDS src/*.cpp src/*.hpp src/*.h tools/reference/*.cpp tools/reference/CMakeLists.txt)
 list(APPEND turtle_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/build_info.hpp.in"
@@ -131,7 +156,8 @@ if(TARGET turtle-reference)
     install(TARGETS turtle-reference RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 install(TARGETS turtle RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES include/turtle/endpoint.h include/turtle/observe.h include/turtle/start.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/turtle)
+install(FILES src/include/turtle/endpoint.h src/include/turtle/observe.h src/include/turtle/start.h src/include/turtle/implementation.hpp
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/turtle)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/build_info.hpp" DESTINATION ${CMAKE_INSTALL_DATADIR}/turtle)
 install(TARGETS turtle_observe turtle_endpoint EXPORT turtleTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(EXPORT turtleTargets FILE TURTLEConfig.cmake NAMESPACE turtle::

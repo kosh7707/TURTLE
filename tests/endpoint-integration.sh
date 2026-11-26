@@ -5,6 +5,8 @@ set -eu
 build=$(cd "${1:?framework build}" && pwd)
 mkdir -p "${2:?output parent}"
 work=$(mktemp -d "$(cd "$2" && pwd)/run-XXXXXX")
+export XDG_STATE_HOME="$work/state"
+mkdir -m 700 "$XDG_STATE_HOME"
 fixture=$(cd "$(dirname "$0")/endpoint-integration" && pwd)
 cmake --install "$build" --prefix "$work/sdk" >"$work/install.log"
 cmake -S "$fixture" -B "$work/app" -DCMAKE_PREFIX_PATH="$work/sdk" >"$work/config.log"
@@ -86,5 +88,43 @@ jq -e '.successful_measurements==1 and
      .measured_transport_hook=={verified:true,source:"library_io",reason:null} and
      .participants.server.metrics.library_io==null and (.pmu_status!="available" or .eligible==true))' "$run/analysis.json" >/dev/null
 replay "$run"
+# A missing separate profiler must not rewrite task success, turn warmups into
+# samples, or leave the run totals counting samples the final rows exclude.
+for kind in optional required; do
+    run="$work/missing-$kind-profiler"
+    jq --arg kind "$kind" --arg missing "$work/no-such-perf" '
+        .warmups=1 | .repetitions=2 |
+        .[($kind+"_metrics")] += ["cpu_samples"] |
+        .measurement.cpu_samples={perf:$missing}' "$work/client-mtls-S0.json" >"$run.json"
+    rc=0; "$turtle" run "$run.json" "$run" || rc=$?
+    if [ "$kind" = required ]; then
+        test "$rc" -eq 1
+    else
+        test "$rc" -eq 0
+    fi
+    jq -e --arg kind "$kind" '
+        (.attempts | map(select(.purpose=="sample"))) as $samples |
+        .collection_complete and .complete==($kind=="optional") and
+        [.attempts[].purpose]==["warmup","sample","sample"] and
+        (.attempts[0] | .warmup_allows_measurement and .qualification=="warmup_only" and (.qualified|not)) and
+        .samples==2 and .measurement_count==2 and .successful_measurements==2 and
+        .qualified_samples==([$samples[] | select(.qualified)] | length) and
+        .eligible_measurements==.qualified_samples and
+        (.cpu_samples.reason as $reason | $reason!=null and all($samples[];
+            .task_success and .qualified==.eligible and
+            .requested_metrics.cpu_samples.available==null and
+            .requested_metrics.cpu_samples.reason==$reason and
+            (if $kind=="required" then
+                .qualified==false and .operation_ok==false and .required_metrics_available==false and
+                (.ordinary_qualified_without_diagnostic==(.qualification=="required_diagnostic_missing")) and
+                (if .pmu_status=="available" then .ordinary_qualified_without_diagnostic else true end)
+             else .operation_ok and .required_metrics_available and
+                (has("ordinary_qualified_without_diagnostic")|not)
+             end)))' "$run/analysis.json" >/dev/null
+    cp "$run/analysis.json" "$run.live.json"
+    replay_rc=0; "$turtle" analyze "$run" || replay_rc=$?
+    test "$rc" -eq "$replay_rc"
+    cmp "$run.live.json" "$run/analysis.json"
+done
 sh "$fixture/../native-preparation-cancel.sh" "$turtle" "$work/client-mtls-S0.json" "$work/prepare"
 printf '20 wired role/auth/scenario cells, 2 asymmetric hook controls and identical replays: %s\n' "$work"

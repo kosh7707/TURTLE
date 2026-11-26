@@ -1,4 +1,5 @@
 #include "artifact/json.hpp"
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <fcntl.h>
@@ -38,6 +39,14 @@ Bytes read_bytes(const std::filesystem::path &p) {
   return {s.begin(), s.end()};
 }
 Json load(const std::filesystem::path &p) { return Json::parse(read_text(p)); }
+void require_only_fields(const Json &object,
+                         std::initializer_list<std::string_view> allowed) {
+  if (!object.is_object())
+    throw std::runtime_error("object_required");
+  for (const auto &[key, value] : object.items())
+    if (std::find(allowed.begin(), allowed.end(), key) == allowed.end())
+      throw std::runtime_error("unknown_field:" + key);
+}
 void write_text(const std::filesystem::path &p, const std::string &s) {
   std::ofstream f(p, std::ios::binary);
   f.write(s.data(), static_cast<std::streamsize>(s.size()));

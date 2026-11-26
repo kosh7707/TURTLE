@@ -1,8 +1,9 @@
 #include "native/stream.hpp"
-#include "artifact/network_evidence.hpp"
 #include "native/evidence.hpp"
+#include "native/launch_profile.hpp"
 #include "native/network.hpp"
 #include "native/pre_cf.hpp"
+#include "native/run_report.hpp"
 #include "native/stream_process.hpp"
 #include "native/stream_profile.hpp"
 #include "native/stream_start.hpp"
@@ -10,7 +11,6 @@
 #include "native/stream_summary.hpp"
 #include "process/images.hpp"
 #include <algorithm>
-#include <cmath>
 #include <iostream>
 #include <map>
 #include <set>
@@ -24,208 +24,8 @@ void require(bool ok, const std::string &why) {
   if (!ok)
     throw std::runtime_error(why);
 }
-void fields(const Json &j, std::initializer_list<std::string_view> names) {
-  require(j.is_object(), "object_required");
-  for (auto &[key, v] : j.items())
-    require(std::find(names.begin(), names.end(), key) != names.end(),
-            "unknown_field:" + key);
-}
-bool has(const Json &arr, const std::string &value) {
-  return std::find(arr.begin(), arr.end(), value) != arr.end();
-}
 std::string other(const std::string &role) {
   return role == "client" ? "server" : "client";
-}
-std::string metric_key(const std::string &k) {
-  static const std::map<std::string, std::string> aliases = {
-      {"scenario_wall_ns", "timing"},
-      {"perf_counters", "pmu"},
-      {"records", "record_layout"},
-      {"headers", "header_layout"},
-      {"public_io", "library_io"}};
-  static const std::set<std::string> allowed = {"timing",
-                                                "pmu",
-                                                "task",
-                                                "peer_task",
-                                                "authentication",
-                                                "profile",
-                                                "message_timeline",
-                                                "ordinary_server_first",
-                                                "transport_counts",
-                                                "ciphertext_bytes",
-                                                "record_layout",
-                                                "timed_records",
-                                                "header_layout",
-                                                "library_io",
-                                                "tls_flights",
-                                                "capture",
-                                                "tcp_ack",
-                                                "cpu_samples"};
-  auto i = aliases.find(k);
-  if (i != aliases.end())
-    return i->second;
-  require(allowed.contains(k), "unknown_metric:" + k);
-  return k;
-}
-Json normalize(Json p, const fs::path &base, const fs::path &self) {
-  fields(p, {"v", "target", "peer", "scenario", "auth", "timeout_seconds",
-             "warmups", "repetitions", "application", "required_metrics",
-             "optional_metrics", "network", "expected", "recording",
-             "credentials", "measurement", "netem"});
-  require(p.at("v") == 1, "native_profile_v1_required");
-  fields(p.at("target"), {"role", "argv"});
-  auto role = p.at("target").at("role");
-  require(role == "client" || role == "server", "invalid_target_role");
-  p["stock_peer"] = !p.contains("peer");
-  auto stock = [&](std::string who) {
-    return Json::array({(self.parent_path() / "turtle-reference").string(),
-                        "--native-stream", who, p.value("auth", "mtls"),
-                        "{host}", "{port}"});
-  };
-  p["scenario_contract"] = endpoint_contract_id;
-  if (p["stock_peer"] == true)
-    p["peer"] = {{"argv", stock(other(role))}};
-  else
-    fields(p.at("peer"), {"argv"});
-  for (auto key : {"target", "peer"}) {
-    auto &av = p.at(key).at("argv");
-    require(av.is_array() && !av.empty(), "argv_required");
-    for (auto &a : av)
-      require(a.is_string() && a.get_ref<const std::string &>().find('\0') ==
-                                   std::string::npos,
-              "invalid_argument");
-    std::string exe = av.front();
-    require(!exe.empty(), "empty_executable");
-    if (exe.find('/') != exe.npos)
-      exe = (base / exe).string();
-    av.front() = process::executable(exe);
-    require(access(av.front().get_ref<const std::string &>().c_str(), X_OK) ==
-                0,
-            "not_executable:" + exe);
-  }
-  std::error_code ec;
-  require(!fs::equivalent(p["target"]["argv"][0].get<std::string>(),
-                          self.parent_path() / "turtle-reference", ec),
-          "stock_reference_cannot_be_measured_target");
-  p["network"] = p.value("network", "loopback");
-  require(p["network"] == "loopback" || p["network"] == "netem",
-          "invalid_network");
-  require(!p.contains("netem") || p["network"] == "netem",
-          "netem_requires_isolated_network");
-  if (p["network"] == "netem")
-    p["netem"] = artifact::normalized_netem(p.value("netem", Json::object()));
-  p["scenario"] = p.value("scenario", "S3");
-  p["auth"] = p.value("auth", "mtls");
-  require(has(Json({"S0", "S1", "S2", "S3", "S4"}), p["scenario"]),
-          "invalid_scenario");
-  require(p["auth"] == "server" || p["auth"] == "mtls", "invalid_auth");
-  if (p.contains("credentials")) {
-    auto &c = p.at("credentials");
-    fields(c, {"ca", "client", "server", "client_name", "server_name"});
-    auto checked = [&](Json &x) {
-      auto path = fs::canonical(base / x.get<std::string>());
-      require(fs::is_regular_file(path) && access(path.c_str(), R_OK) == 0,
-              "invalid_fixture_path");
-      x = path.string();
-    };
-    checked(c.at("ca"));
-    for (auto who : {"client", "server"}) {
-      if (std::string_view(who) == "client" && p.at("auth") == "server" &&
-          !c.contains(who))
-        continue;
-      auto &identity = c.at(who);
-      fields(identity, {"cert", "key"});
-      checked(identity.at("cert"));
-      checked(identity.at("key"));
-    }
-    for (auto key : {"server_name", "client_name"})
-      if (c.contains(key)) {
-        auto name = c.at(key).get<std::string>();
-        require(!name.empty() && name.find('\0') == name.npos,
-                "invalid_peer_name");
-      }
-  }
-  for (auto key : {"warmups", "repetitions"}) {
-    auto n = artifact::integer(
-        p.value(key, Json(std::string_view(key) == "warmups" ? 1 : 2)));
-    require(n <= 100000 && (n || std::string_view(key) == "warmups"),
-            "attempt_count_out_of_range");
-    p[key] = n;
-  }
-  auto timeout = p.value("timeout_seconds", 10.0);
-  require(std::isfinite(timeout) && timeout > 0 && timeout <= 3600,
-          "timeout_out_of_range");
-  p["timeout_seconds"] = timeout;
-  auto app = p.value("application", Json::object());
-  fields(app, {"request", "greeting", "response"});
-  for (auto [key, def] : {std::pair{"request", "ping"},
-                          {"greeting", "helo"},
-                          {"response", "pong"}}) {
-    std::string s = app.value(key, def);
-    require(!s.empty() && s.size() <= 16384 && s.find('\0') == s.npos,
-            "invalid_application_bytes");
-    app[key] = s;
-  }
-  p["application"] = app;
-  auto expected = p.value("expected", Json::object());
-  fields(expected, {"group", "suite", "cipher"});
-  const std::map<std::string, int> groups = {
-      {"P-256", 23},     {"prime256v1", 23}, {"secp256r1", 23}, {"P-384", 24},
-      {"secp384r1", 24}, {"P-521", 25},      {"secp521r1", 25}, {"X25519", 29},
-      {"x25519", 29},    {"X448", 30},       {"x448", 30}};
-  const std::map<std::string, int> suites = {
-      {"TLS_AES_128_GCM_SHA256", 0x1301},
-      {"TLS_AES_256_GCM_SHA384", 0x1302},
-      {"TLS_CHACHA20_POLY1305_SHA256", 0x1303},
-      {"TLS_AES_128_CCM_SHA256", 0x1304},
-      {"TLS_AES_128_CCM_8_SHA256", 0x1305}};
-  p["expected"] = Json::object();
-  for (auto &[key, v] : expected.items()) {
-    const auto &aliases = key == "group" ? groups : suites;
-    auto canonical = key == "cipher" ? "suite" : key;
-    std::uint64_t id = 0;
-    if (v.is_string()) {
-      auto name = v.get<std::string>();
-      require(aliases.contains(name), "unknown_negotiation_name:" + name);
-      id = aliases.at(name);
-    } else
-      id = artifact::integer(v);
-    require(id > 0 && id <= 65535, "invalid_negotiation_id");
-    require(!p["expected"].contains(canonical) ||
-                p["expected"][canonical] == id,
-            "contradictory_expected_negotiation");
-    p["expected"][canonical] = id;
-  }
-  auto rec = p.value("recording", "basic");
-  require(rec == "basic" || rec == "detailed", "invalid_recording");
-  std::set<std::string> selected;
-  for (auto key : {"required_metrics", "optional_metrics"}) {
-    auto m = p.value(key, Json::array());
-    require(m.is_array(), "metrics_array_required");
-    for (auto &v : m) {
-      require(v.is_string(), "invalid_metric");
-      require(selected.insert(metric_key(v)).second,
-              "duplicate_metric:" + v.get<std::string>());
-    }
-    p[key] = m;
-  }
-  auto measurement = p.value("measurement", Json::object());
-  fields(measurement, {"cpu_samples", "capture"});
-  if (measurement.contains("capture"))
-    require(measurement["capture"].is_boolean(), "invalid_capture_flag");
-  for (auto key : {"optional_metrics", "required_metrics"})
-    if (has(p.at(key), "capture") || has(p.at(key), "tcp_ack"))
-      measurement["capture"] = true;
-  if (measurement.contains("cpu_samples") ||
-      has(p.at("optional_metrics"), "cpu_samples") ||
-      has(p.at("required_metrics"), "cpu_samples")) {
-    auto options = measurement.value("cpu_samples", Json::object());
-    fields(options, {"event", "frequency_hz", "perf"});
-    profiling::validate_settings(options);
-    measurement["cpu_samples"] = options;
-  }
-  p["measurement"] = measurement;
-  return p;
 }
 struct Fixture {
   fs::path dir;
@@ -728,7 +528,7 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
   for (auto kind : {"required_metrics", "optional_metrics"}) {
     const bool mandatory = std::string_view(kind) == "required_metrics";
     for (const auto &k : p.at(kind)) {
-      auto metric_name = metric_key(k);
+      auto metric_name = canonical_metric_name(k);
       const auto &owner =
           metric_name == "ordinary_server_first" ? participants.at("server")
           : metric_name == "peer_task"           ? peer
@@ -1035,7 +835,7 @@ void export_certificate(const fs::path &src, const fs::path &dest) {
 }
 void check_certificates(const fs::path &root, const Json &m) {
   const auto &hashes = m.at("certificate_sha256");
-  fields(hashes, {"ca.crt", "client.crt", "server.crt"});
+  artifact::require_only_fields(hashes, {"ca.crt", "client.crt", "server.crt"});
   require(hashes.contains("ca.crt") && hashes.contains("server.crt") &&
               (m.at("profile").at("auth") != "mtls" ||
                hashes.contains("client.crt")),
@@ -1069,9 +869,10 @@ static Json verified_report(const fs::path &root, const Json &manifest) {
   }
   Json rows = Json::array(), proof_image = nullptr,
        diagnostic = manifest.value("diagnostic_probe", Json(nullptr));
-  bool require_profile = has(p.at("required_metrics"), "cpu_samples");
-  bool ok = manifest.at("status") == "complete";
-  size_t count = 0, samples = 0, warmups = 0, successful = 0;
+  // Validate this profile field before opening any attempt, including on replay.
+  const auto &required = p.at("required_metrics");
+  const bool cpu_samples_required =
+      std::find(required.begin(), required.end(), "cpu_samples") != required.end();
   std::set<std::string> ids;
   for (size_t i = 0; i < list.size(); ++i) {
     auto name = "attempt-" + std::to_string(i + 1);
@@ -1101,9 +902,6 @@ static Json verified_report(const fs::path &root, const Json &manifest) {
     auto row = assess_bound(manifest, raw, dir, proof_image);
     if (raw.at("purpose") == "capability") {
       require(i == 0 && p.contains("probe_client"), "invalid_probe_source");
-      row["eligible"] = false;
-      row["qualified"] = false;
-      row["qualification"] = "capability_only";
     } else if (raw.at("purpose") == "diagnostic") {
       std::string role = p.at("target").at("role");
       diagnostic =
@@ -1114,78 +912,12 @@ static Json verified_report(const fs::path &root, const Json &manifest) {
       diagnostic["prepared_start"] = row.at("prepared_start").at("verified");
       diagnostic["scope"] = diagnostic.at("prepared_start") == true
                                 ? "prepared_scenario" : "local_diagnostic_only";
-      row["cpu_samples"] = diagnostic;
-      row["eligible"] = false;
-      row["qualified"] = false;
-      row["qualification"] = "diagnostic_only";
-    } else {
-      if (raw.at("purpose") == "sample") {
-        ++samples;
-        if (row.at("task_success") == true)
-          ++successful;
-        if (row["qualified"] == true)
-          ++count;
-      } else {
-        require(raw.at("purpose") == "warmup", "invalid_attempt_purpose");
-        ++warmups;
-        row["warmup_allows_measurement"] = warmup_allows_measurement(row);
-        row["warmup_assessment"] = row.at("qualification");
-        row["eligible"] = false;
-        row["qualified"] = false;
-        row["qualification"] = "warmup_only";
-      }
-      ok = ok && (raw.at("purpose") == "warmup"
-                     ? row.at("warmup_allows_measurement") == true
-                     : row.at("operation_ok") == true);
     }
     row["directory"] = name;
     rows.push_back(std::move(row));
   }
-  ok = ok && p.at("repetitions") == samples && p.at("warmups") == warmups;
-  const bool profile_available =
-      diagnostic.is_object() &&
-      diagnostic.value("availability", "missing") == "available" &&
-      diagnostic.contains("sample_count") &&
-      diagnostic.value("prepared_start", Json(nullptr)) == true;
-  Json profile_reason = nullptr;
-  if (!profile_available) {
-    profile_reason = "separate_diagnostic_missing";
-    if (diagnostic.is_object())
-      profile_reason = diagnostic.value("scope", "") == "local_diagnostic_only"
-                           ? Json("unverified_diagnostic_start")
-                           : diagnostic.value("reason", profile_reason);
-  }
-  if (require_profile && !profile_available) {
-    ok = false;
-    count = 0;
-  }
-  for (auto &row : rows)
-    if (row.at("purpose") == "sample" &&
-        row.at("requested_metrics").contains("cpu_samples")) {
-      auto &request = row["requested_metrics"]["cpu_samples"];
-      request["available"] = profile_available ? Json(true) : Json(nullptr);
-      request["reason"] = profile_reason;
-      if (require_profile && !profile_available) {
-        row["ordinary_qualified_without_diagnostic"] = row.at("eligible");
-        if (row.at("eligible") == true)
-          row["qualification"] = "required_diagnostic_missing";
-        row["eligible"] = false;
-        row["qualified"] = false;
-        row["operation_ok"] = false;
-        row["required_metrics_available"] = false;
-      }
-    }
-  return {{"cpu_samples", diagnostic},
-          {"schema", "turtle.native-run.v1"},
-          {"measured_role", p.at("target").at("role")},
-          {"attempts", std::move(rows)},
-          {"qualified_samples", count},
-          {"eligible_measurements", count},
-          {"measurement_count", samples},
-          {"successful_measurements", successful},
-          {"collection_complete", manifest.at("status") == "complete"},
-          {"samples", samples},
-          {"complete", ok}};
+  return finalize_run_report(manifest, cpu_samples_required,
+                             std::move(rows), std::move(diagnostic));
 }
 static int regenerate_verified(const fs::path &root, const Json &manifest) {
   const auto out = verified_report(root, manifest);
@@ -1216,9 +948,9 @@ int regenerate(const fs::path &root) {
   }
 }
 int check(const fs::path &profile) {
-  auto p =
-      normalize(artifact::load(profile), fs::absolute(profile).parent_path(),
-                fs::canonical("/proc/self/exe"));
+  auto p = normalize_launch_profile(artifact::load(profile),
+                                    fs::absolute(profile).parent_path(),
+                                    fs::canonical("/proc/self/exe"));
   std::cout << Json{{"schema", "turtle.native-check.v1"},
                     {"launch_configuration", "valid"},
                     {"measured_role", p["target"]["role"]},
@@ -1236,7 +968,7 @@ int execute(Json p, const fs::path &root, const fs::path &self, int cancel,
     base = specfile.parent_path();
     p = artifact::load(specfile);
   }
-  p = normalize(p, base, self);
+  p = normalize_launch_profile(std::move(p), base, self);
   require(fs::create_directory(root), "output_must_be_new");
   Fixture f;
   auto keys = f.dir / "leaves";

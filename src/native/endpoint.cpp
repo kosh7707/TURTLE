@@ -1,4 +1,5 @@
 #include "native/endpoint_observe.hpp"
+#include "native/submission_endpoint.hpp"
 #include <turtle/endpoint.h>
 #include <turtle/observe.h>
 #include <turtle/start.h>
@@ -49,6 +50,7 @@ void publish(View bytes) {
 
 struct Scenario {
   const turtle_endpoint &ep;
+  turtle_result (*accept_greeting)(void *, const void *, size_t) = nullptr;
   bool started = false, read_first = false;
 
   void begin_tls(bool reading = false) {
@@ -73,6 +75,15 @@ struct Scenario {
     turtle_observe_event_at(returned, at == TURTLE_SERVER_CAN_SEND
                                           ? "hs_progress"
                                           : "hs_complete");
+  }
+
+  void handshake_with_greeting(View bytes) {
+    begin_tls();
+    auto rc = accept_greeting(ep.conn, bytes.data(), bytes.size());
+    auto returned = turtle_observe_now();
+    check(rc, true);
+    turtle_observe_event_at(returned, "hs_complete");
+    turtle_observe_fact("submission_greeting_accepted", 1);
   }
 
   void send(View rest, turtle_hs_point at = TURTLE_LOCAL_COMPLETE) {
@@ -143,7 +154,8 @@ struct Scenario {
             (!response || valid(sad2)));
 
     if (!ep.handshake_until ||
-        ((client ? request : (greeting || response)) && !ep.write_plain) ||
+        ((client ? request : ((greeting && !accept_greeting) || response)) &&
+         !ep.write_plain) ||
         ((client ? (greeting || response) : request) && !ep.read_plain))
       throw Failure{TURTLE_UNSUPPORTED};
 
@@ -161,13 +173,17 @@ struct Scenario {
     else
       turtle_observe_event("ready");
     require(turtle_wait_start() >= 0);
-    if (!client && greeting) {
+    const bool composite = !client && greeting && accept_greeting;
+    if (composite)
+      handshake_with_greeting(outgoing);
+    else if (!client && greeting) {
       handshake(TURTLE_SERVER_CAN_SEND);
       send(outgoing, TURTLE_SERVER_CAN_SEND);
     }
     if (client && scenario == "S2")
       receive(sad1); // Arm an ordinary read, not a full-handshake barrier.
-    handshake(TURTLE_LOCAL_COMPLETE);
+    if (!composite)
+      handshake(TURTLE_LOCAL_COMPLETE);
     if (client && request)
       send(outgoing);
     std::string received_request;
@@ -191,13 +207,14 @@ struct Scenario {
     }
   }
 };
-} // namespace
 
-extern "C" turtle_result turtle_run_endpoint(const turtle_endpoint *ep) {
+turtle_result run_endpoint(
+    const turtle_endpoint *ep,
+    turtle_result (*accept_greeting)(void *, const void *, size_t)) {
   if (!ep)
     return TURTLE_ERROR;
   try {
-    Scenario{*ep}.run();
+    Scenario{*ep, accept_greeting}.run();
     return TURTLE_OK;
   } catch (const Failure &failure) {
     if (failure.result == TURTLE_UNSUPPORTED)
@@ -206,4 +223,15 @@ extern "C" turtle_result turtle_run_endpoint(const turtle_endpoint *ep) {
   } catch (...) {
     return TURTLE_ERROR; // Never propagate a C++ exception to the C caller.
   }
+}
+} // namespace
+
+extern "C" turtle_result turtle_run_endpoint(const turtle_endpoint *ep) {
+  return run_endpoint(ep, nullptr);
+}
+
+extern "C" turtle_result turtle_observe_run_submission_endpoint(
+    const turtle_endpoint *ep,
+    turtle_result (*accept_greeting)(void *, const void *, size_t)) {
+  return run_endpoint(ep, accept_greeting);
 }

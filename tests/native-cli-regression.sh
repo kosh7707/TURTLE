@@ -161,6 +161,14 @@ for change in mismatch unknown probe; do
     grep -q "$reason" rejection.log
 done
 
+# Missing required profile fields are reported before attempt inventory errors.
+cp -R early bad-profile-and-attempt
+jq 'del(.profile.required_metrics) | .attempts[0].directory="wrong"' \
+    early/manifest.json >bad-profile-and-attempt/manifest.json
+reject "$turtle" analyze bad-profile-and-attempt
+grep -Fq "key 'required_metrics' not found" rejection.log
+jq -e '.complete==false and .qualified_samples==0' bad-profile-and-attempt/analysis.json >/dev/null
+
 # Even a re-hashed source cannot launder an unbound reporter-selected PID.
 dir=$(jq -er '.attempts[]|select(.purpose=="sample")|.directory' same-suite/manifest.json)
 raw="same-suite/$dir/attempt.json"

@@ -56,6 +56,22 @@ struct Trace {
   };
   std::map<uint64_t, Offer> pending;
   J write_errors = J::array();
+  void composite_greeting(const J &e, const J &c) {
+    const auto expected = u(c.at("messages"), "SAD1");
+    // Either the neutral accept contract is the only observation, or the
+    // submission recorded a complete greeting. Never pad a partial trace.
+    const bool opaque = sent == 0 && !ranges.contains("SAD1");
+    const bool observed = sent == expected && ranges.contains("SAD1");
+    require(uses_endpoint_contract(c) && c.at("role") == "server" &&
+                (c.at("scenario") == "S2" || c.at("scenario") == "S4") &&
+                e.at("value") == true && milestones.contains("hs_complete") &&
+                before(milestones.at("hs_complete"), e) == true &&
+                !milestones.contains("end") && expected > 0 &&
+                (opaque || observed) && pending.empty() &&
+                !facts.contains("submission_greeting_accepted"),
+            "invalid_composite_greeting");
+    sent = expected;
+  }
   void plain(const J &raw, const J &c, J &result) {
     auto op = raw.at("name").get<std::string>();
     bool tx = op == "write_attempt" || op == "write_accepted";
@@ -187,7 +203,8 @@ struct Trace {
         static const std::set<std::string> milestones_set = {
             "ready",        "hs_begin",      "hs_progress",
             "hs_complete",  "auth_accepted", "end",
-            "probe_paused", "probe_resumed", "probe_server_paused"};
+            "probe_paused", "probe_resumed", "probe_server_paused",
+            "local_finished_message", "peer_finished_message"};
         require(milestones_set.count(n) && m.is_null() && u(e, "offset") == 0 &&
                     u(e, "length") == 0,
                 "unknown_lifecycle_event");
@@ -310,6 +327,8 @@ void evaluate(Trace &t, const J &c, J &r) {
   require(s.size() == 2 && s[0] == 'S' && s[1] >= '0' && s[1] <= '4',
           "invalid_scenario");
   const bool endpoint = uses_endpoint_contract(c);
+  const bool composite_greeting =
+      f.value("submission_greeting_accepted", J(nullptr)) == true;
   J core = all({before(e["ready"], e["hs_begin"]),
                 before(e["hs_begin"], e["hs_complete"]),
                 before(e["hs_complete"], e["end"])});
@@ -422,6 +441,8 @@ void evaluate(Trace &t, const J &c, J &r) {
     J task = all({J(consistent), J(pairs != false),
                   send ? present(last) : present(valid),
                   before(send ? last : valid, e["end"])});
+    if (greet && composite_greeting && fragments.empty())
+      task = J(consistent);
     if (endpoint && !send)
       task = all({task, before(last, valid)});
     if (!first.is_null())
@@ -473,7 +494,11 @@ void evaluate(Trace &t, const J &c, J &r) {
       // An ordinary write before a *later confirmation* alone need not have
       // used a pre-Finished send opportunity. Neither fact proves arrival.
       early = all({early, match(f["server_first"], true)});
-      ordering = all({ordering, early});
+      if (!composite_greeting)
+        ordering = all({ordering, early});
+      else if (!greeting.is_null())
+        ordering = all({ordering, before(greeting, e["hs_complete"]),
+                        f["server_first"] != false});
     } else {
       J proof = c.value("capability_proof", J(nullptr));
       require(proof.is_null() || proof.is_boolean(), "invalid_capability_proof");
@@ -494,8 +519,11 @@ void evaluate(Trace &t, const J &c, J &r) {
         ordering = all({ordering, independent == true ? J(true) : J(nullptr)});
       }
     }
-    ordering = all({ordering, client ? (same ? J(true) : before(v1, v2))
-                                     : before(greeting, response)});
+    const auto message_order = client ? (same ? J(true) : before(v1, v2))
+                               : composite_greeting && greeting.is_null()
+                                   ? J(true)
+                                   : before(greeting, response);
+    ordering = all({ordering, message_order});
   }
   m["authentication"] = auth;
   m["profile"] = profile;
@@ -589,6 +617,9 @@ J analyze_evidence(const std::string &data, const J &c) {
       else {
         require(ev.at("kind") != "event" || ev.at("message").is_null(),
                 "labeled_raw_event");
+        if (ev.at("kind") == "fact" &&
+            ev.at("name") == "submission_greeting_accepted")
+          t.composite_greeting(ev, c);
         t.add(ev);
       }
       r["events"].push_back(std::move(ev));

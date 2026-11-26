@@ -65,10 +65,13 @@ fi
 # translator from examples, fixtures or a disabled implementation directory.
 # Exempt only files in the actual dependency closure of the allowed peer.
 ninja -C "$build" -t inputs turtle-reference >"$work/reference-inputs"
-for dir in docs/examples examples implementations tests; do
+for dir in docs/examples examples tests; do
     [ -d "$root/$dir" ] || continue
     find "$root/$dir" -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) -print
 done >"$work/sources"
+if [ -f "$root/implementations/implementation.cpp" ]; then
+    printf '%s\n' "$root/implementations/implementation.cpp" >> "$work/sources"
+fi
 while IFS= read -r f; do
     grep -Fxq "$f" "$work/reference-inputs" && continue
     if grep -Eq '(SSL_do_handshake|wolfSSL_(connect|accept)|gnutls_handshake|mbedtls_ssl_handshake)[[:space:]]*\(' "$f" &&

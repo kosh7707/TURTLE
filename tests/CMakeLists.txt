@@ -11,6 +11,28 @@ set(TURTLE_BINARY_DIR "${framework_binary}" CACHE PATH "Endpoint and CLI build d
 add_test(NAME source_language_policy COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/language-policy.sh"
     "${CMAKE_CURRENT_LIST_DIR}/..")
 add_test(NAME source_language_policy_regression COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/language-policy-test.sh")
+add_test(NAME submission_index_uint64 COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/submission-index-uint64.sh"
+    "${CMAKE_CURRENT_LIST_DIR}/../tools/validation/index-matrix.sh")
+set_tests_properties(submission_index_uint64 PROPERTIES SKIP_RETURN_CODE 77)
+add_test(NAME submission_entry_requires_inputs COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/submission-entry.sh")
+add_test(NAME submission_starter COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/submission-starter.sh")
+add_executable(turtle-submission-starter-test submission-starter.cpp ../tools/submission-starter/implementation.cpp)
+target_include_directories(turtle-submission-starter-test PRIVATE ../src/include)
+set_target_properties(turtle-submission-starter-test PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_compile_options(turtle-submission-starter-test PRIVATE -Wall -Wextra -Werror -Wpedantic)
+add_test(NAME submission_starter_abi COMMAND turtle-submission-starter-test)
+add_test(NAME submission_example_init COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/submission-example-init.sh")
+add_test(NAME submission_gitignore COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/submission-gitignore.sh")
+add_test(NAME bench_storage COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/bench-storage.sh")
+add_test(NAME submission_build_contract COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/submission-build-contract.sh" "${nlohmann_json_DIR}")
+set_tests_properties(submission_build_contract PROPERTIES TIMEOUT 180)
+option(TURTLE_TEST_SUBMISSION_E2E "Cold-build the populated submission and run real loopback connections" OFF)
+if(TURTLE_TEST_SUBMISSION_E2E)
+    add_test(NAME submission_entry_tls COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/submission-entry.sh" --live)
+    add_test(NAME submission_recipe_failure COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/submission-entry.sh" --recipe-failure)
+    set_tests_properties(submission_entry_tls submission_recipe_failure PROPERTIES RUN_SERIAL TRUE TIMEOUT 1800)
+endif()
 # Historical raw records and deterministic framing/PMU checks remain readable
 # independently of the optional TLS peer. These helpers are not an installed SDK.
 add_library(turtle_test_recording STATIC ../src/frame/framer.cpp ../src/measure/recorder.cpp ../src/measure/perf.cpp
@@ -71,9 +93,25 @@ target_link_libraries(turtle-image-binding-test PRIVATE turtle_process ${CMAKE_D
 add_test(NAME participant_image_inventory COMMAND turtle-image-binding-test "$<TARGET_FILE:turtle-image-module>")
 if(TARGET turtle-reference)
     find_program(OPENSSL_CLI openssl REQUIRED)
+    find_package(OpenSSL 3.5 REQUIRED COMPONENTS SSL Crypto)
+    add_library(turtle-test-hook-fault SHARED fixtures/submission-hook-fault.cpp)
+    target_compile_features(turtle-test-hook-fault PRIVATE cxx_std_17)
+    target_link_libraries(turtle-test-hook-fault PRIVATE turtle::observe OpenSSL::SSL OpenSSL::Crypto)
+    foreach(side client server)
+        add_executable(turtle-test-capture-${side} $<TARGET_OBJECTS:turtle-submission-${side}>)
+        target_link_libraries(turtle-test-capture-${side} PRIVATE turtle::observe turtle-test-hook-fault)
+    endforeach()
+    add_test(NAME submission_capture_failure COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/submission-capture-failure.sh"
+        "$<TARGET_FILE:turtle>" "$<TARGET_FILE:turtle-submission-job>" "$<TARGET_FILE:turtle-test-hook-fault>"
+        "$<TARGET_FILE:turtle-test-capture-client>" "$<TARGET_FILE:turtle-test-capture-server>")
+    add_dependencies(turtle-test-capture-client turtle-submission-job)
+    set_tests_properties(submission_capture_failure PROPERTIES TIMEOUT 90)
     add_test(NAME native_cli_contract COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/native-cli-regression.sh"
         "$<TARGET_FILE:turtle>" "${OPENSSL_CLI}")
     set_tests_properties(native_cli_contract PROPERTIES TIMEOUT 60)
+    add_test(NAME native_launch_profile COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/native-profile.sh"
+        "$<TARGET_FILE:turtle>" "${OPENSSL_CLI}")
+    set_tests_properties(native_launch_profile PROPERTIES TIMEOUT 60)
     add_test(NAME endpoint_installed_tls_matrix COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/endpoint-integration.sh"
         "${framework_binary}" "${CMAKE_CURRENT_BINARY_DIR}/endpoint-matrix")
     set_tests_properties(endpoint_installed_tls_matrix PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
@@ -126,6 +164,9 @@ add_test(NAME native_prepared_start COMMAND turtle-native-prepared)
 add_executable(turtle-native-summary native-summary.cpp)
 target_link_libraries(turtle-native-summary PRIVATE turtle_artifact)
 add_test(NAME native_result_summary COMMAND turtle-native-summary)
+add_executable(turtle-native-run-report native-run-report.cpp)
+target_link_libraries(turtle-native-run-report PRIVATE turtle_native)
+add_test(NAME native_run_finalization COMMAND turtle-native-run-report)
 
 add_executable(turtle-native-probe-test native-probe.cpp)
 target_link_libraries(turtle-native-probe-test PRIVATE turtle_native)
@@ -137,3 +178,18 @@ add_executable(turtle-endpoint-runner-replay endpoint-runner-replay.cpp)
 target_link_libraries(turtle-endpoint-runner-replay PRIVATE turtle_native_evidence)
 add_test(NAME endpoint_runner COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/endpoint-runner.sh"
     "$<TARGET_FILE:turtle-endpoint-runner-test>" "$<TARGET_FILE:turtle-endpoint-runner-replay>")
+
+add_executable(turtle-submission-evidence-test submission-evidence.cpp)
+target_link_libraries(turtle-submission-evidence-test PRIVATE turtle_submission_evidence)
+target_compile_options(turtle-submission-evidence-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME submission_connection_evidence COMMAND turtle-submission-evidence-test)
+
+add_executable(turtle-submission-image-receipt-test submission-image-receipt.cpp)
+target_link_libraries(turtle-submission-image-receipt-test PRIVATE turtle_process)
+target_compile_options(turtle-submission-image-receipt-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME submission_prepared_image_receipt COMMAND turtle-submission-image-receipt-test)
+
+add_executable(turtle-submission-map-read-test submission-map-read.cpp)
+target_link_libraries(turtle-submission-map-read-test PRIVATE turtle_artifact)
+target_compile_options(turtle-submission-map-read-test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME submission_map_read COMMAND turtle-submission-map-read-test)

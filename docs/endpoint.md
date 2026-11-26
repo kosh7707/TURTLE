@@ -1,6 +1,8 @@
 # Integrate a TLS endpoint
 
-Configure a fresh TCP connection, TLS role, credentials and verification policy in your application. Before the first TLS operation, pass the connection and its callbacks to the [endpoint SDK](../include/turtle/endpoint.h). TURTLE borrows the opaque `conn` for this call; your application owns the session, socket and cleanup.
+This is the SDK contract for an independently built application. For the default `./bench.sh` workflow, where TURTLE builds **both** executable roles from your TLS source, use the [submission contract](submission.md).
+
+Configure a fresh TCP connection, TLS role, credentials and verification policy in your application. Before the first TLS operation, pass the connection and its callbacks to the [endpoint SDK](../src/include/turtle/endpoint.h). TURTLE borrows the opaque `conn` for this call; your application owns the session, socket and cleanup.
 
 ```c
 const turtle_endpoint endpoint = {ssl, handshake, write_plain, read_plain};
@@ -24,7 +26,7 @@ The [OpenSSL example](../tests/endpoint-integration/consumer.c) implements these
 
 Handle waits and retries inside each callback. On successful I/O, return `TURTLE_OK` with a positive count no greater than the requested length. Partial I/O is normal. Return `TURTLE_CLOSED` for premature EOF, `TURTLE_UNSUPPORTED` for an unavailable operation and `TURTLE_ERROR` for other failures. Unused read/write callbacks may be null.
 
-For a qualified sample, attach a socket or TLS-library I/O hook on the **measured role** before calling the SDK. Keep both directions covered through the measured end. Report actual call intervals, direction, requested length and result via the [observation API](../include/turtle/observe.h).
+For a qualified sample, attach a socket or TLS-library I/O hook on the **measured role** before calling the SDK. Keep both directions covered through the measured end. Report actual call intervals, direction, requested length and result via the [observation API](../src/include/turtle/observe.h).
 
 ## Message abbreviations
 
