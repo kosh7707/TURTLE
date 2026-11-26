@@ -19,7 +19,7 @@ Stamp now() noexcept {
 Recorder::Recorder(std::size_t capacity, bool perf, Mode mode) : counters_(perf && mode != Mode::peer), mode_(mode) {
     if (!calls()) return;
     if (detailed()) for (auto& stream : streams_) stream.data.resize(stream_capacity);
-    events_.resize(capacity); // 측정 전에 실제 메모리를 만진다.
+    events_.resize(capacity); // Touch the event buffer before measurement starts.
     events_.clear();
 }
 Stamp Recorder::stamp() noexcept {
