@@ -16,7 +16,7 @@ example=$root/docs/examples/submissions/$name
     reject "Unknown example '$name'. See docs/examples/submissions/README.md."
 for file in build.sh implementation.cpp; do
     [ -f "$example/$file" ] && [ ! -L "$example/$file" ] ||
-        reject "'$name' does not include $file. See docs/examples/submissions/$name/README.md or write your own bridge."
+        reject "'$name' does not include $file. See docs/examples/submissions/README.md or write your own bridge."
     [ -f "$starter/$file" ] && [ ! -L "$starter/$file" ] ||
         reject "Shipped starter missing: tools/submission-starter/$file. Restore it before selecting an example."
 done

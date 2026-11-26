@@ -1,29 +1,9 @@
-# 첫 제출: 여기 있는 두 파일을 수정하세요
+# 내 TLS 소스 제출
 
-이 디렉터리는 한 번에 한 TLS 구현을 받습니다. **[build.sh](build.sh)**와 **[implementation.cpp](implementation.cpp)**는 편집을 시작할 수 있는 템플릿이지 TLS 라이브러리가 아닙니다. 한쪽이라도 기본 템플릿 그대로라면 `./bench.sh`는 해당 파일을 알려주고 종료합니다(코드 2). 빌드 캐시·결과 디렉터리도 만들지 않습니다.
+한 슬롯에 TLS 구현 하나를 둡니다. [`build.sh`](build.sh)와 [`implementation.cpp`](implementation.cpp)는 TLS를 실행하지 않는 시작 파일입니다.
 
-1. 원본을 `implementations/<내-소스>/`에 둡니다. 이름은 자유이며 기존 소스가 있다면 그대로 사용합니다.
-2. **직접 연결:** `build.sh WORK PREFIX [인자...]`에서 원래 방식으로 라이브러리를 빌드해 `PREFIX`에 헤더·공유 라이브러리·pkg-config 정보를 설치합니다. `implementation.cpp`에서는 [공개 함수 7개](../src/include/turtle/implementation.hpp)를 연결합니다. [레시피 계약](../docs/build-contract.ko.md) · [함수별 동작](../docs/submission.md).
-3. **또는 예시로 시작:** 예를 들어 원본이 `implementations/openssl/`에 있다면 저장소 루트에서 아래 두 줄을 실행합니다. 예시 선택이 성공해야 빌드가 시작됩니다. 선택 도구는 두 편집 파일만 설치하며 원본을 받거나 바꾸지 않습니다.
+1. TLS 원본을 이 디렉터리 아래에 둡니다. 직접 만든 레시피는 원본 폴더 이름을 자유롭게 정할 수 있습니다.
+2. [레시피 계약](../docs/submission.md#빌드-레시피)에 맞춰 `build.sh`를 편집하고 실행 권한을 유지하세요. `implementation.cpp`에는 [일곱 함수](../docs/submission.md#포팅)를 구현합니다. 또는 [예시 하나](../docs/examples/submissions/README.md)를 선택하세요. 선택 도구는 편집한 파일이나 심볼릭 링크를 덮어쓰지 않습니다.
+3. 저장소 루트에서 `./bench.sh --build-only`로 두 역할을 링크한 뒤 `./bench.sh --run-from JOB --scenario S0`을 실행하세요(`JOB`은 출력된 빌드 경로). [CSV 결과 확인](../docs/submission.md#결과). 시작 파일이 그대로라면 종료 코드 2로 멈추며 빌드나 측정을 시작하지 않습니다.
 
-   ```sh
-   tools/init-submission-example.sh openssl && ./bench.sh --build-only
-   ```
-
-직접 구현한 경우에는 `./bench.sh --build-only`만 실행합니다. 성공하면 출력된 경로 아래에 `build/bin/client`와 `build/bin/server`가 생깁니다. **아직 TLS 연결이나 측정은 없습니다.** 해당 빌드를 `./bench.sh --run-from "$job" --scenario S0`으로 실행하세요(`job`은 출력된 빌드 경로). 이후 시나리오를 바꾸어도 이 빌드는 그대로 사용합니다. [첫 실행·CSV 결과 보기](../README.md#제출-구현으로-첫-실행).
-
-예시 설치는 두 대상 각각이 없거나 배포 템플릿과 내용이 같을 때만 진행합니다. 편집한 파일이나 심볼릭 링크가 있으면 그대로 두고 중단합니다. 이미 작업 중이라면 [예시 모음](../docs/examples/submissions/README.md)을 참고해 필요한 부분만 옮기세요. 어떤 예시도 자동 선택되지 않습니다. 선택 중에는 두 파일의 편집을 끝내 두세요. 동시에 변경돼 복원이 멈추면 도구가 출력한 `.submission-example.*/old/`의 사본을 확인한 뒤 정리하세요.
-
-**Git에 남는 것:** README와 두 편집 파일은 일반 `git add` 대상으로, 변경 내용을 `git status --short -- implementations/`에서 확인할 수 있습니다. 이 폴더의 다른 원본·키·로컬 파일은 기본적으로 무시됩니다. 이미 추적 중인 파일을 숨겨 주는 규칙은 아니므로 두 편집 파일에 비밀 값을 넣지 마세요.
-
-## 기존 작업 트리를 업데이트한다면
-
-**업데이트 전에** 두 파일부터 확인하세요. 예전 버전은 두 이름을 무시했으므로 `git status`가 깨끗해도 기본 `git pull`이나 브랜치 전환이 로컬 작업을 배포 템플릿으로 바꿀 수 있습니다. 예시 설치 도구는 **업데이트 이후**의 편집본만 보호하며 Git 자체의 동작을 바꾸지 않습니다.
-
-가장 안전한 방법은 별도 디렉터리에 새 checkout을 받아 기존 파일과 비교하는 것입니다. 현재 트리를 유지한다면 두 파일을 작업 트리 밖에 백업하고 내용이 같은지 확인한 뒤, upstream이 설정된 브랜치에서 아래처럼 진행하세요.
-
-```sh
-git fetch && git merge --ff-only --no-overwrite-ignore '@{upstream}'
-```
-
-충돌로 중단되면 기존 두 파일을 먼저 보존하세요. 강제 checkout이나 `git clean -x`로 해결하지 마세요. `git stash -u`도 무시된 파일을 포함하지 않습니다.
+두 시작 파일은 Git 추적 대상입니다. 원본 폴더나 키는 기본적으로 무시되지만, 두 파일 안에 비밀을 넣지 마세요.

@@ -1,14 +1,11 @@
-# Local tools and editor state
 /.deps/
 /.omx/
 /.planning/
 /.vs/
 /.vscode/settings.json
-# Private, transient staging (or a reported recovery copy) for explicit example selection.
 /.submission-example.????????/
 /AGENTS.md
 
-# Local builds and benchmark results
 /build/
 /build-tests/
 /cmake-build-*/
@@ -27,16 +24,15 @@
 /.ninja_log
 /install_manifest.txt
 
-# Work in progress outside the shipped docs
 /tests/
 /task.md
+/tools/validation/
 /docs/temp/
 /docs/references/
 /docs/for-paper/
 __pycache__/
 *.pyc
 
-# Ship the starter pair; keep native checkouts and private inputs local.
 /implementations/*
 !/implementations/README.md
 !/implementations/build.sh

@@ -1,42 +1,48 @@
-# 이미 빌드한 TLS 앱 계측하기
+# 기존 TLS 앱에 SDK 연결
 
-TLS 라이브러리 소스로 양쪽 실행 파일을 만들려면 [기본 제출 안내](../README.md)를 보세요. 이 가이드는 앱의 기존 빌드를 유지하고 [TURTLE SDK](endpoint.md)만 연결할 때 사용합니다.
+앱의 빌드를 유지하고 **내 실행 파일 한쪽**을 계측하는 경로입니다. TLS 원본으로 양쪽 역할을 빌드하려면 [기본 제출 안내](../README.md#첫-실행)를 사용하세요.
 
-## 클라이언트와 서버 프로필 실행
+## 설치와 연결 확인
 
-Linux에서 C11/C++20 컴파일러와 CMake 3.20+, Make 또는 Ninja가 필요합니다. 이 예시는 OpenSSL 3.5+ 개발 헤더·라이브러리와 `openssl` 명령을 사용합니다. 시스템 OpenSSL이 없다면 같은 버전의 SDK를 준비한 뒤 CMake에 `OPENSSL_ROOT_DIR`을 지정하고 해당 `openssl` 명령을 `PATH`에 둡니다. 외부 JSON 라이브러리는 사용하지 않습니다. 패킷 캡처가 필요한 연구용 빌드는 libpcap 개발 파일을 준비하고 CMake에서 `-DTURTLE_WITH_PCAP=ON`으로 명시합니다. 기본 설정은 캡처 없이 동작합니다.
-
-저장소 루트에서 실행합니다. 프로필에서 상대역을 생략하면 설치된 **참조 피어**가 필요합니다. 아래는 이 예시를 위해 기본값이 꺼져 있는 참조 피어를 명시적으로 켭니다.
+[기본 빌드 도구](../README.md#첫-실행) 외에, 이 예시는 참조 상대역을 빌드할 OpenSSL 3.5 이상 개발 패키지와 `openssl` 명령이 필요합니다. 자기 앱을 양쪽에 쓴다면 참조 상대역 옵션은 빼세요.
 
 ```sh
 work=$(mktemp -d)
-cmake -S . -B "$work/turtle" -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_TESTING=OFF -DTURTLE_BUILD_REFERENCE=ON &&
-cmake --build "$work/turtle" --parallel 2 &&
-cmake --install "$work/turtle" --prefix "$work/sdk" &&
-cmake -S tests/endpoint-integration -B "$work/app" \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$work/sdk" &&
-cmake --build "$work/app" --parallel 2
+cmake -S . -B "$work/build" -DCMAKE_BUILD_TYPE=Release -DTURTLE_BUILD_REFERENCE=ON &&
+cmake --build "$work/build" --parallel 2 &&
+cmake --install "$work/build" --prefix "$work/sdk"
 ```
 
-다음 프로필은 각 역할에서 S0(TLS 1.3, 서버 인증, 루프백)을 예열 한 번과 본 시도 열 번으로 실행합니다. 계측 대상은 참조 피어가 아니라 **설치한 SDK를 사용해 별도 빌드한 [C 앱](../tests/endpoint-integration/consumer.c)**입니다.
+저장소 루트에서 [S0 프로필](examples/openssl-client-s0.json)로 일반 `openssl s_client`를 실행합니다. 인증서와 호스트 이름을 검증하는 실제 TLS 1.3 연결이지만, **일반 CLI는 SDK 계측을 하지 않으므로 성능 표본은 0개**입니다.
 
 ```sh
-export PATH="$work/app:$PATH"
-"$work/sdk/bin/turtle" run docs/examples/openssl-client-s0.json "$work/client-s0" &&
-"$work/sdk/bin/turtle" run docs/examples/openssl-server-s0.json "$work/server-s0"
+turtle="$work/sdk/bin/turtle"
+profile=docs/examples/openssl-client-s0.json
+"$turtle" check "$profile" &&
+"$turtle" run "$profile" "$work/s0" &&
+cat "$work/s0/attempt-1/client.stderr"
 ```
 
-SDK 경로에서는 콘솔부터 읽습니다. `Details:`가 가리키는 `analysis.json`은 다시 분석하는 데 쓸 수 있습니다. **연결 성공, 시간·카운터 가용 여부, 성능 표본 적격 여부는 별개입니다.** 콘솔에 보이는 개별 시간은 평균이 아니며, CPU 카운터가 없는 호스트에서 연결이 성공해도 성능 표본이 없을 수 있습니다. 아래는 TLS를 다시 실행하지 않고 원자료를 재분석합니다. 옛 버전의 결과를 보존해야 한다면 원본 대신 사본에서 실행하세요. 현행 판독기는 S2 시간 구간을 이전 버전과 다르게 판정할 수 있습니다.
+`check`는 구성만 검사합니다. 실행 뒤 클라이언트 로그의 `Protocol version: TLSv1.3`과 `Verification: OK`를 확인하세요. `task success 0/1`은 런처가 이 앱의 시나리오 완료를 **관측값으로** 검증하지 못했다는 뜻입니다. 셸 종료 코드만으로 계측 성공을 판정하지 마세요.
 
-```sh
-"$work/sdk/bin/turtle" analyze "$work/client-s0"
+## 내 앱을 계측
+
+앱의 CMake에서 `find_package(TURTLE CONFIG REQUIRED)`와 `target_link_libraries(my_app PRIVATE turtle::endpoint)`를 추가하고, **앱**을 구성할 때 `-DCMAKE_PREFIX_PATH="$work/sdk"`를 넘깁니다. TCP 연결과 TLS 세션·인증을 준비한 뒤 첫 TLS 호출 **대신** [endpoint API](../src/include/turtle/endpoint.h)를 호출하세요.
+
+```c
+#include <turtle/endpoint.h>
+
+const turtle_endpoint endpoint = {session, handshake_until, write_plain, read_plain};
+turtle_result result = turtle_run_endpoint(&endpoint);
 ```
 
-## 내 앱에 붙이기
+- 소켓·세션·인증은 앱이 관리합니다. 콜백은 native 재시도를 처리하고 실제 송수신 바이트 수를 돌려줍니다. EOF, 미지원, 오류를 각각 `TURTLE_CLOSED`, `TURTLE_UNSUPPORTED`, `TURTLE_ERROR`로 구분하세요. S2/S4 서버는 client Finished를 기다리지 않고 쓸 수 없다면 미지원으로 반환합니다.
+- SDK는 준비 신호, 시작 대기, 동작 순서, 테스트 평문 검증을 처리합니다. 첫 TLS 호출 전에 연결을 SDK에 넘기고, 같은 연결에서 시작 대기를 중복 호출하지 마세요. 표준 입출력은 앱 데이터 교환용입니다. 앱 진단은 stderr에 쓰세요.
+- 계측 대상에서는 `turtle_run_endpoint()` 호출 **전**(READY 전)에 [양방향 암호문 훅](../src/include/turtle/observe.h)을 켜고, 반환 **후**에 끄세요. `turtle_observe_coverage`로 범위를 열고 닫으며, `turtle_observe_io`로 각 호출의 시작·끝과 실제 반환값을 기록합니다. [참조 구현](../tools/reference/main.cpp)이 이 순서를 보여줍니다. 장기 실행 앱이나 `_exit()`를 쓰는 앱은 관측 종료 후 측정 구간 밖에서 동시 콜백 없이 `turtle_observe_flush()`를 호출하세요.
+- 성능 표본이 적격이라는 것만으로 TLS 협상·인증이 입증되지는 않습니다. 이 증거까지 필수로 보려면 앱에서 `turtle_observe_identity`, `turtle_observe_fact`와 `auth_accepted` 사건을 보고하고 프로필에 `"required_metrics": ["authentication", "profile"]`을 넣으세요.
 
-앱은 [SDK 계약](endpoint.md)에 따라 기존 소켓과 TLS 콜백을 전달합니다. 앱의 CMake 구성에서 설치된 `TURTLE` 패키지를 찾고 `turtle::endpoint`를 링크하세요. 이 경로는 `implementations/`을 읽지 않습니다.
+프로필을 복사해 `target.role`과 `target.argv`를 앱에 맞추세요. 각 인자는 배열의 한 항목입니다. 실행 파일에 경로가 있으면 프로필 기준, 이름만 있으면 `PATH` 기준입니다. 런처는 `{host}`, `{port}`, `{ca}`, `{cert}`, `{key}`, `{peer_name}`을 치환합니다. 서버는 받은 주소·포트에서 직접 listen하고, 인증서·키·검증 이름은 인자 또는 `TURTLE_CA`·`TURTLE_CERT`·`TURTLE_KEY`·`TURTLE_PEER_NAME`으로 받으세요. 기본 시험 인증은 `openssl` 명령으로 발급한 임시 인증서를 사용합니다.
 
-- [클라이언트 프로필](examples/openssl-client-s0.json) 또는 [서버 프로필](examples/openssl-server-s0.json)에서 `target.argv`를 실제 실행 명령으로 바꿉니다. `peer.argv`로 자신이 준비한 상대역을 지정할 수도 있습니다.
-- `scenario`와 `auth`로 시나리오·인증을 설정합니다. 앱 페이로드나 네트워크 조건을 바꾸는 설정도 SDK 프로필에 있습니다. 예를 들어 [단방향 계측 S3 프로필](examples/one-sided-s3.json)의 `application`은 요청과 응답을 정합니다. 연결 후 이미 빌드된 TLS 엔진에서 어떤 그룹·suite를 허용할지는 앱의 TLS 설정입니다.
-- 계측기는 측정 중 관측 기록을 메모리에 쌓고, 정상 프로세스 종료 때 최종 기록과 완료 표식을 내보냅니다. 앱이 계속 실행되거나 `_exit()`로 종료한다면 모든 관측이 끝난 뒤 측정 구간 밖에서 동시 콜백 없이 `turtle_observe_flush()`를 호출하세요. 시작 전 준비 기록이나 `end` 이벤트만으로는 완료된 증거가 되지 않습니다.
+`peer.argv`를 지정하면 참조 상대역 대신 내 상대역을 실행합니다. 시간 비교에 쓸 표본은 양쪽이 준비된 후 시작해야 하므로, 자체 상대역에도 SDK 시작 절차를 연결하세요. `scenario`는 S0–S4, `auth`는 `server` 또는 `mtls`입니다. `warmups`와 `repetitions`는 새 연결 수, `application`의 `request`·`greeting`·`response`는 앱 페이로드입니다. 네트워크는 기본 `loopback`입니다. 왕복 지연을 20 ms 추가하려면 프로필에 `"network": "netem", "netem": {"additional_rtt_ms": 20}`을 넣으세요. 이 옵션은 네트워크 네임스페이스 생성·설정 권한과 `ip`, `tc`, `ethtool`, `sysctl`이 필요합니다. [시나리오별 측정 구간](submission.md#시나리오와-측정-구간)은 제출 경로와 같습니다. `turtle run PROFILE NEW_OUTPUT`에는 아직 없는 출력 경로를 넘깁니다.
+
+콘솔의 완료·적격 표본 수부터 보고, `Details:`가 가리키는 `analysis.json`에서 시도별 제외 사유를 확인하세요. 벽시계와 PMU 가용성은 별개입니다. 미관측은 0이 아닙니다. `attempt-N/{client,server}.stderr`는 각 역할의 실행 로그입니다. `turtle analyze RUN`은 TLS를 다시 실행하지 않고 RUN의 분석 결과를 갱신합니다.
