@@ -4,9 +4,18 @@ TURTLE measures TLS 1.3 handshakes and application data exchanges on Linux. It b
 
 ## Quickstart
 
-**Tools:** a C compiler, a C++20 compiler, CMake 3.20 or newer, Make or Ninja, `pkg-config`, GNU tar, coreutils and binutils, and util-linux (`flock`, `setsid`). The OpenSSL example also needs Perl and Make to build the library. To issue test certificates, TURTLE uses the `openssl` CLI on `PATH` (OpenSSL 3.0 or newer, with `req -noenc`). This path does not need system OpenSSL development headers, an external JSON library, or `jq`.
+| Tools | When you need them |
+|---|---|
+| C compiler, C++20 compiler, CMake 3.20+, Make or Ninja | Build TURTLE on Linux. |
+| `pkg-config` and GNU binutils (`readelf`) | Link the client and server against the submitted TLS library and inspect the resulting binaries. |
+| GNU tar, GNU coreutils, `cmp` (diffutils), util-linux (`flock`, `setsid`) | Build a submission or rerun it with `--run-from`. |
+| Perl and `make` | Build the OpenSSL source in this example, even if TURTLE uses Ninja. |
+| OpenSSL 3.0+ CLI on `PATH` (`openssl req -noenc`) | Generate test certificates. Skip this if you [supply certificates with `--credentials`](docs/submission.md#running-a-benchmark). |
+| `curl` (download), `gzip` (extraction) | Prepare the OpenSSL source. A local archive skips the download; an unpacked source tree skips both steps. |
 
-Run the following blocks from the repository root in the same shell. Use `curl` to download the example source, or copy an archive of the same commit to `"$archive"` instead of the download step. If the source is already in `implementations/openssl/`, run only `work=$(mktemp -d)` from this first block.
+This quickstart does not require system OpenSSL development headers, an external JSON library, or `jq`.
+
+Run the blocks from the repository root in the same shell. If you have an archive of the pinned commit, copy it to `"$archive"` instead of downloading it. If the source is already unpacked in `implementations/openssl/`, run only `work=$(mktemp -d)` from this first block.
 
 ```sh
 work=$(mktemp -d)
