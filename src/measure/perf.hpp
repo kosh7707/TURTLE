@@ -1,36 +1,34 @@
 #pragma once
-#include <array>
+
 #include <cstdint>
 
 namespace turtle::measure {
-enum class PerfAvailability { not_collected, unsupported, available, missing, partial };
-const char* name(PerfAvailability) noexcept;
-struct PerfSnapshot {
-    std::uint64_t cycles = 0, instructions = 0, enabled_ns = 0, running_ns = 0;
-    std::uint64_t read_begin_ns = 0, read_end_ns = 0;
-    long tid = 0; // thread making this snapshot, not the artifact writer
-    bool available = false;
+enum class CycleStatus { not_collected, unsupported, available, missing };
+const char *name(CycleStatus status) noexcept;
+
+struct CycleSnapshot {
+  std::uint64_t cycles = 0, enabled_ns = 0, running_ns = 0;
+  std::uint64_t read_begin_ns = 0, read_end_ns = 0;
+  long tid = 0;
 };
-class PerfCounters {
+
+class ThreadCycles {
 public:
-    explicit PerfCounters(bool requested, bool allow_cycles_only = false) noexcept;
-    ~PerfCounters();
-    PerfCounters(const PerfCounters&) = delete;
-    PerfCounters& operator=(const PerfCounters&) = delete;
-    PerfSnapshot snapshot() noexcept;
-    const std::array<std::uint64_t,2>& ids() const noexcept { return ids_; }
-    long owner_tid() const noexcept { return owner_tid_; }
-    bool requested() const noexcept { return requested_; }
-    PerfAvailability availability() const noexcept { return availability_; }
-    const char* reason() const noexcept { return reason_; }
-    int error_number() const noexcept { return error_; }
+  explicit ThreadCycles(bool requested) noexcept;
+  ~ThreadCycles();
+  ThreadCycles(const ThreadCycles &) = delete;
+  ThreadCycles &operator=(const ThreadCycles &) = delete;
+
+  CycleSnapshot snapshot() noexcept;
+  CycleStatus status() const noexcept { return status_; }
+  const char *reason() const noexcept { return reason_; }
+
 private:
-    void fail(PerfAvailability, const char*, int) noexcept;
-    bool requested_;
-    long owner_tid_ = 0;
-    int leader_ = -1, member_ = -1, error_ = 0;
-    std::array<std::uint64_t, 2> ids_{};
-    PerfAvailability availability_ = PerfAvailability::not_collected;
-    const char* reason_ = nullptr;
+  long owner_tid_ = 0;
+  int fd_ = -1;
+  CycleStatus status_ = CycleStatus::not_collected;
+  const char *reason_ = "";
+
+  void unavailable(CycleStatus status, const char *reason) noexcept;
 };
-}
+} // namespace turtle::measure

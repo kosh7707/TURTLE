@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export LC_ALL=C
 umask 077
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 xdg_base() {
@@ -18,10 +19,8 @@ external_path() {
 }
 default_build_dir() {
     cache=$(xdg_base "${XDG_CACHE_HOME-}" .cache) || return
-    # Physical paths distinguish checkouts with the same name and let a
-    # symlink to a checkout reuse its cache. SDK and submission modes differ.
     key=$(printf '%s' "$root" | sha256sum) || return
-    external_path "$cache/turtle/${key%% *}/$1"
+    external_path "$cache/turtle/${key%% *}/submission"
 }
 default_output_dir() {
     data=$(xdg_base "${XDG_DATA_HOME-}" .local/share) || return
@@ -29,67 +28,40 @@ default_output_dir() {
 }
 usage() {
     printf '%s\n' "Usage: $0 [--scenario S0|S1|S2|S3|S4|all] [--role client|server|both] [--auth server|mtls|both]" \
-        '       [--warmups N] [--repetitions N] [--tcp-nodelay on|off] [--out NEW_DIRECTORY] [--credentials DIR] [--use MODULE] [-- NATIVE_ARGS...]' \
-        '       TCP_NODELAY defaults to on for both submission sockets; set off to measure with Nagle enabled.' \
+        '       [--rtt-ms N] [--loss-pct N] [--warmups N] [--repetitions N] [--tcp-nodelay on|off]' \
+        '       [--out NEW_DIRECTORY] [--credentials DIR] [--use MODULE] [-- NATIVE_ARGS...]' \
         "       $0 --build-only [--out NEW_DIRECTORY | --resume PREVIOUS_OUTPUT] [--use MODULE] [-- NATIVE_ARGS...]" \
-        '       --build-only links both role binaries and stops before doctor. No TLS connections or performance results.' \
-        '       Resume a staged build without existing runs: --resume PREVIOUS_OUTPUT [--use MODULE] [-- same native args...]' \
-        '       Run a linked build without rebuilding: --run-from BUILD_JOB [--out NEW_RUN] [run options]' \
-        '       First run: edit implementations/build.sh and implementation.cpp; the shipped starters do not run TLS.' \
-        '       Optional: tools/init-submission-example.sh NAME (e.g. openssl); never chooses or downloads a library.' \
-        '       Uses implementations/build.sh and implementation.cpp. Defaults: S3, client, server authentication, 1 warmup, 2 samples.' \
-        "       Existing SDK profile: $0 PROFILE.json [NEW_OUTPUT] | --client APP [ARGS...] | --server APP [ARGS...] | --pair" \
-        '       Defaults: build cache under XDG_CACHE_HOME/turtle; runs under XDG_DATA_HOME/turtle/runs.' \
-        '       Override with TURTLE_BUILD_DIR or TURTLE_OUTPUT_DIR; otherwise fall back to ~/.cache and ~/.local/share.'
+        "       $0 --run-from BUILD_JOB [--out NEW_RUN] [run options]" \
+        '       --build-only links both role binaries without running any connections.' \
+        '       --resume reuses an already staged native build; pass the same native arguments.' \
+        '       --run-from runs a linked build without rebuilding it.' \
+        '       --rtt-ms adds half of N ms per direction; --loss-pct drops packets with probability N% in each direction.' \
+        '       Defaults: S3, client, server authentication, 5 warm-ups, 2 samples, zero added RTT and loss, TCP_NODELAY on.' \
+        '       Edit implementations/build.sh and implementation.cpp or run tools/init-submission-example.sh openssl.' \
+        '       Build cache: XDG_CACHE_HOME/turtle; runs: XDG_DATA_HOME/turtle/runs (or ~/.cache and ~/.local/share).' \
+        '       Override with TURTLE_BUILD_DIR or TURTLE_OUTPUT_DIR.'
 }
-legacy() {
-    role=
-    case $1 in
-        --client|--server) role=${1#--}; shift; [ "$#" -ge 1 ] || { usage >&2; exit 2; };;
-        --pair) shift; [ "$#" = 0 ] || { usage >&2; exit 2; };;
-        *) [ "$#" -le 2 ] || { usage >&2; exit 2; };;
-    esac
-    fw=${TURTLE_BUILD_DIR:-$(default_build_dir legacy)}
-    base=
-    if [ -z "$role" ] && [ "$#" = 2 ]; then out=$2; else
-        base=${TURTLE_OUTPUT_DIR:-$(default_output_dir)}
-    fi
-    cmake -S "$root" -B "$fw" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DTURTLE_BUILD_REFERENCE=ON
-    cmake --build "$fw" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
-    if [ -n "$base" ]; then
-        mkdir -p -- "$base"
-        parent=$(mktemp -d -- "$base/run-XXXXXXXX"); out=$parent/results
-    fi
-    printf 'Outputs: %s\n' "$out"
-    if [ -n "$role" ]; then exec "$fw/turtle" target "$role" "$out" "$@"; fi
-    if [ "$#" = 0 ]; then exec "$fw/turtle-pair" "$out"; fi
-    exec "$fw/turtle" run "$1" "$out"
-}
-case ${1-} in
-    -h|--help) usage; exit 0;;
-    --client|--server|--pair) legacy "$@";;
-    -*) ;;
-    '') ;;
-    *) legacy "$@";;
-esac
-role=client scenario=S3 auth=server warmups=1 repetitions=2 out= credentials= resume= build_only= run_options= nodelay=on
+case ${1-} in -h|--help) usage; exit 0;; esac
+role=client scenario=S3 auth=server warmups=5 repetitions=2 rtt=0 loss=0
+out= credentials= resume= build_only= run_options= nodelay=on
 run_from= use_option=
 while [ "$#" != 0 ]; do
     case $1 in
       --) shift; break;;
       --build-only) build_only=yes; shift; continue;;
-      --role|--scenario|--auth|--warmups|--repetitions|--credentials|--tcp-nodelay) run_options=yes;;
+      --role|--scenario|--auth|--warmups|--repetitions|--credentials|--tcp-nodelay|--rtt-ms|--loss-pct) run_options=yes;;
     esac
     [ "$#" -ge 2 ] || { usage >&2; exit 2; }
     case $1 in
       --role) role=$2;; --scenario) scenario=$2;; --auth) auth=$2;;
       --warmups) warmups=$2;; --repetitions) repetitions=$2;; --out) out=$2;;
       --tcp-nodelay) nodelay=$2;;
+      --rtt-ms) rtt=$2;; --loss-pct) loss=$2;;
       --resume) resume=$2;;
       --run-from) [ -n "$2" ] || { usage >&2; exit 2; }; run_from=$2;;
       --use) use_option=yes; TURTLE_USE_MODULE=$2; export TURTLE_USE_MODULE;;
       --credentials) [ -n "$2" ] || { usage >&2; exit 2; }; credentials=$2;;
-      *) usage >&2; exit 2;;
+      *) printf 'Unknown benchmark argument: %s\n' "$1" >&2; usage >&2; exit 2;;
     esac
     shift 2
 done
@@ -101,21 +73,33 @@ case $auth in server|mtls|both) ;; *) usage >&2; exit 2;; esac
 case $nodelay in on|off) ;; *) usage >&2; exit 2;; esac
 for count in "$warmups" "$repetitions"; do
     case $count in ''|*[!0-9]*) usage >&2; exit 2;; esac
-    [ "$count" -le 100000 ] || { usage >&2; exit 2; }
+    [ "${#count}" -le 6 ] && [ "$count" -ge 1 ] && [ "$count" -le 100000 ] || { usage >&2; exit 2; }
 done
-[ "$repetitions" -ge 1 ] || { usage >&2; exit 2; }
+decimal_limit() {
+    value=$1 limit=$2
+    whole=${value%%.*}
+    case $whole in ''|*[!0-9]*) return 1;; esac
+    [ "${#whole}" -le 5 ] && [ "$whole" -le "$limit" ] || return 1
+    [ "$whole" != "$value" ] || return 0
+    fraction=${value#*.}
+    case $fraction in ''|*[!0-9]*) return 1;; esac
+    [ "${#fraction}" -le 6 ] || return 1
+    [ "$whole" -lt "$limit" ] || [ "$fraction" -eq 0 ]
+}
+decimal_limit "$rtt" 10000 || { echo '--rtt-ms expects 0 to 10000 ms, with up to six decimal places' >&2; exit 2; }
+decimal_limit "$loss" 100 || { echo '--loss-pct expects 0 to 100 percent, with up to six decimal places' >&2; exit 2; }
 
 run_locked() {
     build=$1
     area=$2
     destination=$3
-    unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH LD_DEBUG LD_DEBUG_OUTPUT TURTLE_PMU
+    unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH LD_DEBUG LD_DEBUG_OUTPUT
     export TURTLE_TCP_NODELAY=$nodelay
     # Verify with trusted checkout code before handing this PID (and lock)
     # to a sealed binary. The checker owns hashing until it can exec.
     exec env --default-signal=INT,TERM sh "$root/tools/submission-receipt.sh" \
         run "$build" "$area" "$destination" \
-        "$role" "$scenario" "$auth" "$warmups" "$repetitions" "$credentials"
+        "$role" "$scenario" "$auth" "$warmups" "$repetitions" "$credentials" "$rtt" "$loss"
 }
 lock_build() {
     [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/lock" ] && [ ! -L "$1/lock" ] &&
@@ -183,7 +167,7 @@ if [ "$ready" = no ]; then
     exit 2
 fi
 slot=$(realpath -e -- "$root/implementations")
-fw=${TURTLE_BUILD_DIR:-$(default_build_dir submission)}
+fw=${TURTLE_BUILD_DIR:-$(default_build_dir)}
 fw=$(realpath -m -- "$fw")
 base=
 if [ -z "$resume" ] && [ -z "$out" ]; then
@@ -202,8 +186,8 @@ else
     out=$(realpath -e -- "$(mktemp -d -- "$base/submission-XXXXXXXX")")
 fi
 printf 'Submission: %s/implementations\nResults: %s\n' "$root" "$out"
-cmake -S "$root" -B "$fw" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DTURTLE_BUILD_REFERENCE=OFF
-cmake --build "$fw" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}" --target turtle turtle_observe turtle-submission-roles turtle-submission-job
+cmake -S "$root" -B "$fw" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cmake --build "$fw" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}" --target turtle-submission-roles turtle-submission-job
 "$root/tools/submission-build.sh" "$root" "$fw" "$out/build" "$@"
 if [ -n "$build_only" ]; then
     printf 'Build only: %s/build/bin/{client,server}; no connections were started.\n' "$out"

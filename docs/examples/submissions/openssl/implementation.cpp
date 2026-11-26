@@ -5,12 +5,14 @@
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 #include <turtle/implementation.hpp>
-#include <turtle/observe.h>
 
 struct turtle_tls {
   SSL_CTX *ctx;
   SSL *ssl;
   turtle_transport_hooks hooks;
+  void *context;
+  decltype(turtle_tls_config::report_session) report_session;
+  decltype(turtle_tls_config::greeting_written) greeting_written;
   bool reported;
 };
 
@@ -53,16 +55,6 @@ static long observe(BIO *bio, int op, const char *data, size_t size, int, long,
   return ret;
 }
 
-static void finished_message(int sent, int version, int type, const void *data,
-                             size_t size, SSL *, void *) {
-  if (version == TLS1_3_VERSION && type == SSL3_RT_HANDSHAKE && size &&
-      *static_cast<const unsigned char *>(data) == SSL3_MT_FINISHED) {
-    // OpenSSL protocol-message callbacks are not ciphertext I/O timestamps.
-    turtle_observe_event(sent ? "local_finished_message"
-                              : "peer_finished_message");
-  }
-}
-
 void turtle_tls_free(turtle_tls *tls) {
   if (!tls)
     return;
@@ -77,6 +69,9 @@ turtle_tls *turtle_tls_setup(const turtle_tls_config *c, int fd) {
   auto *t = new (std::nothrow) turtle_tls{};
   if (!t)
     return nullptr;
+  t->context = c->context;
+  t->report_session = c->report_session;
+  t->greeting_written = c->greeting_written;
   const bool server = c->role == TURTLE_SERVER;
   const bool verify = !server || c->auth == TURTLE_MUTUAL_AUTH;
   auto fail = [&]() -> turtle_tls * {
@@ -135,21 +130,27 @@ turtle_status turtle_tls_set_hooks(turtle_tls *t,
   t->hooks = h ? *h : turtle_transport_hooks{};
   BIO_set_callback_arg(bio, h ? reinterpret_cast<char *>(t) : nullptr);
   BIO_set_callback_ex(bio, h ? observe : nullptr);
-  SSL_set_msg_callback(t->ssl, h ? finished_message : nullptr);
   if (transfers(t->hooks))
     t->hooks.coverage(t->hooks.context, 1);
   return TURTLE_TLS_OK;
 }
 
 static bool again(SSL *ssl, int rc) {
+  const int saved_errno = errno;
   const int e = SSL_get_error(ssl, rc);
+  errno = saved_errno;
+  if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK ||
+      saved_errno == ETIMEDOUT)
+    return false;
   return e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE ||
-         (e == SSL_ERROR_SYSCALL && errno == EINTR);
+         (e == SSL_ERROR_SYSCALL && saved_errno == EINTR);
 }
 
 static turtle_status failed(const char *operation) {
+  const int saved_errno = errno;
   std::fprintf(stderr, "OpenSSL %s failed\n", operation);
   ERR_print_errors_fp(stderr);
+  errno = saved_errno;
   return TURTLE_TLS_ERROR;
 }
 
@@ -158,6 +159,7 @@ static turtle_status finish(turtle_tls *tls) {
   int rc;
   do {
     ERR_clear_error();
+    errno = 0;
     rc = SSL_do_handshake(ssl);
   } while (rc <= 0 && again(ssl, rc));
   if (rc != 1 || !SSL_is_init_finished(ssl))
@@ -175,15 +177,10 @@ static turtle_status finish(turtle_tls *tls) {
       (verify && !verified))
     return failed("session validation");
   tls->reported = true;
-  turtle_observe_fact("resumed", resumed);
-  turtle_observe_fact("early_data", early);
-  turtle_observe_fact("verify_peer", verify);
-  turtle_observe_fact("peer_cert_present", peer_cert);
-  turtle_observe_fact("peer_verified", verified);
-  turtle_observe_identity(SSL_version(ssl),
-                          SSL_CIPHER_get_protocol_id(SSL_get_current_cipher(ssl)),
-                          0, verified ? peer_name : nullptr);
-  turtle_observe_event("auth_accepted");
+  if (tls->report_session) {
+    const turtle_session_info facts{1, resumed, early, peer_cert, verified};
+    tls->report_session(tls->context, &facts);
+  }
   return TURTLE_TLS_OK;
 }
 
@@ -199,6 +196,7 @@ turtle_status turtle_tls_accept(turtle_tls *t, const unsigned char *greeting,
     int rc;
     do {
       ERR_clear_error();
+      errno = 0;
       rc = SSL_read_early_data(t->ssl, &scratch, 1, &n);
     } while (rc == SSL_READ_EARLY_DATA_ERROR && again(t->ssl, 0));
     if (rc != SSL_READ_EARLY_DATA_FINISH || n)
@@ -209,20 +207,19 @@ turtle_status turtle_tls_accept(turtle_tls *t, const unsigned char *greeting,
         SSL_is_init_finished(t->ssl))
       return TURTLE_TLS_UNSUPPORTED;
     while (len) {
-      turtle_observe_plain("write_attempt", greeting, len);
       n = 0;
       ERR_clear_error();
+      errno = 0;
       rc = SSL_write_early_data(t->ssl, greeting, len, &n);
-      const auto returned = turtle_observe_now();
       if (rc != 1 && again(t->ssl, rc))
         continue;
       if (rc != 1 || !n || n > len)
         return failed("early greeting write");
-      turtle_observe_plain_at(returned, "write_accepted", greeting, n);
+      if (t->greeting_written)
+        t->greeting_written(t->context, greeting, n);
       greeting += n;
       len -= n;
     }
-    turtle_observe_fact("server_first", 1);
   }
   return finish(t);
 }
@@ -232,6 +229,7 @@ ptrdiff_t turtle_app_send(turtle_tls *t, const unsigned char *p, size_t size) {
   int rc;
   do {
     ERR_clear_error();
+    errno = 0;
     rc = SSL_write_ex(t->ssl, p, size, &n);
   } while (rc != 1 && again(t->ssl, rc));
   return rc == 1 ? static_cast<ptrdiff_t>(n) : -1;
@@ -242,6 +240,7 @@ ptrdiff_t turtle_app_recv(turtle_tls *t, unsigned char *p, size_t size) {
   int rc;
   do {
     ERR_clear_error();
+    errno = 0;
     rc = SSL_read_ex(t->ssl, p, size, &n);
   } while (rc != 1 && again(t->ssl, rc));
   if (rc == 1)

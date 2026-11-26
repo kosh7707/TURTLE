@@ -12,55 +12,59 @@ Install these artifacts under `PREFIX`:
 - ELF shared libraries with SONAMEs. If your metadata uses `-lNAME`, also install the `libNAME.so` that the linker looks for.
 - pkg-config `.pc` files that point to the installed headers and libraries. Use the library's files if they are correct; otherwise have the recipe generate them. The module name is independent of the source directory name.
 
-Use `-IPATH`, `-DNAME`, `-UNAME`, or `-pthread` for public compiler flags. The `.pc` files must point to the private SDK. Compiling `implementation.cpp` must actually read at least one header under `PREFIX`; adding an unused `-I` path is not enough. Specify private shared libraries with `-LPATH -lNAME` or an absolute path. Static-only builds, CMake-target-only SDKs, and cross-builds for a different ABI are not supported. Keep semicolons, colons, and newlines out of checkout and build paths. TURTLE does not sandbox the build: run only recipes and source you trust.
+Use `-IPATH`, `-DNAME`, `-UNAME`, or `-pthread` for public compiler flags. The `.pc` files must point to the submitted installation. Compiling `implementation.cpp` must actually read at least one header under `PREFIX`; adding an unused `-I` path is not enough. Specify private shared libraries with `-LPATH -lNAME` or an absolute path. Static-only builds, CMake-target-only libraries, and cross-builds for a different ABI are not supported. Keep semicolons, colons, and newlines out of checkout and build paths. TURTLE does not sandbox the build: run only recipes and source you trust.
 
 | What happened | What to check or do next |
 |---|---|
 | `./bench.sh --build-only --out JOB` succeeded | Find both executables in `JOB/build/bin/`. Check the two `.map` files and `link-evidence.txt` in `JOB/build/` to see what was linked. No TLS connection has run yet. |
 | The native build failed | Read `JOB/build/native.log` and `JOB/build/native.exit`. Fix the source, arguments, or recipe and build in a new job directory. |
 | No compatible link plan was established, or several distinct plans work | Check `JOB/build/link.*/candidates.tsv` and the linker logs in the same directory. TURTLE will not substitute a system library with the same name or guess which module you want. |
-| You want to select an installed candidate | Run `./bench.sh --build-only --resume JOB --use MODULE`, passing the same native arguments after `--` as in the original build. Use the private pkg-config module name. Resume requires the same submission, recorded build environment, and installed SDK; otherwise start a new job. |
+| You want to select an installed candidate | Run `./bench.sh --build-only --resume JOB --use MODULE`, passing the same native arguments after `--` as in the original build. Use the private pkg-config module name. Resume requires the same submission, recorded build environment, and installed files; otherwise start a new job. |
 
 ## Porting
 
-Implement the seven functions in [the public header](../src/include/turtle/implementation.hpp). TURTLE owns the socket, runs both roles, repeats application reads and writes as needed, and validates the data. Your bridge manages each connection's TLS session, authentication, and ciphertext observations. See the [OpenSSL bridge](examples/submissions/openssl/implementation.cpp) for a working implementation.
+Provide the [seven functions declared in implementation.hpp](../src/include/turtle/implementation.hpp). TURTLE creates the sockets, starts both roles and executes the task; the bridge translates TLS operations, not whole client or server programs.
 
-| Function | Contract |
+| Bridge function | Responsibility |
 |---|---|
-| `turtle_tls_setup` / `turtle_tls_free` | Create and free a fresh TLS 1.3 session using the supplied role, CA, peer name, certificate, and key as applicable. Do not use session resumption or client 0-RTT. Return null if setup fails. Do not close the borrowed file descriptor. |
-| `turtle_tls_set_hooks` | Attach hooks to actual ciphertext sends and receives; detach them when passed null. TURTLE installs these hooks only on the measured role. |
-| `turtle_tls_connect` / `turtle_tls_accept` | Return `TURTLE_TLS_OK` only after the local handshake and required authentication succeed. In S2 a normal client read must be able to drive the handshake. When asked to send a greeting, the server must write all of it after sending its Finished, **without waiting for** the client's Finished, then finish the handshake. Return `TURTLE_TLS_UNSUPPORTED` if the library cannot do this. |
-| `turtle_app_send` / `turtle_app_recv` | Handle retries in the bridge. Short reads and writes are allowed. Return the positive byte count actually handled, zero for end of file on a read, or a negative value on error. |
+| `turtle_tls_setup` / `turtle_tls_free` | Create and release a fresh TLS 1.3 session for the borrowed, connected socket. Apply the role, certificate, peer name and trust policy. Disable resumption and client 0-RTT. Do not close the socket or start TLS I/O in setup or hook installation. TURTLE checks both sockets for pre-start payload before releasing the roles. |
+| `turtle_tls_connect` / `turtle_tls_accept` | Report success only after the local handshake and required authentication succeed. If a greeting is requested, the server writes it **after its own Finished and without waiting for the client's Finished**, then finishes the handshake. Return `TURTLE_TLS_UNSUPPORTED` if the library cannot do this. An S2 client must be able to drive TLS through an ordinary read. |
+| `turtle_app_send` / `turtle_app_recv` | Return the number of bytes actually accepted or read. Short transfers are valid; return zero for EOF on a read, negative for failure. TURTLE checks lengths, repeats short operations and verifies the plaintext. |
+| `turtle_tls_set_hooks` | On the measured side, attach the supplied transport hooks to the library's actual encrypted I/O and detach on null. Call `coverage` before the first transfer and on detach; pair each `transfer_begin` with `transfer_end` including its **actual signed result**, on the connection thread. Two one-sided callbacks alone do not establish complete I/O coverage. |
 
-Use the [observation API](../src/include/turtle/observe.h) to report the negotiated version, cipher suite, group, and peer name when known. Report `resumed`, `early_data`, `verify_peer`, `peer_cert_present`, and `peer_verified` from the actual TLS session; emit `auth_accepted` after authentication succeeds. For a greeting sent within the handshake callback, record `write_attempt` and `write_accepted` separately, using only the bytes actually accepted for the latter. The runner records ordinary application reads and writes.
-
-Use `coverage`, `transfer_begin`, and `transfer_end` together on the TLS connection thread. Open coverage when the hooks are installed, before TLS starts. Pair every transport call with its actual return value and close coverage on detach. Set `active=-1` if you cannot pair a call reliably. The legacy `before_send` and `after_recv` hooks can still be used on their own, but a send request is not proof of a completed send, so they do not provide the transfer evidence needed to qualify a performance sample. Do not mix the two hook interfaces.
-
-The observer buffers up to 8,192 records and 4 MiB of copied data per process. Regular events are neither serialized nor written to the pipe during measurement. An orderly exit finalizes the evidence. If the process stays alive or calls `_exit()`, call `turtle_observe_flush()` when all observations are complete, outside the measured interval and with no concurrent callbacks. Missing or overflowed evidence cannot validate a sample.
+Use the callbacks in the supplied connection config to report the library's **actual** session facts (`report_session`; unknown fields are `-1`) and bytes accepted in a server-first write (`greeting_written`). The runner records ordinary application calls itself. See the [OpenSSL bridge](examples/submissions/openssl/implementation.cpp). Choose TLS groups and suites in the bridge; use arguments after `--` for native build options, not run options.
 
 ## Running a benchmark
 
-- `./bench.sh --run-from JOB --out NEW_RUN` reruns an already-linked build. Leave the build in place, unmodified, and choose an output directory that does not exist yet. TURTLE will not read the current `implementations/` inputs or rerun the native recipe. To build and run in one step, pass the run options to `./bench.sh` without `--run-from`.
-- `--scenario all --role both --auth both` selects 20 combinations: five scenarios, two measured roles, and two authentication modes. Measuring both roles means **separate connections**, not measuring both sides of one connection. Each case runs one preflight connection (`doctor`). Only an operational preflight allows warm-ups and measured samples; it does not count as a sample. Each attempt uses fresh processes and a new connection.
-- `--tcp-nodelay on|off` controls both connected sockets and defaults to `on`. Keep it fixed when comparing runs. For `--credentials DIR`, provide `ca.crt`, `server.crt`, and `server.key`, plus `client.crt` and `client.key` for mutual TLS. The server and client names are `localhost` and `client.turtle.test`, respectively. Without `--credentials`, TURTLE uses the `openssl` command to issue test certificates.
-- Select TLS groups and cipher suites in your bridge. For an existing application, custom payloads, or network profiles, see the [SDK guide](sdk-guide.md).
+Build once, then use `./bench.sh --run-from JOB --out NEW_RUN` for each experiment. `--scenario all --role both --auth both` selects 20 separate cases. Each case prepares one client process and one server process. The **same processes** run the warm-ups (default 5) and samples; each attempt gets **its own TCP connection and non-resumed TLS session**. A warm-up must complete the task before samples start. No failed sample is retried to manufacture a successful result. If a role exits or stops responding, the case records how many attempts it actually made; it does not silently substitute a cold process.
+
+Both connected sockets use `TCP_NODELAY=1` by default (`--tcp-nodelay on|off`). The two roles live in separate network namespaces connected by a dedicated veth pair. `--rtt-ms 20 --loss-pct 1` sets 10 ms of delay **and** 1% random packet loss on each egress. This is added delay, not a guarantee that the observed RTT will be exactly 20 ms. Both settings can be used with any task or authentication mode.
+
+For `--credentials DIR`, provide `ca.crt`, `server.crt` and `server.key`, plus `client.crt` and `client.key` for mutual TLS. The certificate names checked by the roles are `localhost` and `client.turtle.test`. Without this option TURTLE creates disposable credentials in the new run.
 
 ## Scenarios and timing boundaries
 
-Timing starts just before the measured role's first TLS call and excludes TCP connection setup. The endpoints below are local observations, not packet send or arrival timestamps.
+The clock starts on the selected role just before its first TLS handshake or application operation, after TCP connection and session setup. It includes time waiting for the network. CPU cycles count user-space execution on the local connection thread. The two hardware counter reads bracket the wall timestamps; they are not simultaneous and can include a small amount of boundary overhead. Multiplexed counts are not scaled into estimates. The other role executes and validates the exchange without a timer, counters or transport hooks.
 
-| Scenario | Application exchange | Client timing ends when... | Server timing ends when... |
+| Task | Exchange | Client timing ends at | Server timing ends at |
 |---|---|---|---|
-| S0 | None | The handshake completes. | The handshake completes. |
-| S1 | Client request only | The TLS library has accepted the whole request. | The runner verifies the whole request. |
-| S2 | Server-first greeting only | The read that completes the greeting returns. | The intended boundary is transport receipt of the client's Finished message. TURTLE cannot identify that boundary, so it leaves the primary time and cycle counts blank. |
-| S3 | Request and reply | The first read of the reply returns. | The TLS library has accepted the whole reply. |
-| S4 | Server-first greeting plus request and reply | The first read of the reply, not the greeting, returns. | The TLS library has accepted the whole reply. |
+| S0 | Handshake only | Local handshake completion | Local handshake completion |
+| S1 | Client sends `ping` | TLS accepts the whole request | Full request verified |
+| S2 | Server sends `hello` before waiting for client Finished | Read returning the last byte of the greeting | Transport receipt of client Finished; currently unobservable, so the interval is blank |
+| S3 | Client sends `ping`, server replies `pong` | First read returning reply data | TLS accepts the whole reply |
+| S4 | Server-first `hello`, then request/reply | First read returning **reply**, not greeting, data | TLS accepts the whole reply |
 
-In S3 and S4, the server replies only after its handshake completes and it verifies the whole request. In S4, the client completes its own handshake and sends the whole request before reading the greeting and reply. S2 reports separate timing fields for the client's first greeting read and the server's greeting write acceptance. A server write does not establish that the client received the greeting before sending its Finished message.
+In S3/S4 the server must both complete its handshake and verify the full request **before offering the reply**. The client verifies the complete reply even when timing stops at its first byte. The server-first indicator attests the bridge’s native greeting path and the client independently verifies the greeting. It is not an independent wire timestamp: neither that write nor return from the handshake function establishes the transport arrival time of the client’s Finished.
 
 ## Results
 
-- `cases.csv` summarizes each case as `passed`, `unsupported`, `failed`, or `insufficient_evidence`, with the requested and verified sample counts. The command exits nonzero if any case does not pass.
-- `results.csv` lists per-connection results. `task_success` describes the TLS and application operation; `evidence_state` describes the supporting observations. Read the elapsed nanoseconds in `wall_ns` with `wall_status`, and the measured thread's CPU cycles in `cycles` with `pmu_status`. Read `performance_qualified` and `qualification_reason` separately: unavailable PMU counters do not invalidate a recorded wall-clock interval.
-- `client_stderr` and `server_stderr` are paths relative to the new output directory. To investigate an attempt, use its `connection_id` to match both roles' application input and output, process maps, and the measured role's transport hook CSV under `runs/`. Missing or inconsistent records can prevent a connection from appearing in `results.csv`. Use CSV for routine results; JSON and NDJSON are available for detailed diagnostics and reanalysis.
+| File (relative to the run directory) | What it tells you |
+|---|---|
+| `build.csv` | The linked build used for this run, its verified receipt digest, and the two link-map locations. |
+| `cases.csv` | One row per case: requested and attempted samples, successful tasks, verified samples, and the first reason for its most severe outcome. Outcomes are `passed`, `failed`, `unsupported`, or `insufficient_evidence`. A non-passing case gives a nonzero exit. |
+| `results.csv` | One row per actual attempt. Use `purpose=sample` for statistics; warm-ups are identified separately. Keep slow successes and include failed attempts in the failure rate. Read `wall_ns` with `wall_status`, and `cycles` with `pmu_status` and `pmu_reason`. A successful TLS/app task can still lack a provable interval. Sample metrics are published after the network window is verified (see `network_state`); raw role records remain available even if a check fails. |
+| `runs/CASE/network.csv` | Requested RTT/loss, the kernel's applied one-way delay/loss, independent round-trip probes made outside the sample window, and egress packet/drop counter changes across that window. The two rows refer to link directions, not individual TLS connections. A measured zero drops is valid; a blank number has a status explaining why. |
+| `runs/CASE/ID.{client,server}.app.csv` | Ordered actual plaintext reads, accepted writes and message validation for the same connection ID. `CAD` is the request, `SAD1` the greeting and `SAD2` the reply. |
+| `runs/CASE/ID.ROLE.csv`, `.maps`, `.transport.csv` | Role outcome, timestamps and session facts; mapped executable/libraries; and actual encrypted transport call boundaries. Only the measured side has a transport file. Follow `client_stderr` and `server_stderr` from the result row for errors; library stdout is separate from benchmark control and saved alongside those logs. |
+
+Permission to create namespaces, veth and netem is required even with no added impairment. If a host or container forbids them, use one that permits them; TURTLE will not label a loopback connection as a veth experiment. Access to hardware performance counters is separate: a missing cycle count is not a zero, and need not invalidate an otherwise verified wall time.

@@ -1,26 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
-project(turtle VERSION 1.0.0 LANGUAGES C CXX)
+project(turtle VERSION 1.0.0 LANGUAGES CXX)
+
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "TURTLE requires Linux")
 endif()
-set(TURTLE_WITH_PCAP OFF CACHE STRING "Build optional packet capture: AUTO, ON, or OFF")
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(TURTLE_WITH_PMU AUTO CACHE STRING "Use Linux performance counters: AUTO, ON, or OFF")
-foreach(feature PCAP PMU)
-    set_property(CACHE TURTLE_WITH_${feature} PROPERTY STRINGS AUTO ON OFF)
-    if(NOT TURTLE_WITH_${feature} MATCHES "^(AUTO|ON|OFF)$")
-        message(FATAL_ERROR "TURTLE_WITH_${feature} must be AUTO, ON or OFF")
-    endif()
-endforeach()
-if(NOT TURTLE_WITH_PCAP STREQUAL "OFF")
-    find_path(TURTLE_PCAP_INCLUDE_DIR pcap/pcap.h)
-    find_library(TURTLE_PCAP_LIBRARY pcap)
-    if(TURTLE_PCAP_INCLUDE_DIR AND TURTLE_PCAP_LIBRARY)
-        add_library(turtle_pcap UNKNOWN IMPORTED)
-        set_target_properties(turtle_pcap PROPERTIES IMPORTED_LOCATION "${TURTLE_PCAP_LIBRARY}"
-            INTERFACE_INCLUDE_DIRECTORIES "${TURTLE_PCAP_INCLUDE_DIR}")
-    elseif(TURTLE_WITH_PCAP STREQUAL "ON")
-        message(FATAL_ERROR "Requested libpcap development files not found")
-    endif()
+set_property(CACHE TURTLE_WITH_PMU PROPERTY STRINGS AUTO ON OFF)
+if(NOT TURTLE_WITH_PMU MATCHES "^(AUTO|ON|OFF)$")
+    message(FATAL_ERROR "TURTLE_WITH_PMU must be AUTO, ON or OFF")
 endif()
 if(NOT TURTLE_WITH_PMU STREQUAL "OFF")
     include(CheckCXXSourceCompiles)
@@ -32,130 +23,31 @@ int main(){perf_event_attr a{}; return syscall(SYS_perf_event_open,&a,0,-1,-1,0)
         message(FATAL_ERROR "Requested Linux PMU interface not available")
     endif()
 endif()
-add_library(turtle_artifact STATIC src/artifact/json.cpp src/artifact/json_value.cpp src/artifact/network_evidence.cpp)
-target_include_directories(turtle_artifact PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>")
-target_compile_features(turtle_artifact PUBLIC cxx_std_20)
 
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-endif()
-
-include(GNUInstallDirs)
-add_library(turtle_observe SHARED src/native/endpoint.cpp src/native/observe.cpp src/native/start.cpp src/measure/perf.cpp src/artifact/json_value.cpp)
-add_library(turtle::observe ALIAS turtle_observe)
-set_target_properties(turtle_observe PROPERTIES EXPORT_NAME observe CXX_EXTENSIONS OFF
-    VERSION ${PROJECT_VERSION} SOVERSION 1)
-file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/observe.map"
-    CONTENT "TURTLE_OBSERVE_1 { global: turtle_observe_*; turtle_wait_start; turtle_run_endpoint; local: *; };\n")
-target_link_options(turtle_observe PRIVATE "LINKER:--version-script,${CMAKE_CURRENT_BINARY_DIR}/observe.map")
-target_include_directories(turtle_observe PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>" "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_compile_features(turtle_observe PRIVATE cxx_std_20)
+add_library(turtle_measure STATIC src/measure/perf.cpp)
+target_include_directories(turtle_measure PRIVATE src)
+target_compile_options(turtle_measure PRIVATE -Wall -Wextra -Wpedantic)
 if(TURTLE_WITH_PMU STREQUAL "OFF" OR NOT TURTLE_PMU_INTERFACE)
-    target_compile_definitions(turtle_observe PRIVATE TURTLE_NO_PMU)
+    target_compile_definitions(turtle_measure PRIVATE TURTLE_NO_PMU)
 endif()
-add_library(turtle_endpoint INTERFACE)
-add_library(turtle::endpoint ALIAS turtle_endpoint)
-set_target_properties(turtle_endpoint PROPERTIES EXPORT_NAME endpoint)
-target_link_libraries(turtle_endpoint INTERFACE turtle_observe)
 
 foreach(role client server)
-    add_library(turtle-submission-${role} OBJECT EXCLUDE_FROM_ALL src/submission/role.cpp)
+    add_library(turtle-submission-${role} OBJECT src/submission/role.cpp)
     target_include_directories(turtle-submission-${role} PRIVATE src/include src)
-    target_compile_features(turtle-submission-${role} PRIVATE cxx_std_20)
     target_compile_options(turtle-submission-${role} PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_definitions(turtle-submission-${role} PRIVATE TURTLE_SUBMISSION_SERVER=$<STREQUAL:${role},server>)
     add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/submission-${role}.o"
         COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_OBJECTS:turtle-submission-${role}>" "${CMAKE_CURRENT_BINARY_DIR}/submission-${role}.o"
-        DEPENDS turtle-submission-${role} $<TARGET_OBJECTS:turtle-submission-${role}> VERBATIM)
+        DEPENDS turtle-submission-${role} $<TARGET_OBJECTS:turtle-submission-${role}>
+        VERBATIM)
 endforeach()
-add_custom_target(turtle-submission-roles DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/submission-client.o" "${CMAKE_CURRENT_BINARY_DIR}/submission-server.o")
-add_library(turtle_submission_evidence STATIC src/submission/connection_evidence.cpp)
-target_link_libraries(turtle_submission_evidence PUBLIC turtle_artifact)
-target_compile_options(turtle_submission_evidence PRIVATE -Wall -Wextra -Wpedantic)
-add_executable(turtle-submission-job EXCLUDE_FROM_ALL src/submission/job.cpp)
-target_link_libraries(turtle-submission-job PRIVATE turtle_process turtle_submission_evidence)
+add_custom_target(turtle-submission-roles ALL DEPENDS turtle_measure
+    "${CMAKE_CURRENT_BINARY_DIR}/submission-client.o" "${CMAKE_CURRENT_BINARY_DIR}/submission-server.o")
+
+add_executable(turtle-submission-job src/submission/job.cpp src/submission/network.cpp)
+target_include_directories(turtle-submission-job PRIVATE src)
 target_compile_options(turtle-submission-job PRIVATE -Wall -Wextra -Wpedantic)
-
-option(TURTLE_BUILD_REFERENCE "Build the optional stock TLS peer (needs OpenSSL headers)" OFF)
-if(TURTLE_BUILD_REFERENCE)
-    add_subdirectory(tools/reference)
-endif()
-
-add_library(turtle_process STATIC src/process/process.cpp src/process/images.cpp)
-target_link_libraries(turtle_process PUBLIC turtle_artifact)
-add_library(turtle_capture STATIC src/capture/capture.cpp)
-target_link_libraries(turtle_capture PUBLIC turtle_artifact)
-if(TARGET turtle_pcap)
-    target_link_libraries(turtle_capture PRIVATE turtle_pcap)
-else()
-    target_compile_definitions(turtle_capture PUBLIC TURTLE_NO_PCAP)
-endif()
-add_library(turtle_profiling STATIC src/profiling/profiling.cpp)
-target_link_libraries(turtle_profiling PUBLIC turtle_process)
-add_library(turtle_analysis STATIC
-    src/analysis/endpoint.cpp
-    src/analysis/phases.cpp
-    src/analysis/counters.cpp
-    src/analysis/attempt.cpp
-    src/analysis/lifecycle.cpp
-    src/analysis/observations.cpp
-    src/analysis/record_semantics.cpp
-    src/analysis/tcp_evidence.cpp)
-target_link_libraries(turtle_analysis PUBLIC turtle_artifact PRIVATE turtle_capture turtle_profiling turtle_process)
-add_library(turtle_native_evidence STATIC src/native/evidence.cpp src/native/evidence_wire.cpp)
-target_link_libraries(turtle_native_evidence PUBLIC turtle_artifact)
-add_library(turtle_native STATIC
-    src/native/stream.cpp
-    src/native/launch_profile.cpp
-    src/native/run_report.cpp
-    src/native/network.cpp
-    src/native/pre_cf.cpp
-    src/native/packets.cpp
-    src/control/network.cpp)
-target_link_libraries(turtle_native PUBLIC turtle_process PRIVATE turtle_native_evidence turtle_capture turtle_profiling)
-file(GLOB_RECURSE turtle_sources CONFIGURE_DEPENDS src/*.cpp src/*.hpp src/*.h tools/reference/*.cpp tools/reference/CMakeLists.txt)
-list(APPEND turtle_sources
-    "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/build_info.hpp.in"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/linux-arm64.cmake")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${turtle_sources})
-set(turtle_source_fingerprints "")
-foreach(source IN LISTS turtle_sources)
-    file(SHA256 "${source}" hash)
-    file(RELATIVE_PATH name "${CMAKE_CURRENT_SOURCE_DIR}" "${source}")
-    string(APPEND turtle_source_fingerprints "${name}:${hash}\n")
-endforeach()
-string(SHA256 turtle_source_sha256 "${turtle_source_fingerprints}")
-configure_file(tools/build_info.hpp.in generated/build_info.hpp @ONLY)
-target_include_directories(turtle_native PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-add_executable(turtle src/cli/main.cpp)
-if(TARGET turtle-reference)
-    add_dependencies(turtle turtle-reference)
-endif()
-target_link_libraries(turtle PRIVATE turtle_native turtle_analysis turtle_capture)
-foreach(target turtle_artifact turtle_process turtle_capture turtle_profiling turtle_analysis turtle_native_evidence turtle_native turtle)
-    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
-    set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
-endforeach()
-find_package(Threads REQUIRED)
-add_executable(turtle-pair src/pair/main.cpp src/pair/mock.cpp)
-target_compile_options(turtle-pair PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(turtle-pair PRIVATE turtle_process Threads::Threads)
-install(TARGETS turtle-pair RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 configure_file(tools/issue-test-leaves.sh turtle-issue-test-leaves.sh COPYONLY)
-install(PROGRAMS tools/issue-test-leaves.sh DESTINATION ${CMAKE_INSTALL_BINDIR}
-    RENAME turtle-issue-test-leaves.sh)
-if(TARGET turtle-reference)
-    install(TARGETS turtle-reference RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-endif()
-install(TARGETS turtle RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES src/include/turtle/endpoint.h src/include/turtle/observe.h src/include/turtle/start.h src/include/turtle/implementation.hpp
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/turtle)
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/build_info.hpp" DESTINATION ${CMAKE_INSTALL_DATADIR}/turtle)
-install(TARGETS turtle_observe turtle_endpoint EXPORT turtleTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(EXPORT turtleTargets FILE TURTLEConfig.cmake NAMESPACE turtle::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TURTLE)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     option(BUILD_TESTING "Build the TURTLE tests" OFF)

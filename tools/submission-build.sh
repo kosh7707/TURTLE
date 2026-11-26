@@ -11,8 +11,8 @@ submission=$root/implementations
 [ -f "$submission/build.sh" ] && [ -x "$submission/build.sh" ] &&
     [ -f "$submission/implementation.cpp" ] ||
     fail 2 'Missing executable implementations/build.sh or implementations/implementation.cpp'
-for input in submission-client.o submission-server.o libturtle_observe.so.1 \
-             turtle turtle-submission-job turtle-issue-test-leaves.sh; do
+for input in submission-client.o submission-server.o libturtle_measure.a \
+             turtle-submission-job turtle-issue-test-leaves.sh; do
     [ -f "$framework/$input" ] || fail 2 "Missing framework build input: $framework/$input"
 done
 actual_submission=$(realpath -e -- "$submission")
@@ -38,7 +38,7 @@ if [ -f "$job/native.ok" ]; then
     fi
     fingerprint "$prefix" "$job/prefix.current.sha256"
     cmp -s "$job/prefix.current.sha256" "$job/prefix.sha256" ||
-        fail 2 "The private SDK changed; use a fresh job directory: $job"
+        fail 2 "The staged TLS install changed; use a fresh job directory: $job"
 else
     [ ! -e "$work" ] && [ ! -e "$prefix" ] ||
         fail 2 "Previous native build incomplete; use a fresh job directory: $job"
@@ -68,7 +68,7 @@ if [ -e "$job/reuse.sha256" ] || [ -L "$job/reuse.sha256" ]; then
 fi
 scan=$(mktemp -d -- "$job/link.XXXXXXXX")
 mkdir -- "$scan/runtime"
-for input in turtle turtle-submission-job turtle-issue-test-leaves.sh libturtle_observe.so.1; do
+for input in turtle-submission-job turtle-issue-test-leaves.sh; do
     cp -pL -- "$framework/$input" "$scan/runtime/"
 done
 # Unsealed previous selection attempts can safely receive a fresh snapshot.

@@ -1,55 +1,54 @@
 # TURTLE
 
-TURTLE measures TLS 1.3 handshakes and application data exchanges on Linux. It builds a client and a server from the same TLS source, then records elapsed time and, when available, CPU cycles on the side you choose.
+Benchmark a TLS 1.3 implementation on Linux. Supply its source and a small bridge; TURTLE builds both the client and the server, connects them over a virtual Ethernet link (`veth`), and measures **one side per connection**.
 
 ## Quickstart
 
-| Tools | When you need them |
+| Needed for | Tools |
 |---|---|
-| C compiler, C++20 compiler, CMake 3.20+, Make or Ninja | Build TURTLE on Linux. |
-| `pkg-config` and GNU binutils (`readelf`) | Link the client and server against the submitted TLS library and inspect the resulting binaries. |
-| GNU tar, GNU coreutils, `cmp` (diffutils), util-linux (`flock`, `setsid`) | Build a submission or rerun it with `--run-from`. |
-| Perl and `make` | Build the OpenSSL source in this example, even if TURTLE uses Ninja. |
-| OpenSSL 3.0+ CLI on `PATH` (`openssl req -noenc`) | Generate test certificates. Skip this if you [supply certificates with `--credentials`](docs/submission.md#running-a-benchmark). |
-| `curl` (download), `gzip` (extraction) | Prepare the OpenSSL source. A local archive skips the download; an unpacked source tree skips both steps. |
+| Building TURTLE and linking the submitted library | C++20 compiler, CMake 3.20+, Make or Ninja, pkg-config, GNU binutils and coreutils, GNU tar, util-linux |
+| Building OpenSSL in this example | C compiler, Perl, Make; curl and gzip if downloading the source |
+| Running the benchmark | Linux network namespaces, veth and netem; `unshare`, `ip`, `tc`, `ping`. An ordinary user needs permission to create user namespaces. There is no loopback fallback. |
+| Issuing temporary test certificates | OpenSSL 3.0+ command line, or supply certificates with `--credentials DIR` |
 
-This quickstart does not require system OpenSSL development headers, an external JSON library, or `jq`.
-
-Run the blocks from the repository root in the same shell. If you have an archive of the pinned commit, copy it to `"$archive"` instead of downloading it. If the source is already unpacked in `implementations/openssl/`, run only `work=$(mktemp -d)` from this first block.
+From the repository root, prepare the pinned OpenSSL source. If you already have this source in `implementations/openssl/`, skip the download and extraction.
 
 ```sh
 work=$(mktemp -d)
-archive="$work/openssl.tar.gz"
-curl -fL -o "$archive" https://codeload.github.com/openssl/openssl/tar.gz/2d1c10a592677ff34cdf60bd59c431d835a1fc26 &&
+curl -fL -o "$work/openssl.tar.gz" https://codeload.github.com/openssl/openssl/tar.gz/2d1c10a592677ff34cdf60bd59c431d835a1fc26 &&
   mkdir implementations/openssl &&
-  tar -xf "$archive" --strip-components=1 -C implementations/openssl
+  tar -xzf "$work/openssl.tar.gz" --strip-components=1 -C implementations/openssl
 ```
 
-Build both roles, then collect one client sample for S0 (handshake only):
+Select the example bridge, build both roles, and measure the client's handshake. The build can take several minutes. The five warm-up connections do not count toward the three requested samples.
 
 ```sh
 tools/init-submission-example.sh openssl &&
   ./bench.sh --build-only --out "$work/build" &&
-  ./bench.sh --run-from "$work/build" --scenario S0 --role client \
-    --auth server --warmups 0 --repetitions 1 --out "$work/s0" &&
-  cat "$work/s0/cases.csv" &&
-  cut -d, -f1-13 "$work/s0/results.csv"
+  ./bench.sh --run-from "$work/build" --out "$work/s0" \
+    --scenario S0 --role client --auth server --repetitions 3
+cat "$work/s0/cases.csv"
+awk -F, 'NR==1 || $4=="sample" {print $4, $5, $7, $9, $10, $11, $12}' "$work/s0/results.csv"
 ```
 
-A `cases.csv` row starting with `server,S0,client,passed,1,1` means the one requested sample was verified. In `results.csv`, read the `purpose=sample` row for the measurement; `purpose=doctor` is the preliminary check on a different connection. `wall_ns` is elapsed time in nanoseconds and `cycles` counts CPU cycles on the measured thread. **A blank measurement is unavailable, not zero.** For a failed case, read its `reason` in `cases.csv`. For a native build failure, start with `"$work/build/build/native.log"`.
+The last command shows the phase, attempt, status, elapsed nanoseconds, wall-time status, CPU cycles and counter status. **Blank is not zero:** unavailable counters do not invalidate a verified wall time. If a case did not pass, read its reason in `cases.csv` and the two role logs in the indicated case directory.
 
-## Reuse the build
+## Choose the experiment
 
-Run a request and response (S3) without rebuilding TLS. Leave the build directory in place and choose an output directory that does not yet exist.
+| Option | Choices | Default |
+|---|---|---|
+| `--scenario` | S0 handshake; S1 client request; S2 server-first greeting; S3 request/reply; S4 greeting plus request/reply; or `all` | S3 |
+| `--role` | `client`, `server`, or `both` (separate cases, never simultaneous instrumentation) | client |
+| `--auth` | `server`, `mtls`, or `both` | server |
+| `--rtt-ms`, `--loss-pct` | Added round-trip delay and per-direction packet-loss probability, alone or together | 0 ms, 0% on the same veth |
+| `--warmups`, `--repetitions` | Full-task warm-ups and subsequent **attempts**, each at least 1 | 5, 2 |
+
+Reuse the **same linked build** for a different question: how long does it take the server to handle a request and send the reply with mutual authentication, 20 ms added RTT and 1% loss?
 
 ```sh
-./bench.sh --run-from "$work/build" --scenario S3 --role client \
-  --auth server --warmups 0 --repetitions 1 --out "$work/s3" &&
-  cat "$work/s3/cases.csv"
+./bench.sh --run-from "$work/build" --out "$work/s3" --scenario S3 --role server \
+  --auth mtls --rtt-ms 20 --loss-pct 1 --repetitions 100
+cat "$work/s3/cases.csv" "$work/s3/runs/mtls-S3-server/network.csv"
 ```
 
-- [Port a TLS implementation, check timing boundaries, and read the CSV files](docs/submission.md)
-- [Choose an example recipe and bridge](docs/examples/submissions/README.md)
-- [Instrument an existing TLS application with the SDK](docs/sdk-guide.md)
-
-Run `./bench.sh --help` for all options.
+[Port a TLS implementation and read the measurements](docs/submission.md) · [Choose a library example](docs/examples/submissions/README.md) · `./bench.sh --help`

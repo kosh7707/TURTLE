@@ -6,6 +6,7 @@
 #include <initializer_list>
 #include <cstring>
 #include <new>
+#include <poll.h>
 #include <sys/socket.h>
 
 struct turtle_tls {
@@ -18,28 +19,40 @@ struct turtle_tls {
     int fd;
     bool client = false;
     bool client_complete = false;
+    void *context = nullptr;
+    decltype(turtle_tls_config::report_session) report_session = nullptr;
+    decltype(turtle_tls_config::greeting_written) greeting_written = nullptr;
 };
 
 static ssize_t receive(gnutls_transport_ptr_t context, void *bytes, size_t len) {
     auto *tls = static_cast<turtle_tls *>(context);
+    const auto &h = tls->hooks;
     ssize_t n;
     do {
+        h.transfer_begin(h.context, 0, len);
         n = recv(tls->fd, bytes, len, 0);
+        h.transfer_end(h.context, 0, len, n, static_cast<unsigned char *>(bytes));
     } while (n < 0 && errno == EINTR);
-    if (n > 0 && tls->hooks.after_recv)
-        tls->hooks.after_recv(tls->hooks.context, static_cast<const unsigned char *>(bytes), n);
     return n;
 }
 
 static ssize_t transmit(gnutls_transport_ptr_t context, const void *bytes, size_t len) {
     auto *tls = static_cast<turtle_tls *>(context);
+    const auto &h = tls->hooks;
     ssize_t n;
     do {
-        if (tls->hooks.before_send)
-            tls->hooks.before_send(tls->hooks.context, static_cast<const unsigned char *>(bytes), len);
+        h.transfer_begin(h.context, 1, len);
         n = send(tls->fd, bytes, len, MSG_NOSIGNAL);
+        h.transfer_end(h.context, 1, len, n, static_cast<const unsigned char *>(bytes));
     } while (n < 0 && errno == EINTR);
     return n;
+}
+
+static int wait_readable(gnutls_transport_ptr_t context, unsigned timeout_ms) {
+    pollfd fd{static_cast<turtle_tls *>(context)->fd, POLLIN, 0};
+    if (timeout_ms > 30000)
+        timeout_ms = 30000;
+    return poll(&fd, 1, static_cast<int>(timeout_ms));
 }
 
 static ssize_t plain_receive(gnutls_transport_ptr_t context, void *bytes, size_t len) {
@@ -49,6 +62,14 @@ static ssize_t plain_receive(gnutls_transport_ptr_t context, void *bytes, size_t
 static ssize_t plain_transmit(gnutls_transport_ptr_t context, const void *bytes, size_t len) {
     return send(static_cast<turtle_tls *>(context)->fd, bytes, len, MSG_NOSIGNAL);
 }
+
+struct Library {
+    const int status = gnutls_global_init();
+    ~Library() {
+        if (status >= 0)
+            gnutls_global_deinit();
+    }
+};
 
 void turtle_tls_free(turtle_tls *tls) {
     if (!tls)
@@ -60,7 +81,6 @@ void turtle_tls_free(turtle_tls *tls) {
     if (tls->credentials)
         gnutls_certificate_free_credentials(tls->credentials);
     std::free(tls->peer);
-    gnutls_global_deinit();
     delete tls;
 }
 
@@ -87,6 +107,9 @@ static bool setup(turtle_tls *tls, const turtle_tls_config *config) {
     const bool server = config->role == TURTLE_SERVER;
     const bool mutual = config->auth == TURTLE_MUTUAL_AUTH;
     tls->client = !server;
+    tls->context = config->context;
+    tls->report_session = config->report_session;
+    tls->greeting_written = config->greeting_written;
     if (gnutls_certificate_allocate_credentials(&tls->credentials) < 0)
         return false;
     if (server || mutual) {
@@ -115,7 +138,8 @@ turtle_tls *turtle_tls_setup(const turtle_tls_config *config, int connected_fd) 
     auto *tls = new (std::nothrow) turtle_tls{};
     if (!tls)
         return nullptr;
-    if (gnutls_global_init() < 0) {
+    static const Library library;
+    if (library.status < 0) {
         delete tls;
         return nullptr;
     }
@@ -127,14 +151,21 @@ turtle_tls *turtle_tls_setup(const turtle_tls_config *config, int connected_fd) 
 }
 
 turtle_status turtle_tls_set_hooks(turtle_tls *tls, const turtle_transport_hooks *hooks) {
+    if (hooks && (!hooks->coverage || !hooks->transfer_begin || !hooks->transfer_end))
+        return TURTLE_TLS_UNSUPPORTED;
+    if (tls->hooks.coverage)
+        tls->hooks.coverage(tls->hooks.context, 0);
     tls->hooks = hooks ? *hooks : turtle_transport_hooks{};
     for (auto session : {tls->session, tls->early}) {
-        if (session) {
-            gnutls_transport_set_ptr(session, tls);
-            gnutls_transport_set_pull_function(session, hooks ? receive : plain_receive);
-            gnutls_transport_set_push_function(session, hooks ? transmit : plain_transmit);
-        }
+        if (!session)
+            continue;
+        gnutls_transport_set_ptr(session, tls);
+        gnutls_transport_set_pull_function(session, hooks ? receive : plain_receive);
+        gnutls_transport_set_push_function(session, hooks ? transmit : plain_transmit);
+        gnutls_transport_set_pull_timeout_function(session, wait_readable);
     }
+    if (hooks)
+        hooks->coverage(hooks->context, 1);
     return TURTLE_TLS_OK;
 }
 
@@ -142,29 +173,53 @@ static turtle_status handshake(gnutls_session_t session) {
     int result;
     do {
         result = gnutls_handshake(session);
-    } while (result == GNUTLS_E_AGAIN || result == GNUTLS_E_INTERRUPTED);
+    } while (result == GNUTLS_E_INTERRUPTED);
+    if (result == GNUTLS_E_TIMEDOUT)
+        errno = ETIMEDOUT;
     return result == GNUTLS_E_SUCCESS ? TURTLE_TLS_OK : TURTLE_TLS_ERROR;
+}
+
+static turtle_status session_facts(turtle_tls *tls) {
+    const bool v13 = gnutls_protocol_get_version(tls->session) == GNUTLS_TLS1_3;
+    const bool resumed = gnutls_session_is_resumed(tls->session) != 0;
+    const bool early = (gnutls_session_get_flags(tls->session) & GNUTLS_SFLAGS_EARLY_DATA) != 0;
+    unsigned peers = 0;
+    const bool have_cert = gnutls_certificate_get_peers(tls->session, &peers) && peers;
+    const bool verified = tls->peer && have_cert &&
+                          gnutls_session_get_verify_cert_status(tls->session) == 0;
+    if (!v13 || resumed || early || (tls->peer && !verified))
+        return TURTLE_TLS_ERROR;
+    if (tls->report_session) {
+        const turtle_session_info facts{v13, resumed, early, have_cert, verified};
+        tls->report_session(tls->context, &facts);
+    }
+    return TURTLE_TLS_OK;
 }
 
 turtle_status turtle_tls_connect(turtle_tls *tls) {
     if (tls->client_complete)
         return TURTLE_TLS_OK;
     const auto result = handshake(tls->session);
-    tls->client_complete = result == TURTLE_TLS_OK;
-    return result;
+    if (result != TURTLE_TLS_OK)
+        return result;
+    const auto policy = session_facts(tls);
+    tls->client_complete = policy == TURTLE_TLS_OK;
+    return policy;
 }
 
 static ptrdiff_t send_plain(gnutls_session_t session, const unsigned char *data, size_t len) {
     ssize_t n;
     do {
         n = gnutls_record_send(session, data, len);
-    } while (n == GNUTLS_E_AGAIN || n == GNUTLS_E_INTERRUPTED);
+    } while (n == GNUTLS_E_INTERRUPTED);
     return n > 0 ? n : -1;
 }
 
 turtle_status turtle_tls_accept(turtle_tls *tls, const unsigned char *greeting, size_t len) {
-    if (!len)
-        return handshake(tls->session);
+    if (!len) {
+        const auto result = handshake(tls->session);
+        return result == TURTLE_TLS_OK ? session_facts(tls) : result;
+    }
     if (!tls->early)
         return TURTLE_TLS_UNSUPPORTED;
     if (handshake(tls->early) != TURTLE_TLS_OK)
@@ -173,8 +228,10 @@ turtle_status turtle_tls_accept(turtle_tls *tls, const unsigned char *greeting, 
         return TURTLE_TLS_UNSUPPORTED;
     while (len) {
         ptrdiff_t n = send_plain(tls->early, greeting, len);
-        if (n < 0)
+        if (n <= 0 || static_cast<size_t>(n) > len)
             return TURTLE_TLS_ERROR;
+        if (tls->greeting_written)
+            tls->greeting_written(tls->context, greeting, static_cast<size_t>(n));
         greeting += n;
         len -= static_cast<size_t>(n);
     }
@@ -183,7 +240,7 @@ turtle_status turtle_tls_accept(turtle_tls *tls, const unsigned char *greeting, 
     gnutls_deinit(tls->session);
     tls->session = tls->early;
     tls->early = nullptr;
-    return TURTLE_TLS_OK;
+    return session_facts(tls);
 }
 
 ptrdiff_t turtle_app_send(turtle_tls *tls, const unsigned char *data, size_t len) {
@@ -196,6 +253,6 @@ ptrdiff_t turtle_app_recv(turtle_tls *tls, unsigned char *data, size_t len) {
     ssize_t n;
     do {
         n = gnutls_record_recv(tls->session, data, len);
-    } while (n == GNUTLS_E_AGAIN || n == GNUTLS_E_INTERRUPTED);
+    } while (n == GNUTLS_E_INTERRUPTED);
     return n >= 0 ? n : -1;
 }

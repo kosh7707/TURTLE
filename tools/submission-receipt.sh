@@ -10,7 +10,7 @@ build=$(realpath -e -- "$2") || exit 2
 shift 2
 case $mode in
     seal|verify) [ "$#" = 0 ] || exit 2;;
-    run) [ "$#" = 8 ] || exit 2;;
+    run) [ "$#" = 10 ] || exit 2;;
     *) exit 2;;
 esac
 bad() { echo "Incomplete, changed, or relocated submission build: $build (use a freshly linked build job)" >&2; exit 2; }
@@ -81,8 +81,7 @@ wait_worker "$reader" || bad
 wait_worker "$writer" || result=$?
 [ "$result" = 0 ] || bad
 
-bins='bin/client bin/server runtime/turtle runtime/turtle-submission-job
-      runtime/turtle-issue-test-leaves.sh runtime/libturtle_observe.so.1'
+bins='bin/client bin/server runtime/turtle-submission-job runtime/turtle-issue-test-leaves.sh'
 files='module.txt client.map server.map implementation.d link-evidence.txt
        native.log native.exit native.ok native-arguments native-environment.sha256
        submission.sha256 prefix.sha256 expected-libs.txt expected-libs.sha256'
@@ -96,7 +95,7 @@ setsid sh -c 'cd -- "$1"; shift; exec sha256sum -- "$@"' sha256sum \
 reader=$!
 wait_worker "$reader" || bad
 {
-    printf '%s\n' 'turtle-submission-reuse-v1' "$build"
+    printf '%s\n' 'turtle-submission-reuse-v2' "$build"
     cat -- "$state/prefix.sha256" "$state/files.sha256"
 } > "$state/computed"
 check_stop
@@ -118,6 +117,12 @@ case $mode in
 esac
 check_stop
 if [ "$mode" = run ]; then
+    tool_path=/usr/sbin:/usr/bin:/sbin:/bin
+    for utility in unshare ip tc ping; do
+        PATH=$tool_path command -v "$utility" >/dev/null 2>&1 ||
+            { printf 'Benchmark requires %s to configure and check the veth link.\n' "$utility" >&2; exit 2; }
+    done
+    unshare=$(PATH=$tool_path command -v unshare)
     # Exec the selected runtime only after the receipt has been checked;
     # this is also the first operation allowed to allocate a reused run.
     area=$1; destination=$2; shift 2
@@ -140,6 +145,14 @@ if [ "$mode" = run ]; then
     if [ "$area" != existing ]; then
         printf 'Build: %s\nResults: %s\n' "$(dirname -- "$build")" "$destination"
     fi
-    exec "$build/runtime/turtle-submission-job" "$build/runtime/turtle" "$destination" \
-        "$@" "$build" "$0"
+    digest=$(sha256sum < "$build/reuse.sha256")
+    TURTLE_BUILD_ID=${digest%% *}
+    export TURTLE_BUILD_ID
+    set -- "$build/runtime/turtle-submission-job" "$build" "$destination" "$@"
+    if [ "$(id -u)" != 0 ]; then
+        set -- --user --map-root-user --net -- "$@"
+    else
+        set -- --net -- "$@"
+    fi
+    exec env --default-signal=INT,TERM "$unshare" "$@"
 fi
