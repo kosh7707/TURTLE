@@ -29,7 +29,7 @@ for role in client server; do
                 credentials:{ca:($keys+"ca.crt"),server:{cert:($keys+"server.crt"),key:($keys+"server.key")},
                     client:{cert:($keys+"client.crt"),key:($keys+"client.key")}},
                 application:{request:"request",greeting:"hello",response:"reply"},
-                required_metrics:["timing","task"],optional_metrics:["authentication","library_io"]}' >"$run.json"
+                required_metrics:(if $s=="S2" and $role=="server" then ["task"] else ["timing","task"] end),optional_metrics:["authentication","library_io"]}' >"$run.json"
             "$turtle" run "$run.json" "$run"
             if [ "$scenario" = S3 ] || [ "$scenario" = S4 ]; then
                 # This loopback fixture shares the controller's monotonic
@@ -47,7 +47,11 @@ for role in client server; do
             jq -e --arg role "$role" --arg s "$scenario" '
                 [.attempts[].purpose]==["sample"] and .successful_measurements==1 and
                 (.attempts[0] |
-                 .operation_ok and .task_success and .benchmark_timing_ns>0 and
+                 .operation_ok and .task_success and
+                 (if $s=="S2" and $role=="server" then .benchmark_timing_ns==null and .eligible==false and
+                  .qualification=="cf_transport_receive_unobserved" and
+                  .participants.server.timing.unavailable_reason=="cf_transport_receive_unobserved"
+                  else .benchmark_timing_ns>0 end) and
                  .requested_metrics.authentication.available==null and
                  .requested_metrics.library_io.available==true and
                  .measured_transport_hook=={verified:true,source:"library_io",reason:null} and
@@ -56,9 +60,9 @@ for role in client server; do
                  (if ($s=="S2" or $s=="S4") then .participants.server.metrics.ordinary_server_first==true else true end) and
                  (.participants.client as $c |
                   if $s=="S2" then
-                    ($c.timing.end.seq==$c.timeline.SAD1.first_read_return.seq) and
+                    ($c.timing.end.seq==$c.timeline.SAD1.last_read_return.seq) and
                     ($c.timing.end.seq<$c.lifecycle.hs_complete.seq) and
-                    (if $role=="client" then $c.timing.end.seq<$c.timeline.SAD1.last_read_return.seq else true end)
+                    ($c.timing.first_greeting_read_ns<$c.timing.wall_ns)
                   elif $s=="S4" then $c.timeline.CAD.final_write_accept.seq<$c.timeline.SAD1.first_read_return.seq
                   else true end))' "$run/analysis.json" >/dev/null
             replay "$run"
@@ -74,7 +78,7 @@ jq -e '.successful_measurements==1 and .eligible_measurements==0 and
     (.attempts[0] | .operation_ok and .task_success and .eligible==false and
      .qualification=="transport_hook_unconfirmed" and
      .measured_transport_hook=={verified:null,source:null,reason:"hook_unobserved"} and
-     .benchmark_timing_ns>0 and .participants.client.timing.end.seq==.participants.client.timeline.SAD1.first_read_return.seq and
+     .benchmark_timing_ns>0 and .participants.client.timing.end.seq==.participants.client.timeline.SAD1.last_read_return.seq and
      .requested_metrics.library_io.available==null and .participants.server.metrics.library_io==true)' "$run/analysis.json" >/dev/null
 replay "$run"
 

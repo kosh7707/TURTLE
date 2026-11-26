@@ -33,7 +33,9 @@ jq -e '.error=="interrupted" and any(.images[];.reason=="image_snapshot_cancelle
     all(.prepared_start.roles.client,.prepared_start.roles.server;
         .ready_received_ns>0 and (has("release_begin_ns")|not))' "$attempt/attempt.json" >/dev/null
 for role in client server; do
-    jq -se 'any(.[];.name=="ready") and all(.[];.name!="hs_begin")' "$attempt/$role.ndjson" >/dev/null
+    jq -se 'any(.[];.name=="ready") and
+        all(.[];.v==2 and .name!="hs_begin" and .kind!="observer_complete")' \
+        "$attempt/$role.ndjson" >/dev/null
 done
 
 # Slow optional evidence alone must not cancel the ordinary TLS measurement.
@@ -43,5 +45,8 @@ jq -e '.error==null and all(.images[];.available==false) and
     .prepared_start.outcome=="joint_release" and
     all(.prepared_start.roles.client,.prepared_start.roles.server;.release=="G")' "$attempt/attempt.json" >/dev/null
 for role in client server; do
-    jq -se 'any(.[];.name=="hs_begin")' "$attempt/$role.ndjson" >/dev/null
+    jq -se 'any(.[];.name=="hs_begin") and .[-1].kind=="observer_complete"' \
+        "$attempt/$role.ndjson" >/dev/null
+    jq -e --arg role "$role" '.participants[$role].observer_stream=="complete"' \
+        "$attempt/analysis.json" >/dev/null
 done

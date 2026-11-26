@@ -1,4 +1,5 @@
 #pragma once
+#include <cstring>
 #include "native/start_packet.hpp"
 #include "native/stream_process.hpp"
 #include <sys/random.h>

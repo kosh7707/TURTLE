@@ -265,8 +265,11 @@ Json ImageSnapshots::collect(pid_t launcher, pid_t participant, Deadline until, 
     return unavailable("image_snapshot_timeout");
   if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
     return unavailable("image_snapshot_failed");
-  auto inventory = Json::parse(buffer.get(), nullptr, false);
-  return inventory.is_discarded() ? unavailable("image_snapshot_invalid") : inventory;
+  try {
+    return Json::parse(buffer.get());
+  } catch (const Json::Invalid &) {
+    return unavailable("image_snapshot_invalid");
+  }
 }
 Json image_key(const Json &inv, pid_t pid) {
   check(inv.value("available", false) && pid > 0 && inv.at("pid") == pid,

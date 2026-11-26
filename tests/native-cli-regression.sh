@@ -166,7 +166,7 @@ cp -R early bad-profile-and-attempt
 jq 'del(.profile.required_metrics) | .attempts[0].directory="wrong"' \
     early/manifest.json >bad-profile-and-attempt/manifest.json
 reject "$turtle" analyze bad-profile-and-attempt
-grep -Fq "key 'required_metrics' not found" rejection.log
+grep -Fq 'missing JSON field: required_metrics' rejection.log
 jq -e '.complete==false and .qualified_samples==0' bad-profile-and-attempt/analysis.json >/dev/null
 
 # Even a re-hashed source cannot launder an unbound reporter-selected PID.

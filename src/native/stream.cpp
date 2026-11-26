@@ -51,11 +51,11 @@ struct Messages {
     auto &s = p.at("scenario");
     auto &app = p.at("application");
     if (s == "S1" || s == "S3" || s == "S4")
-      cad = app.at("request");
+      cad = app.at("request").get<std::string>();
     if (s == "S2" || s == "S4")
-      sad1 = app.at("greeting");
+      sad1 = app.at("greeting").get<std::string>();
     if (s == "S3" || s == "S4")
-      sad2 = app.at("response");
+      sad2 = app.at("response").get<std::string>();
   }
 };
 std::string hex(const std::string &s) {
@@ -80,7 +80,7 @@ Json context(const Json &p, const Json &raw, std::string role, bool proof) {
       {"scenario", p["scenario"]},
       {"auth", p["auth"]},
       {"run_id", raw["run_id"]},
-      {"connection_id", raw["connection_id"]},
+      {"connection_id", raw["connection_id"].get<std::string>()},
       {"messages",
        {{"CAD", m.cad.size()},
         {"SAD1", m.sad1.size()},
@@ -102,7 +102,8 @@ Json context(const Json &p, const Json &raw, std::string role, bool proof) {
 }
 process::Args expand(const Json &proto, const process::Environment &vars) {
   process::Args args;
-  for (const std::string a : proto) {
+  for (const auto &arg : proto) {
+    const auto &a = arg.get_ref<const std::string &>();
     std::string out;
     for (size_t i = 0; i < a.size();) {
       bool replaced = false;
@@ -187,13 +188,13 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
         {"TURTLE_KEY", key},
         {"TURTLE_PEER_NAME", name},
         {"TURTLE_ROLE", who},
-        {"TURTLE_SCENARIO", p.at("scenario")},
+        {"TURTLE_SCENARIO", p.at("scenario").get<std::string>()},
         {"TURTLE_RUN_ID", run},
-        {"TURTLE_CONNECTION_ID", raw["connection_id"]},
-        {"TURTLE_ATTEMPT_ID", raw["connection_id"]},
-        {"TURTLE_REQUEST", p["application"]["request"]},
-        {"TURTLE_GREETING", p["application"]["greeting"]},
-        {"TURTLE_RESPONSE", p["application"]["response"]}};
+        {"TURTLE_CONNECTION_ID", raw["connection_id"].get<std::string>()},
+        {"TURTLE_ATTEMPT_ID", raw["connection_id"].get<std::string>()},
+        {"TURTLE_REQUEST", p["application"]["request"].get<std::string>()},
+        {"TURTLE_GREETING", p["application"]["greeting"].get<std::string>()},
+        {"TURTLE_RESPONSE", p["application"]["response"].get<std::string>()}};
     if (p.at("stock_peer") == true && who != role) {
       for (auto [key, variable] :
            {std::pair{"group", "TURTLE_EXPECTED_GROUP_ID"},
@@ -211,11 +212,11 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
     if (diagnostic) {
       profiler = std::make_unique<FunctionProfile>(dir);
       profiler->attach(*ch[who].child, p.at("measurement").at("cpu_samples"),
-                       cancel, process::deadline(p.at("timeout_seconds")));
+                       cancel, process::deadline(p.at("timeout_seconds").get<double>()));
     }
     raw["pid"][who] = ch[who].child->pid;
   };
-  auto end = process::deadline(p.at("timeout_seconds"));
+  auto end = process::deadline(p.at("timeout_seconds").get<double>());
   Messages m(p);
   const auto clock_check = [&]() {
     require(Clock::now() < end, "attempt_timeout");
@@ -250,6 +251,11 @@ Json perform(const Json &p, const fs::path &dir, const fs::path &keys,
                                    first_possible_wait + start_wait_limit - std::chrono::seconds(1)});
       for (auto who : {"client", "server"}) {
         auto pid = ch[who].child->pid;
+        // Buffered observation data need not become readable until exit.
+        // Record clock-domain provenance while the prepared app is live.
+        auto domain = PreparedStart::time_namespace(pid);
+        if (!domain.empty())
+          raw["time_namespaces"][who] = domain;
         auto begin = ns();
         auto inventory = image_snapshots.collect(pid, pid, until, cancel);
         inventory.update({{"phase", "prepared"}, {"host_begin_ns", begin}, {"host_end_ns", ns()}});
@@ -440,7 +446,7 @@ bool metric(const Json &e, const std::string &k) {
   return e.at("metrics").value(k, Json(nullptr)) == true;
 }
 Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
-  std::string role = p.at("target").at("role");
+  const auto role = p.at("target").at("role").get<std::string>();
   Messages m(p);
   Json participants = Json::object();
   std::map<std::string, std::string> logs;
@@ -516,7 +522,7 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
   bool unsupported = early && participants.at("server").at("facts").value(
                                   "server_first", Json(nullptr)) == false;
   if (endpoint)
-    for (const auto &participant : participants)
+    for (const auto &[who, participant] : participants.items())
       unsupported |= participant.at("facts").value(
                          "endpoint_unsupported", Json(nullptr)) == true;
   Json requested_metrics = Json::object();
@@ -528,7 +534,7 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
   for (auto kind : {"required_metrics", "optional_metrics"}) {
     const bool mandatory = std::string_view(kind) == "required_metrics";
     for (const auto &k : p.at(kind)) {
-      auto metric_name = canonical_metric_name(k);
+      auto metric_name = canonical_metric_name(k.get<std::string>());
       const auto &owner =
           metric_name == "ordinary_server_first" ? participants.at("server")
           : metric_name == "peer_task"           ? peer
@@ -642,6 +648,10 @@ Json assess(const Json &p, const Json &raw, const fs::path &dir, bool proof) {
     qualification="unprepared_start";
   else if (task_success && !hook_ok)
     qualification = "transport_hook_unconfirmed";
+  else if (task_success && synchronized && !qualified &&
+           time.at("wall_ns").is_null() &&
+           time.value("unavailable_reason", "") == "cf_transport_receive_unobserved")
+    qualification = "cf_transport_receive_unobserved";
   else if (partial && otherwise_qualified && other_required)
     qualification = "decision_required";
   else if (qualified)
@@ -884,7 +894,7 @@ static Json verified_report(const fs::path &root, const Json &manifest) {
             "invalid_attempt_inventory");
     auto raw = artifact::load(dir / "attempt.json");
     require(raw.at("run_id") == manifest.at("run_id") &&
-                ids.insert(raw.at("connection_id")).second &&
+                ids.insert(raw.at("connection_id").get<std::string>()).second &&
                 raw.at("purpose") == entry.at("purpose"),
             "invalid_attempt_identity");
     const auto start = needs_probe(p) ? 1U : 0U;
@@ -903,7 +913,7 @@ static Json verified_report(const fs::path &root, const Json &manifest) {
     if (raw.at("purpose") == "capability") {
       require(i == 0 && p.contains("probe_client"), "invalid_probe_source");
     } else if (raw.at("purpose") == "diagnostic") {
-      std::string role = p.at("target").at("role");
+      const auto role = p.at("target").at("role").get<std::string>();
       diagnostic =
           function_report(dir, raw, row.at("participants").at(role), role);
       if (raw.at("error") != nullptr || row.at("operation_ok") != true)
@@ -919,33 +929,64 @@ static Json verified_report(const fs::path &root, const Json &manifest) {
   return finalize_run_report(manifest, cpu_samples_required,
                              std::move(rows), std::move(diagnostic));
 }
+// This commit record is intentionally independent of the size of the detailed
+// report and manifest. Its presence follows publication of every finalized row
+// and the detailed report (or the fail-closed error report).
+static void save_analysis_summary(const fs::path &root, const Json &manifest,
+                                  const Json &report) {
+  const auto &profile = manifest.at("profile");
+  Json summary = {{"schema", "turtle.native-analysis-summary.v1"},
+                  {"run_id", manifest.at("run_id")},
+                  {"role", profile.at("target").at("role")},
+                  {"scenario", profile.at("scenario")},
+                  {"auth", profile.at("auth")},
+                  {"warmups", profile.at("warmups")},
+                  {"repetitions", profile.at("repetitions")},
+                  {"application", profile.at("application")},
+                  {"attempt_count", report.at("attempts").size()},
+                  {"collection_complete", report.at("collection_complete")},
+                  {"complete", report.at("complete")}};
+  if (report.contains("error")) {
+    summary["error"] = report.at("error");
+  } else {
+    summary["successful_measurements"] = report.at("successful_measurements");
+    summary["qualified_samples"] = report.at("qualified_samples");
+  }
+  artifact::save(root / "analysis-summary.json", summary);
+}
+
 static int regenerate_verified(const fs::path &root, const Json &manifest) {
   const auto out = verified_report(root, manifest);
   for (const auto &row : out.at("attempts"))
     artifact::save(root / row.at("directory").get<std::string>() / "analysis.json",
                    row);
   artifact::save(root / "analysis.json", out);
-  print_summary(std::cout, out, manifest.at("profile").at("scenario"));
+  save_analysis_summary(root, manifest, out);
+  print_summary(std::cout, out, manifest.at("profile").at("scenario").get<std::string>());
   std::cout << "Details: " << (root / "analysis.json") << '\n';
   return out.at("complete") == true ? 0 : 1;
 }
-int regenerate(const fs::path &root) {
-  const auto manifest = artifact::load(root / "manifest.json");
+static int regenerate(const fs::path &root, const Json &manifest) {
   require(manifest.at("schema") == "turtle.native-manifest.v1",
           "unsupported_native_manifest");
   try {
     return regenerate_verified(root, manifest);
   } catch (const std::exception &e) {
     // Fail closed when a previously eligible archive no longer verifies.
-    artifact::save(root / "analysis.json", {{"schema", "turtle.native-run.v1"},
-                                            {"complete", false},
-                                            {"collection_complete", false},
-                                            {"eligible_measurements", 0},
-                                            {"qualified_samples", 0},
-                                            {"attempts", Json::array()},
-                                            {"error", e.what()}});
+    const Json error = {{"schema", "turtle.native-run.v1"},
+                        {"complete", false},
+                        {"collection_complete", false},
+                        {"eligible_measurements", 0},
+                        {"qualified_samples", 0},
+                        {"attempts", Json::array()},
+                        {"error", e.what()}};
+    artifact::save(root / "analysis.json", error);
+    save_analysis_summary(root, manifest, error);
     throw;
   }
+}
+int regenerate(const fs::path &root) {
+  return regenerate(root, artifact::load(root / "manifest.json"));
 }
 int check(const fs::path &profile) {
   auto p = normalize_launch_profile(artifact::load(profile),
@@ -1019,7 +1060,7 @@ int execute(Json p, const fs::path &root, const fs::path &self, int cancel,
   auto run = [&](std::string purpose) {
     auto name = "attempt-" + std::to_string(manifest["attempts"].size() + 1);
     auto raw =
-        perform(p, root / name, keys, manifest.at("run_id"), purpose, cancel);
+        perform(p, root / name, keys, manifest.at("run_id").get<std::string>(), purpose, cancel);
     manifest["attempts"].push_back({{"purpose", purpose},
                                     {"directory", name},
                                     {"sha256", inventory(root / name)}});
@@ -1038,7 +1079,7 @@ int execute(Json p, const fs::path &root, const fs::path &self, int cancel,
     if (!run("warmup")) {
       manifest["status"] = "warmup_failed";
       artifact::save(root / "manifest.json", manifest);
-      return regenerate(root);
+      return regenerate(root, manifest);
     }
   for (size_t i = 0; i < p["repetitions"].get<size_t>(); ++i)
     run("sample");
@@ -1054,7 +1095,9 @@ int execute(Json p, const fs::path &root, const fs::path &self, int cancel,
   if (!Receipts().verify_or_store(root, manifest, true))
     std::cerr << "turtle: local retry receipt unavailable; offline analysis "
                  "remains available\n";
-  return regenerate(root);
+  // This is the same manifest just persisted above; don't pass the live run
+  // through offline replay's untrusted-input parser limits.
+  return regenerate(root, manifest);
 }
 int retry(const fs::path &source, const std::string &failed,
           const fs::path &out, const fs::path &self, int cancel) {
@@ -1074,7 +1117,7 @@ int retry(const fs::path &source, const std::string &failed,
           "retry_controller_changed");
   auto p = m.at("profile");
   require(uses_endpoint_contract(p), "retry_requires_same_scenario_contract");
-  std::string role = p.at("target").at("role");
+  const auto role = p.at("target").at("role").get<std::string>();
   const auto report = verified_report(root, m);
   const auto &rows = report.at("attempts");
   const auto sample =

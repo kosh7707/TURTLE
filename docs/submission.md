@@ -1,68 +1,67 @@
-# Submitting a TLS implementation
+# Submit a TLS implementation
 
-Start with the [editable recipe and bridge](../implementations/README.md). The supplied pair is inert, not a default TLS implementation. The boundary is a directory, not a pair of prebuilt apps. A developer supplies the native source, its build recipe and one file that implements [the framework declarations](../src/include/turtle/implementation.hpp). TURTLE owns the two mains, the controller and the final link. Neither the upstream TLS project nor the framework core needs to include the other's headers. Only `implementation.cpp` includes both APIs.
+Follow the [first-run guide](../README.md) before porting a new TLS implementation. Start with [the two editable files](../implementations/README.md). They are inert, not a simulated TLS implementation. Submit one native source tree, one executable `build.sh`, and one `implementation.cpp`. The [build contract](build-contract.ko.md) describes the private headers, shared libraries and pkg-config information that the recipe stages.
 
-## Build boundary
+## Porting
 
-The normative [build contract](build-contract.ko.md) defines executable `implementations/build.sh WORK PREFIX [native arguments...]`, the private SDK it must stage, selection and error handling. The other developer-owned file, `implementations/implementation.cpp`, defines the seven functions below. TURTLE compiles it; the **same selected object** goes into both role links. The [recipes](examples/submissions/README.md) are documentation, not defaults. Use `./bench.sh --build-only` to stop after the two links without starting a doctor, TLS session, or benchmark.
-
-## The runtime interface
-
-| Function | Contract |
+| TURTLE owns | The bridge owns |
 |---|---|
-| `turtle_tls_setup(config, connected_fd)` / `turtle_tls_free(tls)` | Construct/destroy one fresh TLS 1.3 session. The framework owns the connected socket; borrow it, do not close it. Role, authentication mode, CA, local certificate/key and expected peer DNS name are supplied. Unused fields can be empty. Do not resume a previous session. Fail setup if a required configuration cannot be honored. |
-| `turtle_tls_set_hooks(tls, hooks)` | Attach callbacks to the ciphertext transport of this connection; detach on null. A **before-send** callback describes bytes offered, **not** a successful or complete write. An **after-receive** callback describes the bytes actually returned by a positive read. These void callbacks observe; they do not control I/O. Only the selected role is asked to attach them. |
-| `turtle_tls_connect(tls)` | Complete the client handshake. Normal application reads before this call must be able to drive a client handshake for S2. |
-| `turtle_tls_accept(tls, greeting, len)` | With zero length, complete a normal server handshake. Otherwise send the complete 1-RTT server greeting after the server Finished **without waiting for client Finished**, then complete the handshake. This is not client 0-RTT. If the selected implementation/configuration cannot expose this operation, return `TURTLE_TLS_UNSUPPORTED`; do **not** silently move the write after the handshake. |
-| `turtle_app_send(tls, p, len)` / `turtle_app_recv(tls, p, capacity)` | Write/read ordinary plaintext. Return a positive number for progress (short I/O is valid); negative on error, zero on receive EOF. Handle native retry/wait states internally. The framework loops and checks task payloads. |
+| Connected socket and its lifetime, both mains, certificates for local tests, role selection, repetitions, inputs and output validation | TLS session construction, TLS version and credentials, peer name and verification, and the library calls on the borrowed socket |
+| Timing around normal TLS and application calls; app read/write loops and their events; saving and verifying a selected role's observations | Facts only the TLS library knows (negotiated identity, resume/early data and authentication state); actual ciphertext hooks; the greeting write inside a server-first accept |
 
-The framework does not ask for a separate client submission or a TLS-library-specific build rule. Porting the seven functions is real developer work; a library that lacks server-first writes is not made to support them by a successful link.
+Implement the seven functions in [implementation.hpp](../src/include/turtle/implementation.hpp). The [OpenSSL example](examples/submissions/openssl/implementation.cpp) contains an implementation of each step; start with normal S0 and S1/S3 before adding S2/S4.
 
-## One command, from source to results
+| Function | Native call → check/report → return |
+|---|---|
+| `turtle_tls_setup(config, connected_fd)` | Create a fresh TLS 1.3 session, configure the supplied role, CA, DNS peer name and certificate/key for the chosen authentication mode, and use the existing fd. Disable resumption for these tasks. Return a valid session only if setup succeeded; otherwise return null. |
+| `turtle_tls_free(tls)` | Free the session and its owned state. Do not close the borrowed fd. |
+| `turtle_tls_set_hooks(tls, hooks)` | Attach to both directions at the ciphertext I/O layer. Return `TURTLE_TLS_OK` only if attachment succeeded; detach on null. The non-measured peer does not attach these hooks. |
+| `turtle_tls_connect(tls)` | Drive the native client handshake to local success. Once verification succeeds, report the session facts shown below, then return `TURTLE_TLS_OK`. Ordinary reads must also be able to drive the client handshake for S2. |
+| `turtle_tls_accept(tls, greeting, len)` | With no greeting, complete a normal server handshake. Otherwise, once the server Finished is sent, write **all** the greeting without waiting for client Finished, then finish locally and report session facts. Report the greeting write attempts and accepted bytes inside this composite call. If this cannot be done in the selected configuration, return `TURTLE_TLS_UNSUPPORTED`, not a greeting after handshaking. This is not client 0-RTT. |
+| `turtle_app_send(tls, p, len)` | Call the native application writer; return the positive number actually accepted (a short write is valid) or a negative error. |
+| `turtle_app_recv(tls, p, capacity)` | Read plaintext; return the positive number actually read, zero on EOF, or a negative error. Handle retry/wait states inside both I/O functions. |
 
-1. `bench.sh` validates the submission and builds the controller, observation library and two neutral role objects without the stock TLS peer.
-2. It invokes the native recipe once for that job, records its log/status, and discovers consumer usage from the staged SDK rather than guessing include paths or library names. It tries the bridge and both actual role link lines. Equivalent candidates collapse to one effective plan. Conflicting or inconclusive candidates stop the job rather than silently selecting one. To resolve an ambiguous choice, run `./bench.sh --resume JOB --use MODULE` with the same native arguments and intended scenario options. Changed inputs/stage require a new job.
-3. It links `build/bin/client` and `build/bin/server`, then gives **both explicit executable paths** to `turtle run`. The target/peer selection is independent of the client/server distinction. An unsuccessful native build, link or load cannot fall back to a stock peer.
-4. Each requested role/scenario/auth combination gets a distinct doctor: one real execution of that scenario. An operationally ready doctor admits fresh warmup and sample connections, even if some optional observations are missing. Doctor and warmup are never counted as benchmark samples. Each connection is checked against both processes' mapped executable/library paths and the measured role's raw transport events. The staged DSOs' hashes are checked before and after the run. The peer supplies session and app-exchange facts, not a transport trace or performance counters.
-5. A case is `passed`, `unsupported`, `failed`, or `insufficient_evidence`. A non-passing requested case gives a nonzero exit, not silent exclusion. An unsupported doctor has no benchmark. Build errors stop earlier and may not produce any summary.
+For example, the [OpenSSL bridge's `finish()`](examples/submissions/openssl/implementation.cpp) calls `turtle_observe_identity`, reports `resumed`, `early_data`, `verify_peer`, `peer_cert_present` and `peer_verified`, then emits `auth_accepted`. Report those facts after checking the native result, not from a guessed configuration. In its [composite server accept](examples/submissions/openssl/implementation.cpp), the bridge offers the greeting using `turtle_observe_plain("write_attempt", …)` and reports only the returned bytes with `turtle_observe_plain_at(…, "write_accepted", …)`. It does not need to add those calls for ordinary writes through the role runner. Unknown facts may leave a task successful but its evidence incomplete.
 
-Example, in a populated source checkout:
+### One transport hook bundle
 
-```sh
-job="$HOME/.local/share/turtle/runs/s3"  # must not already exist
-./bench.sh --scenario S3 --role client --auth server --warmups 1 --repetitions 5 --out "$job"
-jq '.cases[] | {state, doctor: .doctor.state, samples: .benchmark.verified_samples}' "$job/summary.json"
-```
+Use `coverage` + `transfer_begin` + `transfer_end` from **the same connection thread** if you can report every actual ciphertext call. Start coverage after installing hooks, before TLS; stop after detaching. Pair each call with its actual return: count only bytes actually transferred, and record zero/failure without pretending that the request was sent. Mark coverage incomplete (`active=-1`) when you cannot pair a call. For the OpenSSL example, the BIO callback pairs native entry and return; it does not change the operation or its retry policy. The runner derives both its transport CSV and transfer evidence from this one bundle.
 
-`--role both` means **two separate runs**, not a doubly instrumented connection. To exercise all 20 combinations per submission, use `--scenario all --role both --auth both`. `--out` must be new. Without it, the command prints a unique directory under `~/.local/share/turtle/runs/` by default. An absolute `XDG_DATA_HOME` replaces `~/.local/share`; `TURTLE_OUTPUT_DIR` overrides the whole runs path. See the [checkout layout](../README.md#build-and-run-a-submission) for build-cache locations.
+If paired coverage is not possible, use the two legacy callbacks. `before_send` is a request, **not a completed write**, and `after_recv` is the positive read return, **not a packet arrival timestamp**. They can supply a hook trace, but they do not satisfy the SDK's completed-transfer requirement. Do not register both sets. A callback on another thread, overflow or loss makes the trace incomplete.
 
-Saved reports and transcripts can be read without the framework cache. Saved role **binaries** are not standalone: their loader path names the framework directory that supplied `libturtle_observe.so.1`. If you need to execute those exact binaries later, keep that directory and its observer unchanged at the same path (set `TURTLE_BUILD_DIR` to a persistent directory before building). For a pending job, `--resume` rebuilds and relinks; it does not promise the original observer binary.
+The [observer](../src/include/turtle/observe.h) records timed events into bounded memory (up to 8192 records and 4 MiB of copied payload per SDK process); no JSON serialization or pipe write is needed during a timed callback. The start barrier may publish preparation evidence **before** TLS, without completing the stream. An orderly exit finalizes the evidence; for long-lived apps or before `_exit()`, use `turtle_observe_flush()` after all observations, outside measurement and without concurrent callbacks. Publication can block; replay requires the final seal described in the [endpoint guide](endpoint.md).
 
-```text
-JOB/
-├── build/
-│   ├── native.log, native.exit, work/, prefix/
-│   ├── module.txt, implementation.d, client.map, server.map
-│   ├── expected-libs.txt, expected-libs.sha256, link-evidence.txt
-│   └── bin/{client,server}
-├── runs/<authentication>-<scenario>-<measured-role>/
-│   ├── doctor/{profile.json,events/,result/analysis.json}
-│   └── benchmark/{profile.json,events/,result/analysis.json}
-└── summary.json
-```
+## Running
 
-**Runtime success, scenario evidence, and performance qualification answer different questions.** In `turtle.submission-run.v2`, `benchmark.runtime_verified_samples` covers the operational exchange/trace/image checks; `benchmark.verified_samples` also requires the reported TLS session, scenario-specific byte and ordering evidence. `qualified_controller_samples` is the SDK's independent performance qualification. `doctor.verified_connections` can be one while `doctor.verified_samples` is zero. Do not compare a v1 sample count directly to v2.
+- Use `--build-only` to verify both role links without a connection; read `build/native.log` for recipe failures. If module **selection** is needed, use `--build-only --resume JOB --use MODULE` with the original native arguments; this is not a way to repeat experiments. See the [build and reuse contract](build-contract.ko.md).
+- Use `--run-from BUILD_JOB --out NEW_RUN` with a completed, unmoved build; it creates new run output without reinstalling or relinking your TLS code. The source slot isn't consulted. A populated checkout also supports a single `./bench.sh` invocation that builds and runs.
+- Each requested authentication × scenario × role gets one doctor. It checks a real connection before admitting warmups and samples; each starts fresh processes and a new connection. Only the `sample` rows are repetitions. `--role both` runs separate measured roles, not both on one connection. `--scenario all --role both --auth both` requests all 20 cases; a non-passing requested case returns nonzero.
+- `--tcp-nodelay on|off` is the policy for **both connected sockets** in the submission path, default `on`. The CSV reports the read-back value on each role. Keep the policy fixed when comparing runs.
+- For pre-existing credentials, use `--credentials DIR` with `ca.crt`, `server.crt`, `server.key` and, for mTLS, `client.crt` and `client.key`. Names are `localhost` (server) and `client.turtle.test` (client). Otherwise `openssl` issues disposable test certificates; the command is independent of which TLS library you submit.
 
-Under each phase's `evidence[]`, follow the connection ID to the measured CSV, each process's maps and the native attempt (both participants' app streams and event logs). A missing identity, write or timestamp is not proof that TLS failed. Submissions may use the public observer API to report negotiated identity, certificate checks, resumption, app write offers/returns inside a composite accept, and measured-side protocol events. The seven-function submission ABI is unchanged; the generic job does not guess these facts for an opaque implementation or silently replace it. See the [validation report](scenario-validation.ko.md) for a separate diagnostic on exactly the selected bridge.
+| To change… | Use |
+|---|---|
+| Role, scenario, authentication, repetitions, TCP_NODELAY | Submission run flags; reuse the same build |
+| Build options and which features are compiled | Recipe arguments after `--` when building; an altered build gets a new job |
+| The TLS group's or cipher suite's session policy | TLS bridge; the submission runner does not set the library's algorithm policy |
+| Custom application payloads or network conditions | The [standalone SDK profile](sdk-guide.ko.md); no matching options in the basic submission CLI |
 
-Each post-task `.maps` snapshot preserves the Linux mapping rows and ends with a `# turtle-maps rows=N` completion marker. Missing, unreadable or incomplete snapshots are insufficient evidence; only a complete snapshot can contradict the expected paths. The row count checks capture completeness, not file identity or authenticity.
+## Results
 
-The corresponding measured `<UUID>.<role>.csv.count` holds the producer's positive decimal hook-row count and a trailing newline; it excludes the CSV header. It is published only after the detached CSV has been closed and renamed into place. Both files must be complete, with no `.partial` artifacts, before a hook interval is used. A shortened CSV, absent or invalid count, or interrupted publication is insufficient evidence, not a TLS error. Historical raw CSVs without counts are still readable but cannot verify this contract. The unmeasured peer emits neither file.
+Open `cases.csv` first. Each row is one authentication × scenario × role: `state`, requested and verified sample counts, operational and performance-qualified counts, and reason or detail path. `passed`, `unsupported`, `failed`, and `insufficient_evidence` are distinct. Build failures stop earlier and may not create a CSV. A successful TLS connection is not proof of a qualified performance measurement.
 
-A CSV span runs from the first **actual** ciphertext hook to the last. It is not a CF latency or a syscall entry/exit pair. Protected messages can share a read; a Finished protocol callback is not a socket send/receive timestamp. For S2, a server greeting write accepted, peer Finished processed and CF ciphertext received are different events. The last of these can be unobservable; neither a composite accept return nor a performance counter fills that gap.
+`results.csv` has **one row per readable, bound attempt**. An unreadable,
+missing, or mismatched attempt may produce no row. Use the case's requested
+and verified counts and first diagnostic to distinguish missing evidence from
+a successful sample; the framework does not invent substitute rows.
 
-## Supported build and host environment
+| Columns | What to read |
+|---|---|
+| `purpose`, `connection_id`, `task_success`, `evidence_state` | Filter for `purpose=sample` when comparing repetitions; inspect task outcome and evidence separately. |
+| `wall_ns`, `wall_status`, `first_greeting_read_ns`, `greeting_write_accept_ns` | Elapsed ns for the [task's local interval](endpoint.md#tasks), excluding TCP establishment. The S2 client ends at **full** greeting read, with first-read time separate. The S2 server does not claim a CF-receive interval when CF cannot be attributed; greeting write acceptance is separate. |
+| `cycles`, `pmu_status`, `performance_qualified`, `qualification_reason` | Cycles for the measured user-space thread and associated interval, not elapsed ns. Empty measurements are unavailable, not zero. A reported wall time does not require PMU, and neither value alone qualifies the sample. |
+| `client_tcp_nodelay`, `server_tcp_nodelay`, `evidence_reason`, `client_stderr`, `server_stderr` | Effective socket values and diagnostics. Open stderr paths relative to the **new run** directory. |
 
-The submission backend and build prerequisites are specified [here](build-contract.ko.md). For disposable test credentials the controller calls the OpenSSL CLI independently of which TLS library is linked; build-only does not issue credentials. Supply `--credentials DIR` to use existing files instead: `ca.crt`, `server.crt`, `server.key`, and for mTLS also `client.crt` and `client.key` (server DNS name `localhost`, client `client.turtle.test`).
+The regular submission flow does not require a JSON library or `jq`. Versioned `summary.json`, `profile.json`, `analysis.json` and observer NDJSON still support diagnostics and reanalysis via the project's standard-library parser. Under a run's `runs/<authentication>-<scenario>-<role>/<doctor|benchmark>/`, match the `connection_id` to both endpoint maps, app streams, and the measured role's hook CSV and `.csv.count` (producer row count, excluding the header). Missing or incomplete artifacts do not prove failure or success. The hook CSV's first-to-last span is not a handshake or CF interval. Protected messages can share a read, and a protocol Finished callback is not a socket arrival time. See the [previous verification report](scenario-validation.ko.md) for the distinction between raw timing and the independent server-first capability control.
 
-Static-only libraries, arbitrary bare CMake exports without pkg-config metadata, cross-compilation and remote execution are **not** supported by this entry point. Host dependencies of staged DSOs are not all required to live in the prefix. The recorded compiler dependencies and runtime maps tell you which files were used; they do not independently prove that every file supplied on the first install came from the intended configuration. This is a benchmark for cooperating, trusted submissions, not a security attestation.
+The build receipt and maps establish which executables and private libraries were used, not whether untrusted code is safe. Use only trusted builds. Static-only or arbitrary bare CMake exports without pkg-config metadata, cross-compilation and remote execution are outside the submission contract.

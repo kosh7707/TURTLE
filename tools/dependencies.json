@@ -50,19 +50,6 @@
       ]
     },
     {
-      "name": "json",
-      "version": "3.12.0",
-      "component": "framework",
-      "archive": "json-3.12.0.tar.xz",
-      "url": "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz",
-      "sha256": "42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa",
-      "license": "MIT",
-      "reason": "JSON and JSONL I/O outside the measured interval with 64-bit integer preservation",
-      "build_options": [
-        "-DJSON_BuildTests=OFF"
-      ]
-    },
-    {
       "name": "libpcap",
       "version": "1.10.6",
       "component": "framework",

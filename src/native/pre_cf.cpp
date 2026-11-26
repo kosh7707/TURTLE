@@ -231,8 +231,8 @@ Json pre_cf_delivery(const Json &client, const Json &server, const Json &extent,
   auto validation = client.at("timeline").at("SAD1").at("validated");
   auto resume = client.at("lifecycle").value("probe_resumed", Json(nullptr));
   if (validation.is_null() || resume.is_null() ||
-      resume.at("seq") <= extent.at("pause_seq") ||
-      resume.at("seq") >= validation.at("seq"))
+      artifact::integer(resume.at("seq")) <= artifact::integer(extent.at("pause_seq")) ||
+      artifact::integer(resume.at("seq")) >= artifact::integer(validation.at("seq")))
     return nullptr;
   auto consumed = trace(client, "library_io", false,
                         artifact::integer(validation.at("seq")));

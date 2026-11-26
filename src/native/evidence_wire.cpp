@@ -9,7 +9,7 @@
 
 namespace turtle::native {
 namespace {
-using J = nlohmann::json;
+using J = turtle::artifact::Json;
 using Bytes = std::vector<unsigned char>;
 void check(bool v, const char *reason) {
   if (!v)
@@ -86,9 +86,9 @@ std::vector<Record> records(const Bytes &b, bool &valid) {
 J anchor(const Direction &d, size_t offset, bool sent) {
   const auto x = std::lower_bound(
       d.spans.begin(), d.spans.end(), offset,
-      [](const J &span, size_t off) { return span.at("end") <= off; });
+      [](const J &span, size_t off) { return u(span, "end") <= off; });
   const auto key = sent ? "begin_ns" : "end_ns";
-  if (x != d.spans.end() && x->at("begin") <= offset && !x->at(key).is_null())
+  if (x != d.spans.end() && u(*x, "begin") <= offset && !x->at(key).is_null())
     return J{{"seq", x->at("seq")},
              {"ns", x->at(key)},
              {"edge", sent ? "begin" : "end"}};
@@ -217,21 +217,21 @@ void evaluate_wire(const J &c, J &r) {
       check(e.at("sent").is_boolean() && decode(e.at("hex")).size() == 5,
             "invalid_header");
       u(e, "offset");
-      if ((ready.is_null() || seq >= ready) && (end.is_null() || seq <= end))
+      if ((ready.is_null() || seq >= ready.get<uint64_t>()) && (end.is_null() || seq <= end.get<uint64_t>()))
         headers.push_back(e);
       continue;
     }
-    std::string name = e.at("source");
+    const auto name = e.at("source").get<std::string>();
     check(name == "socket" || name == "library_io" || name == "stream" ||
               name == "header",
           "invalid_source");
     auto &s = src[name];
     if (k == "coverage") {
       check(e.at("active").is_boolean(), "invalid_coverage_flag");
-      bool active = e["active"];
+      bool active = e.at("active").get<bool>();
       check(active != s.active, "duplicate_coverage_state");
       s.active = active;
-      if (!ready.is_null() && seq > ready && (end.is_null() || seq < end) &&
+      if (!ready.is_null() && seq > ready.get<uint64_t>() && (end.is_null() || seq < end.get<uint64_t>()) &&
           (!active || !s.started))
         s.interrupted = true;
       continue;
@@ -239,7 +239,7 @@ void evaluate_wire(const J &c, J &r) {
     if (k == "bytes") {
       check(name == "stream" && e.at("sent").is_boolean(),
             "invalid_stream_observation");
-      if ((!ready.is_null() && seq < ready) || (!end.is_null() && seq > end))
+      if ((!ready.is_null() && seq < ready.get<uint64_t>()) || (!end.is_null() && seq > end.get<uint64_t>()))
         continue;
       auto b = decode(e.at("hex"));
       check(!b.empty() && b.size() == u(e, "length"), "invalid_stream_length");
@@ -262,19 +262,19 @@ void evaluate_wire(const J &c, J &r) {
               e.at("sent").is_boolean() && e.at("peek").is_boolean() &&
               e.at("result").is_number_integer(),
           "invalid_io");
-    bool sent = e.at("sent"), peek = e.at("peek");
+    bool sent = e.at("sent").get<bool>(), peek = e.at("peek").get<bool>();
     auto result = e.at("result").get<int64_t>();
     check((!sent || !peek) && u(e, "begin_ns") &&
               u(e, "begin_ns") <= u(e, "ns") &&
               u(e, "begin_tid") == u(e, "tid") &&
               (result <= 0 || uint64_t(result) <= u(e, "requested")),
           "invalid_io_range");
-    if (!ready.is_null() && seq < ready)
+    if (!ready.is_null() && seq < ready.get<uint64_t>())
       continue;
-    if (!end.is_null() && seq > end)
+    if (!end.is_null() && seq > end.get<uint64_t>())
       continue;
-    if (!s.active || (!ready_ns.is_null() && e["begin_ns"] < ready_ns) ||
-        (!end_ns.is_null() && e["ns"] > end_ns))
+    if (!s.active || (!ready_ns.is_null() && u(e, "begin_ns") < ready_ns.get<uint64_t>()) ||
+        (!end_ns.is_null() && u(e, "ns") > end_ns.get<uint64_t>()))
       s.interrupted = true;
     auto &d = s.dir[sent];
     if (sent)
@@ -293,7 +293,7 @@ void evaluate_wire(const J &c, J &r) {
     }
     if (peek)
       continue;
-    if (!d.spans.empty() && d.spans.back().at("end_ns") > e.at("begin_ns"))
+    if (!d.spans.empty() && u(d.spans.back(), "end_ns") > u(e, "begin_ns"))
       d.complete =
           false; // Completion order is not wire order for overlapping calls.
     d.spans.push_back(J{{"begin", d.transferred},
@@ -311,8 +311,13 @@ void evaluate_wire(const J &c, J &r) {
   auto &metrics = r["metrics"];
   wire["headers"] = headers;
   metrics["header_layout"] = nullptr;
+  // A capture fault is not a failed TLS exchange. Keep app observations, but
+  // don't qualify transport from what may be only a plausible-looking prefix.
+  const bool incomplete =
+      r.at("facts").value("transport_observation_incomplete", false);
   auto covered = [&](const Source &s) {
-    return !ready.is_null() && !end.is_null() && s.started && !s.interrupted;
+    return !incomplete && !ready.is_null() && !end.is_null() && s.started &&
+           !s.interrupted;
   };
   auto transferred_both = [&](const Source &s) {
     return covered(s) && s.dir[0].transferred && s.dir[1].transferred;
@@ -336,9 +341,10 @@ void evaluate_wire(const J &c, J &r) {
     }
     const bool ok = !source.is_null();
     wire["transport_hook"] = {
-        {"verified", ok ? J(true) : interrupted ? J(false) : J(nullptr)},
+        {"verified", ok ? J(true) : incomplete || interrupted ? J(false) : J(nullptr)},
         {"source", source},
-        {"reason", ok ? J(nullptr) : !seen ? J("hook_unobserved")
+        {"reason", ok ? J(nullptr) : incomplete ? J("incomplete_transport_capture")
+                     : !seen ? J("hook_unobserved")
                      : interrupted ? J("coverage_interrupted")
                      : ready.is_null() || end.is_null() ? J("missing_lifecycle_window")
                                                         : J("no_bidirectional_transfer")}};
@@ -346,7 +352,7 @@ void evaluate_wire(const J &c, J &r) {
   metrics["library_io"] = nullptr;
   if (src.count("library_io")) {
     const auto &io = src.at("library_io");
-    if (io.interrupted)
+    if (incomplete || io.interrupted)
       metrics["library_io"] = false;
     else if (transferred_both(io))
       metrics["library_io"] = true;
@@ -360,8 +366,8 @@ void evaluate_wire(const J &c, J &r) {
                       {"consumed_bytes", s.dir[0].transferred}};
     metrics["transport_counts"] = covered(s) && s.sends > 0 && s.receives > 0
                                       ? J(true)
-                                  : s.interrupted ? J(false)
-                                                  : J(nullptr);
+                                  : incomplete || s.interrupted ? J(false)
+                                                                : J(nullptr);
   }
   J flights = J::object(), neg = J::object();
   uint64_t framed_end[2] = {0, 0};
@@ -554,10 +560,10 @@ void evaluate_wire(const J &c, J &r) {
     uint64_t next[2] = {0, 0};
     bool contiguous = true;
     for (const auto &h : headers) {
-      if (h.at("seq") < ready || h.at("seq") > end)
+      if (u(h, "seq") < ready.get<uint64_t>() || u(h, "seq") > end.get<uint64_t>())
         continue;
       auto b = decode(h.at("hex"));
-      bool sent = h.at("sent");
+      bool sent = h.at("sent").get<bool>();
       contiguous &= u(h, "offset") == next[sent];
       check(b[0] >= 20 && b[0] <= 23 && b[1] == 3 && b[2] <= 3 &&
                 (256 * b[3] + b[4]) <= 16640,

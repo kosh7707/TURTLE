@@ -5,11 +5,13 @@
 #include "submission/process_maps.hpp"
 #include <cerrno>
 #include <charconv>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
+#include <signal.h>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -44,21 +46,93 @@ std::vector<string> choices(const string &s, const string &all,
       return {v};
   throw std::runtime_error("invalid selection: " + s);
 }
+struct Interrupted {
+  int signal;
+};
+
+// The launcher execs this process. Wait for either the exact owned child
+// or a stop request without checking a flag and then blocking on a race.
+class Supervisor {
+  sigset_t stops_{}, child_mask_{};
+
+public:
+  Supervisor() {
+    sigemptyset(&stops_);
+    sigaddset(&stops_, SIGTERM);
+    sigaddset(&stops_, SIGINT);
+    require(sigprocmask(SIG_BLOCK, &stops_, &child_mask_) == 0,
+            "could not block submission stop signals");
+    for (int sig : {SIGTERM, SIGINT, SIGCHLD}) {
+      require(signal(sig, SIG_DFL) != SIG_ERR, "could not initialize child supervision");
+      sigdelset(&child_mask_, sig);
+    }
+  }
+
+  void check() const {
+    timespec immediate{};
+    int sig;
+    do {
+      sig = sigtimedwait(&stops_, nullptr, &immediate);
+    } while (sig < 0 && errno == EINTR);
+    if (sig > 0)
+      throw Interrupted{sig};
+    require(errno == EAGAIN, "could not check submission stop signals");
+  }
+
+  int run(const turtle::process::Args &args) const {
+    auto changes = stops_;
+    sigaddset(&changes, SIGCHLD);
+    struct RestoreMask {
+      sigset_t mask;
+      ~RestoreMask() { sigprocmask(SIG_SETMASK, &mask, nullptr); }
+    } old{};
+    require(sigprocmask(SIG_BLOCK, &changes, &old.mask) == 0,
+            "could not block child exit signal");
+    check();
+    std::vector<char *> argv;
+    for (const auto &arg : args)
+      argv.push_back(const_cast<char *>(arg.c_str()));
+    argv.push_back(nullptr);
+    const pid_t child = fork();
+    if (child < 0)
+      throw std::runtime_error("fork failed");
+    if (child == 0) {
+      if (sigprocmask(SIG_SETMASK, &child_mask_, nullptr) == 0)
+        execv(argv[0], argv.data());
+      _exit(127);
+    }
+    int requested = 0, status = 0;
+    for (;;) {
+      const auto finished = waitpid(child, &status, WNOHANG);
+      if (finished == child)
+        break;
+      if (finished < 0) {
+        if (errno == EINTR)
+          continue;
+        throw std::runtime_error("waitpid failed");
+      }
+      const int sig = sigwaitinfo(&changes, nullptr);
+      if ((sig == SIGTERM || sig == SIGINT) && !requested) {
+        requested = sig;
+        // The controller owns its endpoint children and their cleanup.
+        kill(child, SIGTERM);
+      }
+    }
+    if (requested)
+      throw Interrupted{requested};
+    check();
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+  }
+};
+
+Supervisor &supervisor() {
+  static Supervisor instance;
+  return instance;
+}
+
 int controller(const fs::path &exe, const fs::path &profile,
                const fs::path &output) {
-  pid_t p = fork();
-  if (p < 0)
-    throw std::runtime_error("fork failed");
-  if (p == 0) {
-    execl(exe.c_str(), exe.c_str(), "run", profile.c_str(), output.c_str(),
-          static_cast<char *>(nullptr));
-    _exit(127);
-  }
-  int status;
-  while (waitpid(p, &status, 0) < 0)
-    if (errno != EINTR)
-      throw std::runtime_error("waitpid failed");
-  return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+  return supervisor().run({exe.string(), "run", profile.string(), output.string()});
 }
 std::vector<fs::path> libraries(const fs::path &build) {
   std::ifstream in(build / "expected-libs.txt");
@@ -102,43 +176,44 @@ void issue(Json &evidence, std::string_view state, string reason) {
 }
 
 struct Job {
-  fs::path exe, build;
+  fs::path exe, build, observer;
   std::vector<fs::path> libs;
   std::map<string, string> lib_hashes;
   string credentials;
   unsigned warmups, repetitions;
+  bool tcp_nodelay;
   std::set<string> connections;
 
   Json connection(const Json &row, const fs::path &out, const Case &c,
-                  const Json &manifest, size_t index, bool doctor) {
+                  const Json &summary, size_t index, bool doctor) {
     const auto &events = out / "events";
     const auto &id = row.at("connection_id").get_ref<const string &>();
     const auto &purpose = row.at("purpose");
     const string name = "attempt-" + std::to_string(index + 1);
     const auto attempt = out / "result" / name;
+    require(id.size() == 36 && id.find_first_not_of("0123456789abcdef-") == id.npos &&
+                row.at("directory") == name &&
+                purpose == (!doctor && index < warmups ? "warmup" : "sample") &&
+                connections.insert(id).second,
+            "invalid attempt phase or reused connection ID");
+    const auto raw_path = attempt / "attempt.json";
+    require(fs::is_regular_file(fs::symlink_status(raw_path)), "missing or invalid attempt.json");
+    const auto raw = load(raw_path);
+    require(raw.at("connection_id") == id && raw.at("run_id") == summary.at("run_id") &&
+                raw.at("purpose") == purpose,
+            "attempt did not match controller report");
     Json e = {{"connection_id", id},
-              {"run_id", manifest.at("run_id")},
+              {"run_id", summary.at("run_id")},
               {"purpose", doctor ? Json("doctor") : purpose},
               {"controller_purpose", purpose},
               {"attempt_directory", attempt.string()},
-              {"controller_wall_ns", row.at("benchmark_timing_ns")},
+              {"task_success", row.at("task_success")},
               {"controller_qualification", row.at("qualification")},
+              {"tcp_nodelay", Json::object()},
               {"state", "passed"},
               {"issues", Json::array()},
               {"operational", false},
               {"verified", false}};
-    if (id.size() != 36 || id.find_first_not_of("0123456789abcdef-") != id.npos ||
-        !connections.insert(id).second || row.at("directory") != name ||
-        purpose != (!doctor && index < warmups ? "warmup" : "sample")) {
-      issue(e, "insufficient_evidence", "invalid attempt phase or reused connection ID");
-      return e;
-    }
-    const auto raw = load(attempt / "attempt.json");
-    if (raw.at("connection_id") != id || raw.at("run_id") != manifest.at("run_id") ||
-        raw.at("purpose") != purpose) {
-      issue(e, "insufficient_evidence", "attempt did not match controller report");
-      return e;
-    }
     e["endpoint_results"] = raw.at("exit");
     e["endpoint_pids"] = raw.value("pid", Json::object());
     e["attempt_error"] = raw.at("error");
@@ -162,10 +237,19 @@ struct Job {
 
     const auto images = raw.value("images", Json(nullptr));
     for (const auto &side : {c.role, c.peer()}) {
+      const auto &endpoint_facts = participants.at(side).at("facts");
+      const auto effective = endpoint_facts.value("tcp_nodelay", Json(nullptr));
+      e["tcp_nodelay"][side] = effective;
+      if (!effective.is_boolean())
+        issue(e, "insufficient_evidence", side + ": TCP_NODELAY not observed");
+      else if (effective != tcp_nodelay)
+        issue(e, "failed", side + ": TCP_NODELAY differs from requested policy");
       const auto path = events / (id + "." + side + ".maps");
       const auto endpoint = build / "bin" / side;
       using turtle::submission::MapsState;
-      const auto maps = turtle::submission::process_maps(path, endpoint, libs);
+      auto expected = libs;
+      expected.push_back(observer);
+      const auto maps = turtle::submission::process_maps(path, endpoint, expected);
       e["executables"][side] = endpoint.string();
       e["maps"][side] = path.string();
       e["private_libraries_loaded"][side] = maps == MapsState::matched;
@@ -235,19 +319,47 @@ struct Job {
     e["operational"] = e.at("state") == "passed";
 
     const auto &timing = dut.at("timing");
+    // Task outcome, a valid elapsed interval and controller eligibility are
+    // different results. Do not present timings from an unbound attempt.
+    const bool measured = e.at("operational") == true &&
+                          row.at("prepared_start").at("verified") == true;
+    const auto wall = measured ? row.at("benchmark_timing_ns") : Json(nullptr);
+    const auto &delta = timing.at("pmu_delta");
+    // Validate the values passed through to CSV here, while a malformed
+    // result can still be reported as an error on this attempt alone.
+    const auto checked_ns = [](const Json &value) {
+      if (!value.is_null())
+        turtle::artifact::integer(value);
+      return value;
+    };
+    checked_ns(wall);
+    if (!wall.is_null() && !delta.is_null()) {
+      const auto enabled = turtle::artifact::integer(delta.at("enabled_ns"));
+      const auto running = turtle::artifact::integer(delta.at("running_ns"));
+      if (enabled == running)
+        turtle::artifact::integer(delta.at("cycles"));
+    }
+    e["controller_wall_ns"] = wall;
+    e["wall_status"] = !wall.is_null() ? string("available")
+                         : !measured ? string("attempt_or_start_unverified")
+                         : timing.value("unavailable_reason", string("boundary_unobserved"));
+    if (measured) {
+      e["first_greeting_read_ns"] = checked_ns(timing.value("first_greeting_read_ns", Json(nullptr)));
+      e["greeting_write_accept_ns"] = checked_ns(timing.value("greeting_write_accept_ns", Json(nullptr)));
+    }
     e["sdk_application_interval"] =
         turtle::submission::sdk_application_interval(timing, c.role);
-    e["pmu"] = {{"status", row.at("pmu_status")},
-                {"delta", timing.at("pmu_delta")},
+    e["pmu"] = {{"status", row.at("pmu_status").get_ref<const string &>()},
+                {"delta", delta},
                 {"counter_window", "native_sdk_application_interval"},
                 {"clock_for_window", "CLOCK_MONOTONIC"},
                 {"cycle_unit", "cpu_cycle"},
                 {"begin", timing.at("begin")},
                 {"end", timing.at("end")},
-                {"controller_qualified", row.at("qualified")}};
+                {"controller_qualified", measured && row.at("qualified") == true}};
     try {
       e["application"] = turtle::submission::app_evidence(
-          participants, c.scenario, c.auth, manifest.at("profile").at("application"),
+          participants, c.scenario, c.auth, summary.at("application"),
           c.role);
       const auto &app = e.at("application");
       if (app.at("state") != "passed")
@@ -300,67 +412,257 @@ struct Job {
               {"state", "failed"},
               {"evidence", Json::array()},
               {"analysis", (out / "result" / "analysis.json").string()}};
-    if (!fs::is_regular_file(out / "result" / "analysis.json")) {
-      r["state"] = rc == 0 ? "insufficient_evidence" : "failed";
-      r["reason"] = "controller produced no analysis.json";
-      return r;
-    }
-    const auto report = load(out / "result" / "analysis.json");
-    if (report.at("attempts").empty()) {
-      r["reason"] = report.value("error", string("controller produced no attempts"));
-      return r;
-    }
-    const auto manifest = load(out / "result" / "manifest.json");
-    const auto &recorded = manifest.at("profile");
-    require(recorded.at("target").at("role") == c.role &&
-                recorded.at("scenario") == c.scenario &&
-                recorded.at("auth") == c.auth,
-            "controller selected a different role/scenario/auth");
-    const unsigned wanted = doctor ? 1 : repetitions;
-    bool controller_ok = rc == 0 && report.at("complete") == true &&
-                         report.at("successful_measurements") == wanted;
-    bool unsupported = false, failure = false;
-    unsigned operational = 0, verified = 0, verified_connections = 0;
-    size_t index = 0;
-    for (const auto &row : report.at("attempts")) {
-      auto e = connection(row, out, c, manifest, index++, doctor);
-      unsupported |= e.at("state") == "unsupported";
-      failure |= e.at("state") == "failed";
-      verified_connections += e.at("verified") == true;
-      if (row.at("purpose") == "sample") {
-        operational += e.at("operational") == true;
-        verified += e.at("verified") == true;
+    const auto root = out / "result";
+    const auto summary_path = root / "analysis-summary.json";
+    const unsigned wanted = doctor ? 1 : repetitions, warm = doctor ? 0 : warmups;
+    Json summary;
+    size_t count;
+    unsigned expected_successes, expected_qualified;
+    try {
+      require(fs::is_directory(fs::symlink_status(root)) &&
+                  fs::is_regular_file(fs::symlink_status(root / "analysis.json")),
+              "controller produced no analysis.json");
+      require(fs::is_regular_file(fs::symlink_status(summary_path)),
+              "controller produced no valid analysis-summary.json");
+      summary = load(summary_path);
+      require(summary.at("schema") == "turtle.native-analysis-summary.v1" &&
+                  summary.at("run_id").is_string() && summary.at("application").is_object(),
+              "invalid controller analysis summary");
+      require(summary.at("role") == c.role && summary.at("scenario") == c.scenario &&
+                  summary.at("auth") == c.auth && summary.at("warmups") == warm &&
+                  summary.at("repetitions") == wanted,
+              "controller selected a different role/scenario/auth or attempt schedule");
+      const auto n = turtle::artifact::integer(summary.at("attempt_count"));
+      const bool collected = summary.at("collection_complete").get<bool>();
+      const bool complete = summary.at("complete").get<bool>();
+      require(n <= wanted + warm && (collected ? n == wanted + warm : n <= warm) &&
+                  (!complete || collected) && (rc == 0) == complete,
+              "inconsistent controller analysis status or attempt count");
+      if (n == 0) {
+        r["reason"] = summary.value("error", string("controller produced no attempts"));
+        return r;
       }
-      r["evidence"].push_back(std::move(e));
+      require(!summary.contains("error"), "controller reported a global analysis failure");
+      const auto successes = turtle::artifact::integer(summary.at("successful_measurements"));
+      const auto qualified = turtle::artifact::integer(summary.at("qualified_samples"));
+      require(successes <= (n > warm ? n - warm : 0) && qualified <= successes,
+              "invalid controller analysis sample tallies");
+      count = n;
+      expected_successes = successes;
+      expected_qualified = qualified;
+    } catch (const std::exception &error) {
+      r["state"] = rc == 0 ? "insufficient_evidence" : "failed";
+      r["reason"] = error.what();
+      return r;
     }
-    r["task_successes"] = report.at("successful_measurements");
-    r["qualified_controller_samples"] = doctor ? Json(0) : report.at("qualified_samples");
+
+    bool unsupported = false, failure = false, partial = false;
+    auto readback_error = [&](const string &message) {
+      if (!partial)
+        r["reason"] = message;
+      partial = true;
+    };
+    unsigned successes = 0, qualified = 0;
+    unsigned operational = 0, verified = 0, verified_connections = 0;
+    // Read one finalized row at a time, using the controller's verified
+    // schedule rather than resolving paths from an artifact. The aggregate
+    // is retained for diagnostics, not parsed by the ordinary CSV path.
+    for (size_t index = 0; index < count; ++index) {
+      const string name = "attempt-" + std::to_string(index + 1);
+      const auto attempt = root / name, path = attempt / "analysis.json";
+      try {
+        require(fs::is_directory(fs::symlink_status(attempt)) &&
+                    fs::is_regular_file(fs::symlink_status(path)),
+                "missing or invalid finalized analysis.json");
+        const auto row = load(path);
+        const bool task_success = row.at("task_success").get<bool>();
+        const bool controller_qualified = row.at("qualified").get<bool>();
+        require(row.at("qualification").is_string() &&
+                    (!controller_qualified || (task_success && row.at("purpose") == "sample")),
+                "invalid finalized qualification");
+        auto e = connection(row, out, c, summary, index, doctor);
+        unsupported |= e.at("state") == "unsupported";
+        failure |= e.at("state") == "failed";
+        verified_connections += e.at("verified") == true;
+        if (row.at("purpose") == "sample") {
+          successes += task_success;
+          qualified += controller_qualified;
+          operational += e.at("operational") == true;
+          verified += e.at("verified") == true;
+        }
+        r["evidence"].push_back(std::move(e));
+      } catch (const std::exception &error) {
+        readback_error(name + ": " + error.what());
+      }
+    }
+    if (successes > expected_successes || qualified > expected_qualified ||
+        (!partial && (successes != expected_successes || qualified != expected_qualified))) {
+      r["evidence"] = Json::array();
+      r["state"] = rc == 0 ? "insufficient_evidence" : "failed";
+      r["reason"] = "finalized rows disagree with controller analysis summary";
+      return r;
+    }
+    const bool controller_ok = rc == 0 && !partial && expected_successes == wanted;
+    r["task_successes"] = successes;
+    r["qualified_controller_samples"] = doctor ? 0 : qualified;
     r["runtime_verified_samples"] = doctor ? 0 : operational;
     r["verified_connections"] = verified_connections;
     r["verified_samples"] = doctor ? 0 : verified;
     r["ready"] = controller_ok && operational == wanted && !failure;
     r["state"] = controller_ok && verified == wanted && !failure ? "passed"
                  : failure                                    ? "failed"
-                 : unsupported                                ? "unsupported"
+                 : unsupported && !partial                    ? "unsupported"
                                                               : "insufficient_evidence";
     return r;
   }
 };
+
+void csv_row(std::ostream &out, std::initializer_list<string> cells) {
+  bool first = true;
+  for (const auto &cell : cells) {
+    if (!first)
+      out.put(',');
+    first = false;
+    if (cell.find_first_of(",\"\r\n") == string::npos) {
+      out << cell;
+      continue;
+    }
+    out.put('"');
+    for (char c : cell) {
+      out.put(c);
+      if (c == '"')
+        out.put(c);
+    }
+    out.put('"');
+  }
+  out.put('\n');
+}
+
+string number_cell(const Json &value) {
+  return value.is_null() ? string{} : std::to_string(turtle::artifact::integer(value));
+}
+
+string socket_cell(const Json &fact) {
+  return fact == true ? "1" : fact == false ? "0" : "";
+}
+
+string artifact_path_cell(const fs::path &dir, const Json &value) {
+  return value.is_string()
+             ? fs::path(value.get_ref<const string &>()).lexically_relative(dir).generic_string()
+             : string{};
+}
+
+string first_issue(const Json &trial) {
+  const auto &issues = trial.at("issues");
+  return issues.empty() ? string{} : issues.at(0).at("reason").get<string>();
+}
+
+bool performance_qualified(const Json &trial) {
+  return trial.at("verified") == true &&
+         trial.at("pmu").at("controller_qualified") == true;
+}
+
+void write_csv(const fs::path &dir, const Json &result, unsigned repetitions) {
+  std::ofstream cases(dir / "cases.csv", std::ios::binary);
+  std::ofstream trials(dir / "results.csv", std::ios::binary);
+  require(bool(cases) && bool(trials), "could not create CSV results");
+  csv_row(cases, {"auth", "scenario", "role", "state", "requested", "verified",
+                   "operational", "performance_qualified", "reason", "analysis_path"});
+  csv_row(trials, {"auth", "scenario", "role", "purpose", "connection_id",
+                    "task_success", "evidence_state", "wall_ns", "wall_status",
+                    "first_greeting_read_ns", "cycles", "pmu_status",
+                    "performance_qualified", "qualification_reason",
+                    "client_tcp_nodelay", "server_tcp_nodelay",
+                    "greeting_write_accept_ns", "evidence_reason",
+                    "client_stderr", "server_stderr"});
+  for (const auto &item : result.at("cases")) {
+    const auto auth = item.at("auth").get<string>();
+    const auto scenario = item.at("scenario").get<string>();
+    const auto role = item.at("role").get<string>();
+    const bool ran = item.contains("benchmark");
+    const auto &last = item.at(ran ? "benchmark" : "doctor");
+    auto reason = last.value("reason", string{});
+    unsigned qualified = 0;
+    for (const auto &trial : last.at("evidence")) {
+      const auto purpose = trial.at("purpose");
+      if (reason.empty() && trial.at("state") != "passed" && purpose != "warmup")
+        reason = first_issue(trial);
+      if (purpose == "sample" && performance_qualified(trial))
+        ++qualified;
+    }
+    if (!ran && reason.empty())
+      reason = "doctor did not admit benchmark";
+    csv_row(cases, {auth, scenario, role, item.at("state").get<string>(),
+                    std::to_string(repetitions),
+                    number_cell(last.value("verified_samples", Json(0))),
+                    number_cell(last.value("runtime_verified_samples", Json(0))),
+                    std::to_string(qualified),
+                    reason, artifact_path_cell(dir, last.at("analysis"))});
+    for (auto phase : {"doctor", "benchmark"}) {
+      if (!item.contains(phase))
+        continue;
+      for (const auto &trial : item.at(phase).at("evidence")) {
+        const auto wall = trial.value("controller_wall_ns", Json(nullptr));
+        const auto pmu = trial.value("pmu", Json::object());
+        const auto delta = pmu.value("delta", Json(nullptr));
+        const bool cycle_count = !wall.is_null() && delta.is_object() &&
+                                 delta.at("enabled_ns") == delta.at("running_ns");
+        const auto sockets = trial.at("tcp_nodelay");
+        const auto errors = trial.value("role_stderr", Json::object());
+        csv_row(trials, {auth, scenario, role, trial.at("purpose").get<string>(),
+                         trial.at("connection_id").get<string>(),
+                         trial.at("task_success") == true ? "true" : "false",
+                         trial.at("state").get<string>(), number_cell(wall),
+                         trial.value("wall_status", string("attempt_or_start_unverified")),
+                         number_cell(trial.value("first_greeting_read_ns", Json(nullptr))),
+                         cycle_count ? number_cell(delta.at("cycles")) : string{},
+                         wall.is_null() ? "unobserved" : pmu.at("status").get<string>(),
+                         performance_qualified(trial) ? "true" : "false",
+                         trial.at("controller_qualification").get<string>(),
+                         socket_cell(sockets.value("client", Json(nullptr))),
+                         socket_cell(sockets.value("server", Json(nullptr))),
+                         number_cell(trial.value("greeting_write_accept_ns", Json(nullptr))),
+                         first_issue(trial),
+                         artifact_path_cell(dir, errors.value("client", Json(nullptr))),
+                         artifact_path_cell(dir, errors.value("server", Json(nullptr)))});
+      }
+    }
+  }
+  cases.close();
+  trials.close();
+  require(bool(cases) && bool(trials), "could not save CSV results");
+}
 } // namespace
 
 int main(int argc, char **argv) {
   try {
-    require(argc == 9, "expected controller job role scenario auth warmups "
-                       "repetitions credentials");
+    auto &owner = supervisor();
+    require(argc == 11, "expected controller run role scenario auth warmups "
+                        "repetitions credentials selected-build-directory receipt-checker");
     auto dir = fs::canonical(argv[2]);
-    Job job{fs::canonical(argv[1]),   dir / "build",
-            libraries(dir / "build"), {}, argv[8], number(argv[6]),
-            number(argv[7]), {}};
+    auto build = fs::canonical(argv[9]);
+    const auto observer = fs::canonical(build / "runtime/libturtle_observe.so.1");
+    require(observer == build / "runtime/libturtle_observe.so.1",
+            "staged observer unexpectedly resolves outside its recorded path");
+    const auto *requested = std::getenv("TURTLE_TCP_NODELAY");
+    const string nodelay = requested ? requested : "";
+    require(nodelay.empty() || nodelay == "on" || nodelay == "off",
+            "invalid TURTLE_TCP_NODELAY (expected on or off)");
+    Job job{fs::canonical(argv[1]), build, observer,
+            libraries(build), {}, argv[8], number(argv[6]),
+            number(argv[7]), nodelay != "off", {}};
     require(job.repetitions > 0, "repetitions must be positive");
     job.lib_hashes = verify_contents(job.build, job.libs);
+    const auto observer_hash = turtle::process::digest(observer);
+    job.lib_hashes.emplace(observer.string(), observer_hash);
     Json result = {{"schema", "turtle.submission-run.v2"},
                    {"cases", Json::array()},
+                   {"build_directory", build.string()},
+                   {"observer_path", observer.string()},
+                   {"observer_sha256", observer_hash},
+                   {"requested_tcp_nodelay", job.tcp_nodelay},
                    {"target_libraries", Json::array()}};
+    std::cout << "TCP_NODELAY: " << (job.tcp_nodelay ? "on" : "off") << '\n';
     for (const auto &lib : job.libs)
       result["target_libraries"].push_back(lib.string());
     bool ok = true, runtime_ok = true;
@@ -369,12 +671,14 @@ int main(int argc, char **argv) {
            choices(argv[4], "all", {"S0", "S1", "S2", "S3", "S4"}))
         for (const auto &role :
              choices(argv[3], "both", {"client", "server"})) {
+          owner.check();
           auto out = dir / "runs" / (auth + "-" + scenario + "-" + role);
           require(!fs::exists(out),
                   "case output already exists: " + out.string());
           Json item = {{"auth", auth}, {"scenario", scenario}, {"role", role}};
           const Case selection{role, scenario, auth};
           item["doctor"] = job.phase(out / "doctor", selection, true);
+          owner.check();
           if (item["doctor"]["ready"] == true)
             item["benchmark"] = job.phase(out / "benchmark", selection, false);
           item["state"] = item.contains("benchmark")
@@ -388,14 +692,24 @@ int main(int argc, char **argv) {
           result["complete"] = false;
           save(dir / "summary.json", result);
         }
-    require(verify_contents(job.build, job.libs) == job.lib_hashes,
-            "private library digest records changed during the job");
+    auto final_hashes = verify_contents(job.build, job.libs);
+    final_hashes.emplace(observer.string(), turtle::process::digest(observer));
+    require(final_hashes == job.lib_hashes,
+            "private library or observer digest records changed during the job");
+    const int receipt_exit = owner.run({"/bin/sh", argv[10], "verify", build.string()});
+    if (receipt_exit)
+      return receipt_exit;
     result["library_hash_check"] = "matched_before_and_after_run";
     result["runtime_complete"] = runtime_ok;
     result["complete"] = ok;
     save(dir / "summary.json", result);
-    std::cout << "Results: " << dir / "summary.json" << '\n';
+    write_csv(dir, result, job.repetitions);
+    std::cout << "Cases: " << dir / "cases.csv" << '\n'
+              << "Trials: " << dir / "results.csv" << '\n';
     return ok ? 0 : 1;
+  } catch (const Interrupted &e) {
+    std::cerr << "submission job: interrupted\n";
+    return 128 + e.signal;
   } catch (const std::exception &e) {
     std::cerr << "submission job: " << e.what() << '\n';
     return 1;

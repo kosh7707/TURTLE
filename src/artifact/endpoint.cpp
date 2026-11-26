@@ -130,7 +130,8 @@ void write(const std::string &directory, const measure::Recorder &recorder,
     j["plaintext_end"] = e.plaintext_end;
     if (e.kind == Kind::socket) j["errno"] = e.error_number;
     if (e.source) j["source"] = e.source;
-    if (e.kind == Kind::header) j["header"] = e.header;
+    if (e.kind == Kind::header)
+      j["header"] = Json::array(Json::Array(e.header.begin(), e.header.end()));
     if (e.kind == Kind::message) j["message_type"] = e.message_type;
     events << j.dump() << '\n';
   }

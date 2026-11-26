@@ -1,3 +1,4 @@
+#include "native/endpoint_observe.hpp"
 #include "native/start_packet.hpp"
 #include <atomic>
 #include <cerrno>
@@ -25,6 +26,9 @@ extern "C" int turtle_wait_start(void) {
   static std::atomic_flag used = ATOMIC_FLAG_INIT;
   if (used.test_and_set())
     return -1;
+  // Keep preparation evidence even if the supervisor cancels and kills this
+  // app before release. No TLS operation has started at this control point.
+  turtle::native::detail::flush_preparation();
   auto report = [&](char opcode, uint64_t token = 0) {
     timespec t{};
     if (clock_gettime(CLOCK_MONOTONIC, &t))

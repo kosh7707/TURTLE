@@ -35,13 +35,13 @@ void phases(const std::filesystem::path &fixtures) {
     ep.events = e.at("events");
     ep.records = e.at("records");
     for (const auto &[d, s] : e.at("streams").items())
-      ep.streams[d] = unhex(s);
+      ep.streams[d] = unhex(s.get<std::string>());
     eps.emplace(role, std::move(ep));
   }
   auto actual = turtle::analysis::phases(
       eps, Json::object(), {{"availability", "not_collected"}}, true);
   if (actual != source.at("expected")) {
-    std::cerr << Json::diff(source.at("expected"), actual).dump(2) << '\n';
+    std::cerr << actual.dump(2) << '\n';
     throw std::runtime_error("phase_reference_mismatch");
   }
   eps.at("client").summary["negotiated"]["profile"] = 0;
@@ -212,7 +212,7 @@ void opaque_flight(const std::filesystem::path &dir, const Bytes &server) {
                             {"direction", direction},
                             {"id", raw.events.size() + 1},
                             {"call_id", 1},
-                            {"header", Bytes(start, start + 5)}});
+                            {"header", Json::array(Json::Array(start, start + 5))}});
     }
   }
   Json obs, report;

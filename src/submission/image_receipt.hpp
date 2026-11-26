@@ -21,8 +21,8 @@ inline artifact::Json prepared_image(
   if (!receipt.contains("available") || !receipt.at("available").is_boolean())
     return issue("invalid", "prepared receipt lacks boolean availability");
   if (receipt.at("available") == false) {
-    const auto field = receipt.find("reason");
-    if (field == receipt.end() || !field->is_string())
+    const auto field = receipt.find_member("reason");
+    if (!field || !field->is_string())
       return issue("invalid", "unavailable prepared receipt lacks a reason");
     const auto &reason = field->get_ref<const std::string &>();
     if (reason == "participant_executable_replaced")

@@ -116,7 +116,7 @@ std::pair<Json, Json> network_metrics(const Json &records, const Json &captures,
         if (!r.empty())
           links.push_back({{"capture_role", role},
                            {"packet_id", p.at("id")},
-                           {"wire_ranges", r}});
+                           {"wire_ranges", capture::range_rows(r)}});
       }
   return {metrics,
           {{"source_role", sender},
@@ -150,7 +150,7 @@ Json role_phases(const std::string &role, const Endpoint &ep,
     }
   auto classes = [&](const Json &e, bool point) {
     std::set<std::string> names;
-    auto direction = flow(role, e.at("direction"));
+    auto direction = flow(role, e.at("direction").get<std::string>());
     auto a = integer(e.at("wire_begin")), b = integer(e.at("wire_end"));
     for (const auto &[name, rs] : groups.items())
       for (const auto &r : rs)
@@ -159,7 +159,7 @@ Json role_phases(const std::string &role, const Endpoint &ep,
           if ((x < b && y > a) || (point && a == b && x <= a && a < y))
             names.insert(name);
         }
-    return Json(names);
+    return Json::array(Json::Array(names.begin(), names.end()));
   };
   std::map<std::uint64_t, Json> refs;
   Json event_links = Json::array(), shared = Json::array();
@@ -187,7 +187,7 @@ Json role_phases(const std::string &role, const Endpoint &ep,
           (order.empty() || order.back() != tags[0]))
         order.push_back(tags[0]);
     }
-  if (order != Json(phase_names))
+  if (order != Json::array(Json::Array(phase_names.begin(), phase_names.end())))
     throw std::runtime_error("phase_local_io_order_incomplete");
   Json rows = Json::array(), begin = call.at("begin"),
        begin_ref = {{"event_id", call.at("id")}, {"edge", "begin"}};

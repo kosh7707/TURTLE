@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <string_view>
+#include <thread>
 
 extern "C" turtle_status turtle_tls_set_hooks(turtle_tls *tls,
                                              const turtle_transport_hooks *hooks) {
@@ -21,6 +22,28 @@ extern "C" turtle_status turtle_tls_set_hooks(turtle_tls *tls,
     return TURTLE_TLS_UNSUPPORTED;
   if (fault == "missing")
     return TURTLE_TLS_OK;
+  if (fault == "foreign-thread") {
+    // A deliberate off-owner observation must not turn a real TLS success
+    // into an application error or qualify a misleading partial trace.
+    std::thread worker([hooks] { hooks->before_send(hooks->context, nullptr, 1); });
+    worker.join();
+  }
+  if (fault == "legacy" || fault == "failed-send-observation") {
+    auto observed = *hooks;
+    if (fault == "legacy") {
+      observed.coverage = nullptr;
+      observed.transfer_begin = nullptr;
+      observed.transfer_end = nullptr;
+    } else {
+      static auto forward = hooks->transfer_end;
+      observed.transfer_end = [](void *ctx, int sent, size_t requested,
+                                  ptrdiff_t result, const unsigned char *bytes) {
+        // Fault only the evidence, not the actual TLS write.
+        forward(ctx, sent, requested, sent ? -1 : result, bytes);
+      };
+    }
+    return openssl_set_hooks(tls, &observed);
+  }
   if (fault == "maps" || fault == "trace-write" || fault == "count-write") {
     const auto *directory = std::getenv("TURTLE_TEST_EVENTS");
     const auto *id = std::getenv("TURTLE_CONNECTION_ID");

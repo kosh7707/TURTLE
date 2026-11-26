@@ -26,6 +26,8 @@ trial server S0 '' '' nouwrite 0 H ''
 trial client S1 ping '' partial 0 HWW ''
 check '[.[]|select(.name=="write_accepted")|.hex] == ["7069","6e67"]'
 "$replay" "$work/events" "$TURTLE_REQUEST"
+trial client S1 ping '' partial-tail 0 HWW ''
+"$replay" "$work/events" "$TURTLE_REQUEST" --after-end
 trial server S1 '' ping partial 0 HRR ping
 trial client S2 '' helo partial 0 RRH helo
 check '[.[]|select(.name=="hs_begin")|.first_operation] == ["read_plain"] and [.[]|select(.name=="hs_complete")|.confirmed_by] == ["handshake_until_local_complete"]'

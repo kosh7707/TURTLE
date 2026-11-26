@@ -29,10 +29,12 @@ default_output_dir() {
 }
 usage() {
     printf '%s\n' "Usage: $0 [--scenario S0|S1|S2|S3|S4|all] [--role client|server|both] [--auth server|mtls|both]" \
-        '       [--warmups N] [--repetitions N] [--out NEW_DIRECTORY] [--credentials DIR] [--use MODULE] [-- NATIVE_ARGS...]' \
+        '       [--warmups N] [--repetitions N] [--tcp-nodelay on|off] [--out NEW_DIRECTORY] [--credentials DIR] [--use MODULE] [-- NATIVE_ARGS...]' \
+        '       TCP_NODELAY defaults to on for both submission sockets; set off to measure with Nagle enabled.' \
         "       $0 --build-only [--out NEW_DIRECTORY | --resume PREVIOUS_OUTPUT] [--use MODULE] [-- NATIVE_ARGS...]" \
         '       --build-only links both role binaries and stops before doctor. No TLS connections or performance results.' \
         '       Resume a staged build without existing runs: --resume PREVIOUS_OUTPUT [--use MODULE] [-- same native args...]' \
+        '       Run a linked build without rebuilding: --run-from BUILD_JOB [--out NEW_RUN] [run options]' \
         '       First run: edit implementations/build.sh and implementation.cpp; the shipped starters do not run TLS.' \
         '       Optional: tools/init-submission-example.sh NAME (e.g. openssl); never chooses or downloads a library.' \
         '       Uses implementations/build.sh and implementation.cpp. Defaults: S3, client, server authentication, 1 warmup, 2 samples.' \
@@ -52,7 +54,7 @@ legacy() {
     if [ -z "$role" ] && [ "$#" = 2 ]; then out=$2; else
         base=${TURTLE_OUTPUT_DIR:-$(default_output_dir)}
     fi
-    cmake -S "$root" -B "$fw" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+    cmake -S "$root" -B "$fw" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DTURTLE_BUILD_REFERENCE=ON
     cmake --build "$fw" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
     if [ -n "$base" ]; then
         mkdir -p -- "$base"
@@ -70,18 +72,22 @@ case ${1-} in
     '') ;;
     *) legacy "$@";;
 esac
-role=client scenario=S3 auth=server warmups=1 repetitions=2 out= credentials= resume= build_only= run_options=
+role=client scenario=S3 auth=server warmups=1 repetitions=2 out= credentials= resume= build_only= run_options= nodelay=on
+run_from= use_option=
 while [ "$#" != 0 ]; do
     case $1 in
       --) shift; break;;
       --build-only) build_only=yes; shift; continue;;
-      --role|--scenario|--auth|--warmups|--repetitions|--credentials) run_options=yes;;
+      --role|--scenario|--auth|--warmups|--repetitions|--credentials|--tcp-nodelay) run_options=yes;;
     esac
     [ "$#" -ge 2 ] || { usage >&2; exit 2; }
     case $1 in
       --role) role=$2;; --scenario) scenario=$2;; --auth) auth=$2;;
       --warmups) warmups=$2;; --repetitions) repetitions=$2;; --out) out=$2;;
-      --resume) resume=$2;; --use) TURTLE_USE_MODULE=$2; export TURTLE_USE_MODULE;;
+      --tcp-nodelay) nodelay=$2;;
+      --resume) resume=$2;;
+      --run-from) [ -n "$2" ] || { usage >&2; exit 2; }; run_from=$2;;
+      --use) use_option=yes; TURTLE_USE_MODULE=$2; export TURTLE_USE_MODULE;;
       --credentials) [ -n "$2" ] || { usage >&2; exit 2; }; credentials=$2;;
       *) usage >&2; exit 2;;
     esac
@@ -92,11 +98,65 @@ if [ -n "$credentials" ]; then credentials=$(realpath -e -- "$credentials"); fi
 case $role in client|server|both) ;; *) usage >&2; exit 2;; esac
 case $scenario in S[0-4]|all) ;; *) usage >&2; exit 2;; esac
 case $auth in server|mtls|both) ;; *) usage >&2; exit 2;; esac
+case $nodelay in on|off) ;; *) usage >&2; exit 2;; esac
 for count in "$warmups" "$repetitions"; do
     case $count in ''|*[!0-9]*) usage >&2; exit 2;; esac
     [ "$count" -le 100000 ] || { usage >&2; exit 2; }
 done
 [ "$repetitions" -ge 1 ] || { usage >&2; exit 2; }
+
+run_locked() {
+    build=$1
+    area=$2
+    destination=$3
+    unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH LD_DEBUG LD_DEBUG_OUTPUT TURTLE_PMU
+    export TURTLE_TCP_NODELAY=$nodelay
+    # Verify with trusted checkout code before handing this PID (and lock)
+    # to a sealed binary. The checker owns hashing until it can exec.
+    exec env --default-signal=INT,TERM sh "$root/tools/submission-receipt.sh" \
+        run "$build" "$area" "$destination" \
+        "$role" "$scenario" "$auth" "$warmups" "$repetitions" "$credentials"
+}
+lock_build() {
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/lock" ] && [ ! -L "$1/lock" ] &&
+        [ -f "$1/reuse.sha256" ] && [ ! -L "$1/reuse.sha256" ] || {
+        echo "Not a reusable linked submission: $1 (run --build-only in a fresh job)" >&2
+        exit 2
+    }
+    exec 9<"$1/lock"
+    flock -sn 9 || { echo "Submission build is being updated: $1" >&2; exit 2; }
+}
+if [ -n "$run_from" ]; then
+    [ -z "$resume$build_only$use_option${TURTLE_USE_MODULE-}" ] && [ "$#" = 0 ] ||
+        { echo '--run-from does not accept --build-only, --resume, --use or native build arguments' >&2; exit 2; }
+    old=$(realpath -e -- "$run_from") ||
+        { echo "Build job does not exist: $run_from" >&2; exit 2; }
+    # Runtime scratch and local retry receipts must not mutate a prior run.
+    for external in "${TMPDIR:-/tmp}" "${XDG_STATE_HOME:-${HOME:+$HOME/.local/state}}"; do
+        [ -n "$external" ] || continue
+        case "$(realpath -m -- "$external")/" in
+            "$old/"*) echo 'Runtime scratch/state must be outside the original build job' >&2; exit 2;;
+        esac
+    done
+    lock_build "$old/build"
+    slot=$(realpath -m -- "$root/implementations")
+    if [ -n "$out" ]; then
+        new=$(realpath -m -- "$out")
+    else
+        new=$(realpath -m -- "${TURTLE_OUTPUT_DIR:-$(default_output_dir)}")
+    fi
+    case "$new/" in
+        "$old/"*|"$slot/"*) echo 'New run must be outside the original build job and implementations/' >&2; exit 2;;
+    esac
+    if [ -n "$out" ]; then
+        [ ! -e "$out" ] && [ ! -L "$out" ] && [ ! -e "$new" ] ||
+            { echo "Run output already exists: $out" >&2; exit 2; }
+        area=new
+    else
+        area=default
+    fi
+    run_locked "$old/build" "$area" "$new"
+fi
 # A distribution has editable starters, not a benchmarkable TLS submission.
 # Check each file before creating a job, even when the other half is ready.
 ready=yes
@@ -143,15 +203,11 @@ else
 fi
 printf 'Submission: %s/implementations\nResults: %s\n' "$root" "$out"
 cmake -S "$root" -B "$fw" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DTURTLE_BUILD_REFERENCE=OFF
-if [ -n "$build_only" ]; then
-    cmake --build "$fw" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}" --target turtle_observe turtle-submission-roles
-else
-    cmake --build "$fw" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}" --target turtle turtle_observe turtle-submission-roles turtle-submission-job
-fi
+cmake --build "$fw" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}" --target turtle turtle_observe turtle-submission-roles turtle-submission-job
 "$root/tools/submission-build.sh" "$root" "$fw" "$out/build" "$@"
 if [ -n "$build_only" ]; then
     printf 'Build only: %s/build/bin/{client,server}; no connections were started.\n' "$out"
     exit 0
 fi
-unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH LD_DEBUG LD_DEBUG_OUTPUT TURTLE_PMU
-exec "$fw/turtle-submission-job" "$fw/turtle" "$out" "$role" "$scenario" "$auth" "$warmups" "$repetitions" "$credentials"
+lock_build "$out/build"
+run_locked "$out/build" existing "$out"

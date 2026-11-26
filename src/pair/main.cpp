@@ -7,7 +7,6 @@
 #include <fstream>
 #include <future>
 #include <iostream>
-#include <set>
 #include <signal.h>
 #include <sys/signalfd.h>
 #include <sys/stat.h>
@@ -31,18 +30,7 @@ struct Commands {
   Args server, client;
 };
 Commands load_profile(const fs::path &file) {
-  std::ifstream input(file);
-  if (!input)
-    throw std::runtime_error("cannot open pair profile");
-  std::set<std::string> roles;
-  auto profile = Json::parse(
-      input, [&](int depth, Json::parse_event_t event, Json &value) {
-        if (depth == 1 && event == Json::parse_event_t::key &&
-            (value == "server" || value == "client") &&
-            !roles.insert(value.get<std::string>()).second)
-          throw std::runtime_error("duplicate role");
-        return true;
-      });
+  auto profile = turtle::artifact::load(file);
   auto args = [&](const char *role) {
     auto a = profile.at(role).get<Args>();
     if (a.empty() || a.front().empty() ||

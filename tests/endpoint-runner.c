@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <turtle/endpoint.h>
+#include <turtle/observe.h>
 
 struct connection {
   const char *input, *mode;
@@ -53,10 +54,20 @@ static turtle_result recv_plain(void *ctx, void *buf, size_t cap, size_t *n) {
 int main(int argc, char **argv) {
   if (argc != 3) return 99;
   struct connection c = {argv[1], argv[2], strlen(argv[1]), NULL};
+  int tail = !strcmp(c.mode, "partial-tail");
+  if (tail) c.mode = "partial";
   const turtle_endpoint ep = {
     &c, handshake,
     !strcmp(c.mode,"nouwrite") ? NULL : send_plain,
     !strcmp(c.mode,"nouread") ? NULL : recv_plain
   };
-  return turtle_run_endpoint(&ep);
+  int status = turtle_run_endpoint(&ep);
+  if (tail) {
+    for (int i = 0; i < 96; ++i)
+      turtle_observe_fact("diagnostic", 0);
+    turtle_observe_fact("endpoint_unsupported", 1);
+    turtle_observe_flush();
+    turtle_observe_flush(); // also followed by normal exit handling
+  }
+  return status;
 }

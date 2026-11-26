@@ -13,12 +13,16 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 git init -q --template=
 git config core.excludesFile /dev/null
 git config core.fileMode true
+# Simulate files already tracked before the workspace-only rules were added.
+mkdir tests
+touch tests/already-tracked.cpp task.md
+git add -- tests/already-tracked.cpp task.md
 cp -- "$root/.gitignore" .
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 # The actual entry files must be visible to Git and remain so after editing.
 set -- implementations/README.md implementations/build.sh implementations/implementation.cpp \
-    CMakePresets.json docs/new-note.md src/new-feature.cpp tests/new-test.cpp tests/fixtures/Makefile \
+    CMakePresets.json docs/new-note.md src/new-feature.cpp nested/tests/new-test.cpp nested/task.md \
     .vscode/tasks.json
 for file do
     mkdir -p -- "$(dirname -- "$file")"
@@ -38,7 +42,8 @@ set -- implementations/unnamed-fork/library.cpp implementations/credentials/priv
     build/generated.cpp build-tests/CTestTestfile.cmake cmake-build-debug/CMakeCache.txt \
     out/report outputs/job/summary.json CMakeCache.txt CMakeFiles/CMakeOutput.log \
     cmake_install.cmake CTestTestfile.cmake CMakeUserPresets.json DartConfiguration.tcl Testing/Temporary/LastTest.log \
-    compile_commands.json build.ninja .ninja_deps .ninja_log install_manifest.txt
+    compile_commands.json build.ninja .ninja_deps .ninja_log install_manifest.txt \
+    tests/new-test.cpp tests/fixtures/Makefile
 for file do
     mkdir -p -- "$(dirname -- "$file")"
     touch -- "$file"
@@ -48,6 +53,27 @@ git add -- .
 [ -z "$(git ls-files -- "$@")" ] || fail 'Ordinary git add staged a private/generated file'
 [ -z "$(git status --porcelain -- "$@")" ] || fail 'Private/generated files appear in ordinary status'
 printf '%s\n' 'PASS: check-ignore, git add, executable starter mode, and tracked starter edits'
+
+# Adding workspace-only rules must not hide edits to existing tracked files.
+for file in tests/already-tracked.cpp task.md; do
+    printf '%s\n' 'Changed locally' > "$file"
+    git status --porcelain -- "$file" | grep -Fx "AM $file" >/dev/null ||
+        fail "Edit to previously tracked file is hidden: $file"
+done
+
+# Check a newly created root task.md separately, so it has no index entry.
+mkdir "$tmp/new-workspace"
+(
+    cd "$tmp/new-workspace"
+    git init -q --template=
+    cp -- "$root/.gitignore" .
+    touch task.md
+    git check-ignore -q -- task.md || fail 'New root task.md is not ignored'
+    git add -- .
+    [ -z "$(git ls-files -- task.md)" ] || fail 'Ordinary git add staged root task.md'
+    [ -z "$(git status --porcelain -- task.md)" ] || fail 'New root task.md appears in ordinary status'
+)
+printf '%s\n' 'PASS: new root tests and task.md are ignored, tracked edits remain visible, and nested paths are versionable'
 
 # The old ignore rules hid user-owned entry files. Git's default fast-forward
 # may replace them when the incoming revision starts tracking those names.

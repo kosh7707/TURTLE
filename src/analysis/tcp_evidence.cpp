@@ -27,8 +27,9 @@ Json read_capture(const fs::path &dir, const std::string &role, Endpoint &ep) {
   }
   auto captures =
       capture::analyze(dir / (role + ".pcap"), streams, scenario_end,
-                       network.at("client_ip"), network.at("server_ip"), true);
-  for (const auto &direction : captures)
+                       network.at("client_ip").get<std::string>(),
+                       network.at("server_ip").get<std::string>(), true);
+  for (const auto &[name, direction] : captures.items())
     require(available(direction), "capture_stream_mismatch");
   const auto &forward = captures.at("client_to_server").at("packets");
   require(!forward.empty() &&
@@ -104,10 +105,9 @@ void collect_tcp_evidence(const fs::path &dir, const Task &task, Endpoint &ep,
   // inferred again from ciphertext or a record ordinal from another connection.
   const Json *first_greeting = nullptr, *last_greeting = nullptr;
   for (const auto &record : from_server) {
-    auto ranges = record.find("application_ranges");
-    if (ranges == record.end())
+    if (!record.contains("application_ranges"))
       continue;
-    for (const auto &part : *ranges) {
+    for (const auto &part : record.at("application_ranges")) {
       if (part.at("message") != "greeting")
         continue;
       if (part.at("plaintext_begin") == 0)

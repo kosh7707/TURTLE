@@ -18,8 +18,8 @@ process::Environment environment(const fs::path &root) {
 namespace {
 Json invoke(const process::Args &args, const fs::path &output) {
   auto r = process::command(args, 90, environment(output.parent_path()));
-  artifact::write_text(output, r.at("stdout"));
-  artifact::write_text(output.string() + ".stderr", r.at("stderr"));
+  artifact::write_text(output, r.at("stdout").get<std::string>());
+  artifact::write_text(output.string() + ".stderr", r.at("stderr").get<std::string>());
   return {{"argv", args},
           {"returncode", r.at("returncode")},
           {"stdout", output.filename().string()},
@@ -99,7 +99,8 @@ Json probe(const Json &options, int cancel) {
     } scratch{pattern};
     auto output = (scratch.path / "probe.data").string();
     auto r = process::command(
-        {chosen.at("perf"), "record", "-q", "-e", chosen.at("event"), "-F",
+        {chosen.at("perf").get<std::string>(), "record", "-q", "-e",
+         chosen.at("event").get<std::string>(), "-F",
          chosen.at("frequency_hz").dump(), "--strict-freq", "--clockid", "mono",
          "--no-inherit", "--no-buildid-cache", "-o", output, "--", "true"},
         10, environment(scratch.path), cancel);
@@ -107,7 +108,7 @@ Json probe(const Json &options, int cancel) {
       throw std::runtime_error("perf_record_probe_failed:" +
                                r.at("stderr").get<std::string>());
     auto decode =
-        process::command({chosen.at("perf"), "script", "-i", output, "--ns",
+        process::command({chosen.at("perf").get<std::string>(), "script", "-i", output, "--ns",
                           "-F", "pid,tid,time,event,period,ip,sym,dso"},
                          10, environment(scratch.path), cancel);
     if (decode.at("returncode") != 0)
@@ -121,10 +122,10 @@ Json probe(const Json &options, int cancel) {
 }
 process::Args prepare(const fs::path &root, const Json &options) {
   auto c = settings(options);
-  process::Args args = {c.at("perf"),
+  process::Args args = {c.at("perf").get<std::string>(),
                         "record",
                         "-e",
-                        c.at("event"),
+                        c.at("event").get<std::string>(),
                         "-F",
                         std::to_string(integer(c.at("frequency_hz"))),
                         "--strict-freq",
@@ -154,7 +155,7 @@ void finish(const fs::path &root, int returncode) {
             {"status", "missing"},
             {"reason", nullptr}});
   try {
-    std::string perf = p.at("perf");
+    const auto perf = p.at("perf").get<std::string>();
     p["commands"].push_back(
         invoke({perf, "--version"}, root / "perf.version.txt"));
     if (returncode || !fs::exists(root / "perf.data") ||
@@ -279,10 +280,11 @@ Json distribution(const Json &samples) {
     total += n;
     if (s.at("symbol") == "[unknown]")
       ++unknown;
-    auto &f = functions[{s.at("module"), s.at("symbol")}];
+    const auto &module = s.at("module").get_ref<const std::string &>();
+    auto &f = functions[{module, s.at("symbol").get<std::string>()}];
     ++f.first;
     f.second += n;
-    auto &m = modules[s.at("module")];
+    auto &m = modules[module];
     ++m.first;
     m.second += n;
   }
@@ -344,22 +346,31 @@ Json prior_report(const fs::path &attempt) {
   // A broken derived report supplies no decoder receipt. Do not let a JSON
   // syntax error suppress independent raw measurements or rejection reports.
   auto path = archived_file(attempt, "analysis.json", "archived_analysis_missing");
-  auto report = Json::parse(artifact::read_text(path), nullptr, false);
-  return report.is_object() ? std::move(report) : Json::object();
+  try {
+    auto report = artifact::load(path);
+    return report.is_object() ? std::move(report) : Json::object();
+  } catch (const Json::Invalid &) {
+    return Json::object();
+  }
 }
 Json decoder_receipt(const Json &report, const std::string &role) {
   Json receipt = Json::object();
   // Old reports stored these inputs alongside derived CPU measurements.
   // A rejected replay may have no role row at all; keep only the inputs.
-  for (const auto &path : {"/legacy_decoder_receipts/" + role,
-                           "/roles/" + role + "/cpu_profile"}) {
-    Json::json_pointer location(path);
-    if (!report.contains(location))
-      continue;
-    const auto &profile = report.at(location);
+  auto collect = [&](const Json &profile) {
     for (auto key : {"analysis_command", "analysis_tool", "perf_script_sha256"})
       if (profile.contains(key))
         receipt[key] = profile.at(key);
+  };
+  if (report.contains("legacy_decoder_receipts")) {
+    const auto &roles = report.at("legacy_decoder_receipts");
+    if (roles.contains(role))
+      collect(roles.at(role));
+  }
+  if (report.contains("roles")) {
+    const auto &roles = report.at("roles");
+    if (roles.contains(role) && roles.at(role).contains("cpu_profile"))
+      collect(roles.at(role).at("cpu_profile"));
   }
   return receipt;
 }
@@ -414,7 +425,7 @@ Json analyze(const fs::path &root, const Json &summary, const Json &events,
         if (process::digest(path) != b.at("sha256").get<std::string>() ||
             build_id(path) != b.at("build_id").get<std::string>())
           throw std::runtime_error("preserved_binary_changed");
-        available.insert(b.at("source"));
+        available.insert(b.at("source").get<std::string>());
       }
     auto decoded = archived_file(root, "perf.script.txt",
                                  "archived_perf_script_missing");

@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <netinet/tcp.h>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -88,6 +89,22 @@ Socket connect_socket(const sockaddr_in &a) {
   }
 }
 
+int configure_tcp(int fd) {
+  const std::string_view policy = env("TURTLE_TCP_NODELAY");
+  require(policy.empty() || policy == "on" || policy == "off",
+          "invalid TURTLE_TCP_NODELAY (expected on or off)");
+  const int requested = policy == "off" ? 0 : 1;
+  require(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &requested,
+                     sizeof requested) == 0,
+          "could not set TCP_NODELAY");
+  int effective = -1;
+  socklen_t length = sizeof effective;
+  require(getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &effective, &length) == 0 &&
+              length == sizeof effective && effective == requested,
+          "could not verify TCP_NODELAY");
+  return effective;
+}
+
 turtle_result outcome(turtle_status result) {
   if (result == TURTLE_TLS_OK)
     return TURTLE_OK;
@@ -133,44 +150,111 @@ turtle_result read_plain(void *session, void *data, size_t len, size_t *read) {
 
 class Trace {
   struct Event {
-    unsigned long long ns;
+    uint64_t ns;
     size_t bytes;
     bool sent;
   };
 
+  struct Call {
+    turtle_observe_stamp began{};
+    size_t requested = 0;
+  };
   std::array<Event, 16384> events_{};
-  std::atomic<size_t> count_{0};
-  std::atomic<bool> clock_failed_{false};
+  std::array<Call, 2> calls_{};
+  const uint64_t owner_ = turtle_observe_clock().tid;
+  size_t count_ = 0;
+  bool covered_ = false;
+  std::atomic<bool> invalid_{false};
 
-  void record(bool sent, size_t bytes) noexcept {
-    const int saved = errno;
-    timespec t{};
-    if (clock_gettime(CLOCK_MONOTONIC, &t) != 0)
-      clock_failed_.store(true, std::memory_order_relaxed);
-    const auto index = count_.fetch_add(1, std::memory_order_relaxed);
-    if (index < events_.size())
-      events_[index] = {static_cast<unsigned long long>(t.tv_sec) *
-                                1000000000ULL +
-                            static_cast<unsigned long long>(t.tv_nsec),
-                        bytes, sent};
-    errno = saved;
+  void fail() noexcept { invalid_.store(true, std::memory_order_relaxed); }
+
+  bool on_owner_thread(uint64_t tid) noexcept {
+    if (tid != 0 && tid == owner_)
+      return !invalid_.load(std::memory_order_relaxed);
+    fail();
+    return false;
+  }
+
+  void record(bool sent, size_t bytes, uint64_t ns) noexcept {
+    if (!ns || count_ == events_.size() || (count_ && ns < events_[count_ - 1].ns)) {
+      fail();
+      return;
+    }
+    events_[count_++] = {ns, bytes, sent};
   }
 
 public:
   static void before_send(void *context, const unsigned char *, size_t bytes) {
-    static_cast<Trace *>(context)->record(true, bytes);
+    auto &trace = *static_cast<Trace *>(context);
+    const auto stamp = turtle_observe_clock();
+    if (trace.on_owner_thread(stamp.tid))
+      trace.record(true, bytes, stamp.ns);
   }
 
   static void after_recv(void *context, const unsigned char *, size_t bytes) {
-    static_cast<Trace *>(context)->record(false, bytes);
+    auto &trace = *static_cast<Trace *>(context);
+    const auto stamp = turtle_observe_clock();
+    if (trace.on_owner_thread(stamp.tid))
+      trace.record(false, bytes, stamp.ns);
+  }
+
+  static void coverage(void *context, int active) {
+    auto &trace = *static_cast<Trace *>(context);
+    if (!trace.on_owner_thread(turtle_observe_clock().tid))
+      return;
+    if ((active != 0 && active != 1) || (active != 0) == trace.covered_ ||
+        trace.calls_[0].began.ns || trace.calls_[1].began.ns) {
+      trace.fail();
+      return;
+    }
+    trace.covered_ = active != 0;
+    turtle_observe_coverage("library_io", active);
+  }
+
+  static void transfer_begin(void *context, int sent, size_t requested) {
+    auto &trace = *static_cast<Trace *>(context);
+    const auto stamp = turtle_observe_clock();
+    if (!trace.on_owner_thread(stamp.tid))
+      return;
+    auto &call = trace.calls_[sent != 0];
+    if (!trace.covered_ || call.began.ns || !stamp.ns) {
+      trace.fail();
+      return;
+    }
+    call = {stamp, requested};
+    if (sent && requested)
+      trace.record(true, requested, stamp.ns);
+  }
+
+  static void transfer_end(void *context, int sent, size_t requested,
+                           ptrdiff_t result, const unsigned char *data) {
+    auto &trace = *static_cast<Trace *>(context);
+    const auto stamp = turtle_observe_clock();
+    if (!trace.on_owner_thread(stamp.tid))
+      return;
+    auto &call = trace.calls_[sent != 0];
+    if (!trace.covered_ || !call.began.ns || stamp.ns < call.began.ns ||
+        requested != call.requested ||
+        (result > 0 && static_cast<size_t>(result) > requested)) {
+      trace.fail();
+      return;
+    }
+    turtle_observe_io(call.began, stamp, "library_io", sent, requested, result,
+                      data, 0);
+    call = {};
+    if (!sent && result > 0)
+      trace.record(false, static_cast<size_t>(result), stamp.ns);
+  }
+
+  bool complete() const noexcept {
+    return !invalid_.load(std::memory_order_relaxed) && !covered_;
   }
 
   size_t save(const std::string &path, bool completed) const {
     std::ofstream file(path);
     file << "event,monotonic_ns,bytes\n";
-    const auto count = count_.load(std::memory_order_relaxed);
     bool send = false, recv = false;
-    for (size_t i = 0; i < count && i < events_.size(); ++i) {
+    for (size_t i = 0; i < count_; ++i) {
       const auto &row = events_[i];
       file << (row.sent ? "before_send_offer" : "after_recv") << ',' << row.ns
            << ',' << row.bytes << '\n';
@@ -179,11 +263,9 @@ public:
     }
     file.close();
     require(bool(file), "could not write transport trace");
-    require(count <= events_.size() &&
-                !clock_failed_.load(std::memory_order_relaxed),
-            "transport trace incomplete");
+    require(complete(), "transport trace incomplete");
     require(!completed || (send && recv), "transport hooks were not observed");
-    return count;
+    return count_;
   }
 };
 
@@ -216,6 +298,7 @@ int run(int argc, char **argv) {
   const auto output = result_path(argv[3]);
   require(std::signal(SIGPIPE, SIG_IGN) != SIG_ERR, "signal setup");
   auto fd = connect_socket(address(argv[1], argv[2]));
+  turtle_observe_fact("tcp_nodelay", configure_tcp(fd.get()));
   const char *name = env("TURTLE_PEER_NAME");
   const char *cert = env("TURTLE_CERT");
   const bool mutual = server ? *name != '\0' : *cert != '\0';
@@ -227,8 +310,9 @@ int run(int argc, char **argv) {
                                  env("TURTLE_KEY"),
                                  name};
   auto trace = measured ? std::make_unique<Trace>() : nullptr;
-  const turtle_transport_hooks hooks{trace.get(), Trace::before_send,
-                                     Trace::after_recv};
+  const turtle_transport_hooks hooks{
+      trace.get(), Trace::before_send, Trace::after_recv, Trace::coverage,
+      Trace::transfer_begin, Trace::transfer_end};
   std::unique_ptr<turtle_tls, decltype(&turtle_tls_free)> tls(
       turtle_tls_setup(&config, fd.get()), turtle_tls_free);
   require(tls != nullptr, "TLS setup");
@@ -261,11 +345,14 @@ int run(int argc, char **argv) {
   };
   if (measured) {
     size_t rows = 0;
+    bool detached = false;
     const bool saved = capture(".csv", [&](const std::string &partial) {
-      require(turtle_tls_set_hooks(tls.get(), nullptr) == TURTLE_TLS_OK,
-              "could not detach transport hooks");
+      detached = turtle_tls_set_hooks(tls.get(), nullptr) == TURTLE_TLS_OK;
+      require(detached, "could not detach transport hooks");
       rows = trace->save(partial, result == TURTLE_OK);
     });
+    if (!detached || !trace->complete())
+      turtle_observe_fact("transport_observation_incomplete", 1);
     if (saved && rows != 0) {
       // Publish only after the corresponding complete CSV has been committed.
       capture(".csv.count", [&](const std::string &partial) {

@@ -5,7 +5,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Optional write-only native-stream.v1 observations. No TLS or socket handles.
+/* Optional write-only native observer evidence. No TLS or socket handles.
  * One instrumented process per run/connection/role. No hooks are installed.
  * Environment: TURTLE_EVIDENCE_FD (inherited write-only fd, not owned),
  * TURTLE_RUN_ID, TURTLE_CONNECTION_ID, TURTLE_ROLE; optional TURTLE_PMU=1.
@@ -19,6 +19,13 @@ typedef struct turtle_observe_stamp {
   const char *pmu_status, *pmu_reason; /* SDK-owned static strings. */
 } turtle_observe_stamp;
 turtle_observe_stamp turtle_observe_now(void);
+/* Clock/TID only; useful for byte transfer boundaries that do not own PMU. */
+turtle_observe_stamp turtle_observe_clock(void);
+/* Finalize this process's buffered observations; normally done on orderly
+ * exit. For a longer-lived caller or before _exit(), call once after all
+ * observations, outside measurement and with no concurrent callbacks.
+ * Calls after finalization do not add evidence. May wait for the reader. */
+void turtle_observe_flush(void);
 /* Lifecycle only: ready, hs_begin (first entry), hs_progress, hs_complete
  * (full success), auth_accepted, end. Probe barrier observations are optional.
  * Use the _at variant to report a stamp captured at the actual boundary. */

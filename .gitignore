@@ -28,6 +28,8 @@
 /install_manifest.txt
 
 # Work in progress outside the shipped docs
+/tests/
+/task.md
 /docs/temp/
 /docs/references/
 /docs/for-paper/

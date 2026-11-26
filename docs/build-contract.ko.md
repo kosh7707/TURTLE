@@ -11,7 +11,7 @@
 | TURTLE | 원본 빌드 완료 후 공통 [선언](../src/include/turtle/implementation.hpp)과 설치된 SDK로 `implementation.cpp`를 컴파일한다. 선택된 **하나의 목적 파일**로 프레임워크 소유의 client/server를 각각 링크한다. |
 | 사용자 | 준비한 뒤 `./bench.sh` 한 번. 빌드만 확인하려면 `./bench.sh --build-only`. 두 실행 파일이 생기며 TLS 연결·doctor·성능 결과는 생기지 않는다. |
 
-이용자는 별도의 서버 프로그램, CMake 타깃, 구현체 등록, 시스템 전역 설치를 준비할 필요가 없다. **예시를 보고 싶은 경우에만** [레시피 모음](examples/submissions/README.md)을 본다. 새 checkout의 [제출 폴더](../implementations/README.md)에는 편집 가능한 레시피와 7개 함수의 비활성 틀이 있다. 실제 TLS 구현은 들어 있지 않다. 예시를 쓸 때만 `tools/init-submission-example.sh NAME`을 명시적으로 호출한다. 편집한 파일은 덮어쓰지 않는다.
+[첫 제출 실행과 CSV 읽기](../README.md#제출-구현으로-첫-실행)에서 시작한다. 별도의 서버 프로그램, CMake 타깃, 구현체 등록, 시스템 전역 설치는 필요하지 않다. **예시를 보고 싶은 경우에만** [레시피 모음](examples/submissions/README.md)을 본다. 새 checkout의 [제출 폴더](../implementations/README.md)에는 편집 가능한 레시피와 7개 함수의 비활성 틀이 있다. 실제 TLS 구현은 들어 있지 않다. 예시를 쓸 때만 `tools/init-submission-example.sh NAME`을 명시적으로 호출한다. 편집한 파일은 덮어쓰지 않는다.
 
 ## 1. 호출: 표준 입력이 아니라 인자 두 개
 
@@ -44,7 +44,7 @@
 - [링크 소비기](../tools/submission-link.cmake)는 사설 `.pc`를 탐색한다. 현재 모듈 이름은 영숫자 및 `.+_-` 범위다. 컴파일 옵션은 붙여 쓴 `-I경로`, `-D정의`, `-U정의`, `-pthread`를 처리한다. 적어도 한 사설 include 경로와 실제로 그 prefix에서 읽은 헤더의 의존 기록이 필요하다.
 - 공개 링크 입력은 사설 `-L경로 -l이름` 또는 사설 공유 파일의 절대 경로, `-pthread`가 대상이다. 직접 명시한 라이브러리를 호스트 동명 파일로 바꿔서 통과시키지 않는다. DSO가 전이적으로 쓰는 운영체제 라이브러리까지 모두 사설 설치하라는 뜻은 아니다.
 - 전략은 호환되는 모든 컴파일 플래그를 해석하는 범용 빌드 시스템이 아니다. 정적 전용·헤더 전용, 비 ELF, 교차 ABI·원격 보드, 지원하지 않는 공개 링크 옵션은 현재 범위 밖이다. 루트/프레임워크 빌드/작업 경로에 세미콜론, 콜론, 줄바꿈을 사용하지 않는다.
-- 네이티브 Linux, C/C++ 컴파일러, CMake 3.20+, Make 또는 Ninja, nlohmann_json 3.12+, pkg-config, GNU tar/coreutils, flock, readelf 및 GNU 호환 링커/로더가 필요하다. 원본 빌드의 자체 도구는 별도다. JSON 패키지가 없다면 저장소의 `cmake -DNAME=json -DVERSION=3.12.0 -P tools/dependencies.cmake`로 준비할 수 있다. JSON은 개발자가 제출하는 빌드 명세가 아니다.
+- 네이티브 Linux, C 컴파일러와 C++20 컴파일러, CMake 3.20+, Make 또는 Ninja, pkg-config, GNU tar/coreutils, util-linux의 `flock`과 `setsid`, readelf 및 GNU 호환 링커/로더가 필요하다. 원본 빌드의 도구와 테스트 인증서를 발행하는 `openssl` 명령은 별도다. 기본 빌드는 외부 JSON 라이브러리·`jq`·시스템 TLS 개발 패키지를 요구하지 않는다. 참조 피어와 libpcap 패킷 캡처는 기본으로 빌드하지 않는다. 필요할 때만 각각 CMake의 `TURTLE_BUILD_REFERENCE`와 `TURTLE_WITH_PCAP`을 `ON`으로 명시한다.
 
 </details>
 
@@ -56,8 +56,16 @@
 | 원본 빌드 실패 | `JOB/build/native.log`, `native.exit`. 레시피/원본/옵션을 고쳐 **새 작업 디렉터리**에서 재시도한다. |
 | 여러 `.pc` | 실제 브리지 컴파일과 양쪽 링크로 후보를 검사한다. 이름이 다르더라도 소비 계획이 동등하면 한 번의 선택으로 처리한다. 유효 후보가 서로 다르거나 후보를 판정할 근거가 부족하면 멈춘다. 후보/실패 지점은 `JOB/build/link.*/candidates.tsv`와 같은 디렉터리의 로그에 있다. |
 | 입력을 바꾸지 않고 모듈만 지정 | `./bench.sh --build-only --resume JOB --use MODULE` (원래 native 인자가 있으면 동일한 `-- …`도 전달). native build를 반복하지 않고 링크를 재검사한다. `--use`는 벤더 이름이 아니라 **사용자가 선택한 사설 pkg-config 모듈**이다. |
-| 제출물·인자·기록된 환경·설치본 변경 / 이미 실행한 job | 기존 결과를 덮지 말고 `--out NEW_DIRECTORY`를 쓴다. 지문은 모든 호스트 도구와 모든 환경 변수의 재현성을 증명하지 않는다. 특히 구성에 영향을 주는 별도 환경을 바꿨다면 새 job으로 시작한다. |
-| 링크 성공 | `JOB/build/bin/{client,server}`, `implementation.d`, 양쪽 `.map`, `module.txt`, `expected-libs.txt/.sha256`, `link-evidence.txt`. `--build-only`는 여기서 종료한다. 같은 구성에서 나중에 실행하려면 `./bench.sh --resume JOB`에 원하는 실행 옵션과 동일 native 인자를 준다. |
+| 제출물·인자·기록된 환경·설치본 변경 | 다른 바이너리가 필요하면 기존 결과를 덮지 말고 `--out NEW_DIRECTORY`로 새 빌드를 시작한다. 지문은 모든 호스트 도구와 모든 환경 변수의 재현성을 증명하지 않는다. 특히 구성에 영향을 주는 별도 환경을 바꿨다면 새 job으로 시작한다. |
+| 링크 성공 | `JOB/build/bin/{client,server}`, `implementation.d`, 양쪽 `.map`, `module.txt`, `expected-libs.txt/.sha256`, `link-evidence.txt`. `--build-only`는 여기서 종료한다. 성공한 빌드는 `./bench.sh --run-from JOB --out NEW_RUN`으로 반복 사용한다. 이전 결과나 TLS 빌드를 바꾸지 않는다. |
+
+### 성공한 빌드를 다시 사용하기
+
+`--run-from JOB`은 이미 링크한 두 역할과 해당 빌드에 보존한 컨트롤러·관측 라이브러리·사설 TLS 설치본을 사용한다. **CMake, native 레시피, 재링크 또는 현재 제출 슬롯이 필요 없다.** 실행 조건만 바꿔 새 디렉터리에 기록한다. `--out`으로 지정하는 디렉터리는 존재하지 않아야 하며 원래 job이나 `implementations/` 안에 둘 수 없다. 원래 빌드의 절대경로가 로더·사설 설치본 기록에 남으므로 빌드를 이동하거나 그 파일을 바꾸지 않는다. 결과는 빌드를 복사하지 않으므로 새 실행과 원래 빌드를 같이 보존한다.
+
+`--run-from`에 `--build-only`, `--resume`, `--use` 또는 `--` 뒤의 native 인자를 섞지 않는다. 옛 버전의 빌드·미완료 빌드 또는 무결성 확인이 실패한 빌드는 사용하지 않는다. `--resume`은 실행 결과를 재사용하는 명령이 아니라 **대기 중인 native 빌드의 모듈 선택**을 마치는 명령이다. 다른 옵션·모듈로 이미 완성한 빌드를 바꾸는 대신 새 빌드를 만든다.
+
+실행 중 Ctrl-C 또는 실행 PID에 보낸 SIGTERM은 새 연결을 중단하고 진행 중인 컨트롤러를 정리한 뒤 각각 종료 코드 130/143을 돌려준다. 실행 전이나 후의 빌드 검증을 중단할 때도 해당 검증기의 해시 작업과 임시 파일은 정리한다. 이미 수집한 진단 파일이 남더라도 완료된 실행으로 간주하지 않는다. 정상 종료한 실행은 원래 빌드를 다시 검증하고 최종 CSV를 쓴다.
 
 판정 기준은 **이번 호출의 종료 코드와 이번 링크 로그**다. 재개 후 새 선택이 실패했어도 기존 job에 직전 성공의 `bin/`이 남을 수 있다. `.d`는 컴파일러가 읽은 경로, 링크 맵은 링커가 사용한 입력, 로더의 `--list`는 사전 경로 확인이다. **빌드만으로 실제 핸드셰이크, 특정 PQ 그룹 협상, 최초에 제출한 모든 헤더의 출처, 또는 시간·사이클의 정확성을 확인한 것은 아니다.**
 

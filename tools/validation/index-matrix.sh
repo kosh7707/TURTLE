@@ -53,14 +53,43 @@ check_transport_rows() {
 
 # Matrix entry point (the transport reader above is exercised by its CTest fixture).
 runtime_only=false
-if [ "${1-}" = --runtime-only ]; then runtime_only=true; shift; fi
-[ "$#" = 2 ] || { echo 'Usage: index-matrix.sh [--runtime-only] JOB NEW_INDEX' >&2; exit 2; }
+origin=
+for _ in 1 2; do
+    case "${1-}" in
+        --runtime-only) runtime_only=true; shift;;
+        --build-from) [ "$#" -ge 2 ] || fail 'missing --build-from job'; origin=$2; shift 2;;
+        *) break;;
+    esac
+done
+[ "$#" = 2 ] || { echo 'Usage: index-matrix.sh [--runtime-only] [--build-from BUILD_JOB] RUN NEW_INDEX' >&2; exit 2; }
 if ! "$runtime_only"; then require_exact_json; fi
 job=$(realpath -e -- "$1")
+sum=$job/summary.json
+b=$job/build
+if [ -n "$origin" ]; then
+    origin=$(realpath -e -- "$origin")
+    b=$origin/build
+    here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+    sh "$here/submission-receipt.sh" verify "$b"
+    jq -e --arg b "$b" '.build_directory == $b' "$sum" >/dev/null ||
+        fail 'recorded build directory differs from --build-from'
+else
+    jq -e --arg b "$b" '(.build_directory // $b) == $b' "$sum" >/dev/null ||
+        fail 'selected build lives separately; pass --build-from BUILD_JOB'
+fi
+observer=$(jq -r '.observer_path // empty' "$sum")
+if [ -n "$observer" ]; then
+    [ "$observer" = "$b/runtime/libturtle_observe.so.1" ] && [ -f "$observer" ] &&
+        [ ! -L "$observer" ] || fail 'unexpected or unavailable job-local observer'
+    digest=$(sha256sum < "$observer")
+    jq -e --arg digest "${digest%% *}" '.observer_sha256 == $digest' "$sum" >/dev/null ||
+        fail 'job-local observer digest differs from selected report'
+elif [ -n "$origin" ]; then
+    fail 'reused report has no job-local observer receipt'
+fi
 out=$(realpath -m -- "$2"); mkdir -- "$out"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 absent() { [ ! -e "$1" ] && [ ! -L "$1" ] || fail "unexpected artifact: $1"; }
-sum=$job/summary.json; b=$job/build
 (cd "$b" && sha256sum -c expected-libs.sha256) > "$out/library-check.log"
 printf 'auth\tscenario\ttarget\tphase\tpurpose\tconnection_id\tport\tclient_pid\tserver_pid\ttrace_rows\tclient_sent\tserver_sent\tqualified\tattempt\ttrace\n' > "$out/connections.tsv"
 printf 'auth\tscenario\ttarget\truntime_successes\tverified_samples\trequested\tstate\tcase_directory\n' > "$out/cases.tsv"
@@ -111,9 +140,19 @@ for auth in server mtls; do for s in S0 S1 S2 S3 S4; do for role in client serve
                 fi
                 sed -n 's|^[^/]*\(/.*\)$|\1|p' "$snapshot" > "$tmp/maps"
                 grep -Fxq -- "$b/bin/$side" "$tmp/maps"
+                if [ -n "$observer" ]; then grep -Fxq -- "$observer" "$tmp/maps"; fi
                 while IFS= read -r lib; do grep -Fxq -- "$lib" "$tmp/maps"; done < "$b/expected-libs.txt"
             done
-            jq -e -s --arg id "$id" --arg p "$peer" 'length>0 and all(.[]; .connection_id==$id and .role==$p and .pmu?==null)' "$raw/$peer.ndjson" >/dev/null
+            jq -e -s --arg id "$id" --arg p "$peer" --slurpfile attempt "$raw/attempt.json" '
+              length>0 and all(.[]; .connection_id==$id and .role==$p and .pmu?==null) and
+              (if .[0].v==2 then
+                . as $rows | (length-1) as $n |
+                $n>0 and .[-1].kind=="observer_complete" and .[-1].count==$n and
+                all(.[]; .v==2 and .run_id==$attempt[0].run_id and .pid==$attempt[0].pid[$p]) and
+                all(range(0; $n); . as $i | $rows[$i] |
+                    .seq==($i+1) and .kind!="observer_complete" and .kind!="observer_loss")
+              else all(.[]; .v==1 and .kind!="observer_complete" and .kind!="observer_loss") end)' \
+              "$raw/$peer.ndjson" >/dev/null
             # Offers are requested writes, not syscall completions. Check raw
             # endpoints and span against the same connection's evaluated trace.
             rows=$(check_transport_rows "$job/$trace" "$runtime_only" "$tmp/case" "$phase" "$id" "$role") ||

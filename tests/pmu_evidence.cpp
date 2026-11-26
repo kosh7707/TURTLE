@@ -73,7 +73,7 @@ int run(const std::string &mode, const fs::path &dir) {
   }
   if (mode == "live") {
     auto r = report(dir);
-    require(r.at("complete") && b.at("tid") == raw.at("owner_tid") &&
+    require(r.at("complete").get<bool>() && b.at("tid") == raw.at("owner_tid") &&
             e.at("tid") == b.at("tid"), "not continuously scheduled on owner thread");
     const auto &m = r.at("operations").at("scenario");
     for (auto key : {"cycles", "instructions", "time_enabled_ns", "time_running_ns"}) {
@@ -105,7 +105,7 @@ int run(const std::string &mode, const fs::path &dir) {
     artifact::save(dir / "counters.json", data);
     return report(dir);
   };
-  require(check(raw).at("complete"), "good raw fixture rejected");
+  require(check(raw).at("complete").get<bool>(), "good raw fixture rejected");
   auto malformed = raw;
   malformed["events"][0]["end"]["tid"] = 0;
   require(check(malformed).at("reason") == "counter_thread_mismatch", "offline tid mismatch");
@@ -117,7 +117,7 @@ int run(const std::string &mode, const fs::path &dir) {
     m["events"][0]["end"]["time_running_ns"] = m["scenario"]["end"]["time_running_ns"] = running;
     const auto r = check(m);
     const auto &scope = r.at("operations").at("scenario");
-    require(!r.at("complete") && scope.at("cycles").at("value").is_null() &&
+    require(!r.at("complete").get<bool>() && scope.at("cycles").at("value").is_null() &&
             scope.at("cycles_raw").at("value").is_null() == (running == 5), "partial PMU coverage");
   }
   // Raw inventory validity is independent of TLS task success.
@@ -131,10 +131,10 @@ int run(const std::string &mode, const fs::path &dir) {
                    {"artifacts_sha256", {{"raw", process::digest(attempt / "raw")}}}};
   auto assessed = [&] { return analysis::assess(attempt, config, schedule); };
   artifact::write_text(attempt / "analysis.json", "{");
-  require(assessed().at("raw_evidence_valid"), "damaged derived report blocked intact inventory");
+  require(assessed().at("raw_evidence_valid").get<bool>(), "damaged derived report blocked intact inventory");
   artifact::write_text(attempt / "analysis.json", "unfinished report");
   artifact::write_text(attempt / "raw", "changed");
-  require(!assessed().at("raw_evidence_valid") &&
+  require(!assessed().at("raw_evidence_valid").get<bool>() &&
               artifact::load(attempt / "analysis.json").at("eligible") == false,
           "damaged derived report blocked rejection of damaged raw evidence");
   artifact::write_text(attempt / "raw", "known");
@@ -147,7 +147,7 @@ int run(const std::string &mode, const fs::path &dir) {
   artifact::save(attempt / "analysis.json", prior);
   artifact::write_text(attempt / "raw", "changed");
   auto changed = assessed();
-  require(!changed.at("raw_evidence_valid") && !changed.at("eligible") &&
+  require(!changed.at("raw_evidence_valid").get<bool>() && !changed.at("eligible").get<bool>() &&
           changed.at("invalid_reasons")[0] == "raw_artifact_digest_mismatch" &&
           changed.at("measurements").empty(), "corrupt evidence accepted");
   require(changed.at("roles").empty() &&
@@ -156,7 +156,7 @@ int run(const std::string &mode, const fs::path &dir) {
           "rejected attempt lost decoder receipt or retained measurements");
   artifact::write_text(attempt / "raw", "known");
   auto repaired = assessed();
-  require(repaired.at("raw_evidence_valid") &&
+  require(repaired.at("raw_evidence_valid").get<bool>() &&
               repaired.at("legacy_decoder_receipts") ==
                   changed.at("legacy_decoder_receipts"),
           "restoring raw data lost decoder receipt");

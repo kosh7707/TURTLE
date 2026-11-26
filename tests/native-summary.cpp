@@ -38,6 +38,13 @@ int main() try {
     contains(s, "auth evidence unconfirmed; full flight attribution unconfirmed");
     contains(s, std::string("Most common exclusion (1 sample(s)): PMU ") + status);
   }
+  auto &timing = sample["participants"]["client"]["timing"];
+  timing["end_label"] = "last_read_return";
+  contains(render(), "hs_begin -> SAD1.last_read_return");
+  timing.erase("end_label");
+  sample["qualification"] = "cf_transport_receive_unobserved";
+  contains(render(), "S2 server CF receive not observed");
+  sample["qualification"] = "unknown";
   sample["pmu_status"] = "unsupported";
   auto &start = sample["participants"]["client"]["timing"]["begin"];
   start = {{"pmu_reason", "pmu_not_built"}, {"pmu_errno", 0}};
@@ -63,7 +70,7 @@ int main() try {
   sample["requested_metrics"]["authentication"] =
       {{"required", true}, {"available", nullptr}, {"metric", "authentication"}};
   contains(render(), "required metric authentication not confirmed");
-  sample["requested_metrics"].clear();
+  sample["requested_metrics"] = Json::object();
   sample["benchmark_timing_ns"] = nullptr;
   sample["prepared_start"]["verified"] = nullptr;
   contains(render(), "local elapsed 132 ns");

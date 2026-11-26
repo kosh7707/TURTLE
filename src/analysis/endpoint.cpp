@@ -1,4 +1,5 @@
 #include "analysis/analysis.hpp"
+#include <algorithm>
 #include "capture/capture.hpp"
 #include <set>
 #include <sstream>
@@ -84,7 +85,7 @@ Endpoint endpoint(const std::filesystem::path &root) {
     for (auto &r : rs) {
       r["key"] = {{"run", s.at("run_id")},
                   {"connection", s.at("connection_id")},
-                  {"direction", flow(s.at("role"), direction)},
+                  {"direction", flow(s.at("role").get<std::string>(), direction)},
                   {"record", r.at("number")}};
       r["event_ids"] = Json::array();
       std::set<std::uint64_t> calls;
@@ -95,7 +96,7 @@ Endpoint endpoint(const std::filesystem::path &root) {
           r["event_ids"].push_back(e.at("id"));
           calls.insert(integer(e.at("call_id")));
         }
-      r["call_ids"] = calls;
+      r["call_ids"] = Json::array(Json::Array(calls.begin(), calls.end()));
     }
     ep.records[direction] = std::move(rs);
     ep.streams[direction] = std::move(wire);

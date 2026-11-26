@@ -136,7 +136,7 @@ void describe_flights(const evidence::Task &task, Endpoint &ep,
   plain =
       artifact::measurement(flight(ep, records, 0, start, send, public_trace));
   if (!evidence::available(finished)) {
-    opaque = evidence::missing(finished.at("reason"));
+    opaque = evidence::missing(finished.at("reason").get<std::string>());
     return;
   }
   const auto stop = integer(finished.at("value").at("record"));

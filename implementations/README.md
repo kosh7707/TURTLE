@@ -10,7 +10,7 @@
    tools/init-submission-example.sh openssl && ./bench.sh --build-only
    ```
 
-직접 구현한 경우에는 `./bench.sh --build-only`만 실행합니다. 성공하면 출력된 `Results:` 경로 아래에 `build/bin/client`와 `build/bin/server`가 생깁니다. **아직 TLS 연결이나 측정은 없습니다.** 같은 빌드로 실행하려면 `./bench.sh --resume "$job"`을 사용합니다(`job`은 출력된 결과 경로).
+직접 구현한 경우에는 `./bench.sh --build-only`만 실행합니다. 성공하면 출력된 경로 아래에 `build/bin/client`와 `build/bin/server`가 생깁니다. **아직 TLS 연결이나 측정은 없습니다.** 해당 빌드를 `./bench.sh --run-from "$job" --scenario S0`으로 실행하세요(`job`은 출력된 빌드 경로). 이후 시나리오를 바꾸어도 이 빌드는 그대로 사용합니다. [첫 실행·CSV 결과 보기](../README.md#제출-구현으로-첫-실행).
 
 예시 설치는 두 대상 각각이 없거나 배포 템플릿과 내용이 같을 때만 진행합니다. 편집한 파일이나 심볼릭 링크가 있으면 그대로 두고 중단합니다. 이미 작업 중이라면 [예시 모음](../docs/examples/submissions/README.md)을 참고해 필요한 부분만 옮기세요. 어떤 예시도 자동 선택되지 않습니다. 선택 중에는 두 파일의 편집을 끝내 두세요. 동시에 변경돼 복원이 멈추면 도구가 출력한 `.submission-example.*/old/`의 사본을 확인한 뒤 정리하세요.
 

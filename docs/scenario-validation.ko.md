@@ -1,5 +1,7 @@
 # TURTLE 제출 빌드 및 S0–S4 검증
 
+> **이전 검증 기록.** 아래 수치·명령·의존성은 당시 버전의 것이다. 현행 사용법은 [첫 제출 실행](../README.md#제출-구현으로-첫-실행), 현행 독립 검증 진입점은 [clean-room.sh](../tools/validation/clean-room.sh)를 본다. 당시의 S2 시간과 현행 시간은 종료점이 달라 직접 비교하지 않는다.
+
 [검수 기준](../task.md) · [제출·증거 계약](submission.md) · [빌드 계약](build-contract.ko.md) · [연구 자료 이관](build-study-migration.ko.md)
 
 **완료.** 최종 격리 실행에서 빌드 계약 **3/3**, OpenSSL·wolfSSL·GnuTLS의 독립 링크 **3/3**, 선택한 OpenSSL의 S0–S4 **20/20 조합·40/40 본 시도**가 통과했다. 인증 실패·복구와 CF 보류 통제도 예상대로 동작했다. 코드/구조 독립 리뷰, 연구 자료 이관과 외부 백업 검산을 마쳤다. `~/TURTLE-build-study` 없이도 제품 빌드와 이 검증을 재현할 수 있다. 연구 원본은 홈 최상위에서 보관소로 옮겼고 별도 백업도 보존했다.
@@ -29,7 +31,7 @@ R="$A/home/TURTLE-final-validation-20261126"
 | `openssl-2d1c10a592677ff34cdf60bd59c431d835a1fc26.tar.gz` | 수정 없는 작업 슬롯의 OpenSSL Git commit `2d1c10a592677ff34cdf60bd59c431d835a1fc26`에서 `git archive --format=tar --prefix=openssl-2d1c10a592677ff34cdf60bd59c431d835a1fc26/ <commit>`을 만들고 `gzip -1`로 압축 | `915a1844aea2c0ff3c15f16572fe110ff3840af0aa675f5e83c95b5ae85f4cc4` |
 | `wolfssl-5.9.4.tar.gz` | v5.9.4-stable 소스; 이 머신의 기존 `.deps/cache` 아카이브. [의존성 명세](../tools/dependencies.json)의 핀과 일치 | `7256bfc89b183a75183806c7debfa203443873b0b4a562e1b80d68e01b45ac57` |
 | `gnutls-3.8.14.tar.xz` | GnuTLS 3.8.14 배포 소스; 기존 연구의 `experiments/20261126T0132Z/gnutls/upstream/`에서 원본 아카이브를 복사한 뒤 연구 폴더를 가렸다. 이 사본의 무결성은 확인했으나 릴리스 서명을 다시 검증하지는 않았다 | `7e2d258071f5db9620aa7ff34259331d004f7beafa3eb18560cfaf60acfbf02a` |
-| `json-3.12.0.tar.xz` | nlohmann/json 3.12.0 헤더 배포본; 기존 로컬 캐시에서 가져온 소스 아카이브. [의존성 명세](../tools/dependencies.json)의 핀과 일치 | `42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa` |
+| `json-3.12.0.tar.xz` | nlohmann/json 3.12.0 헤더 배포본; 당시 로컬 캐시에서 가져온 소스 아카이브 (현행 빌드에서는 사용하지 않음) | `42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa` |
 
 ### 독립 실행
 
@@ -198,7 +200,7 @@ sh "$HOME/.local/share/turtle/archive/2026-11-26/verify.sh"
 | [SDK 프로필·역할 어댑터](endpoint.md)와 [reference 역할](../tools/reference/CMakeLists.txt) | [`bench.sh`](../bench.sh)의 `PROFILE.json`, `--client`, `--server`와 `turtle run`의 프로필 경로. 외부 SDK 소비자·설치 예·`endpoint_installed_tls_matrix` 및 invalid-request 회귀가 쓴다. 기본 제출 빌드는 reference를 끄고 이 경로로 폴백하지 않는다. | **유지.** 제출 경로의 벤더 독립성과 기존 SDK 계약을 각각 검증한다. |
 | `turtle-pair`와 기존 원자료 재판독 | `bench.sh --pair`의 진단 실행, `turtle analyze`의 보관 결과 판독. `pair_diagnostics`, `native_packet_replay`와 기존 자료 비교에 영향을 준다. | **유지.** 진단·재판독을 삭제하면 증거 재확인 수단을 잃는다. |
 | 빌드 연구의 별도 링크·선택 대조 | 역사 실험 내부 스크립트로만 호출되며, 현재 공개 빌드 진입점은 `bench.sh --build-only`다. 새 회귀가 실사용 후보 대조를 검증한다. | **통합.** 필수 동작과 입력은 [합성 레시피](../tests/fixtures/submission-recipe.sh)·[계약 회귀](../tests/submission-build-contract.sh)·[검증 드라이버](../tools/validation/build-matrix.sh)로 옮겼다. 이전 실행 코드를 새 제품의 두 번째 링커로 이관하지 않았다. |
-| 옛 `build/`, `outputs/`, `out/` | 당시 연구의 링크 3개는 `out/endpoint-peer-build/libturtle_observe.so.1`을 참조한다. 현행 제출물은 사용하지 않는다. | **제품 트리에서 정리.** 옛 `out/`은 `A/workspace/out/`에 보존했다. `sh "$A/read-legacy-observer.sh"`로 옛 링크 세 개를 읽기 전용으로 검사한다. [현행 CLI](../README.md#build-and-run-a-submission)는 기본 빌드와 결과를 작업 트리 밖에 쓴다. |
+| 옛 `build/`, `outputs/`, `out/` | 당시 연구의 링크 3개는 `out/endpoint-peer-build/libturtle_observe.so.1`을 참조한다. 현행 제출물은 사용하지 않는다. | **제품 트리에서 정리.** 옛 `out/`은 `A/workspace/out/`에 보존했다. `sh "$A/read-legacy-observer.sh"`로 옛 링크 세 개를 읽기 전용으로 검사한다. [현행 CLI](../README.md#제출-구현으로-첫-실행)는 기본 빌드와 결과를 작업 트리 밖에 쓴다. |
 | `.vs`, `.deps`의 로컬 생성물 | `.vs`는 IDE 상태다. `.deps`의 캐시·도구·설치본 경로는 현재 빌드 안내와 연구·논문 자료에서 쓴다. | **별도 보관.** `.vs`는 `A/workspace/vs`로 보관했다. `.deps/{cache,host-tools,prepared}`의 실제 파일은 `~/.local/share/turtle/workspaces/TURTLE/deps/`로 옮기고 세 경로에 링크를 남겼다. |
 
 - 최종 변경은 TLS 반환값을 사후 증거 수집과 분리한다. 수집한 `.partial` 파일과 역할 stderr는 진단용이며 정식 CSV/지도 대신 합격에 쓰지 않는다. [역할 실행·집계 회귀](../tests/submission-capture-failure.sh)는 훅 누락·용량 초과·분리 오류·CSV/지도 쓰기 오류를 증거 부족으로, 초기 훅 설치 오류와 명시적 미지원을 별도 상태로 확인한다. 실제 TLS 지도 대조 7건은 양 역할 종료 0을 유지하되, 읽기/형식 오류나 행 단위 잘림은 증거 부족, 끝까지 읽은 경로 모순은 실패로 구분했다(`E/ultragoal/repair/map-seal-integration.log`). 준비 이미지 대조는 기존 수집 기록을 재사용한다. 관련 RED/GREEN과 정적 분석은 `E/ultragoal/repair/`에 있다. 일곱 함수 ABI와 외부 TLS 원본은 변경하지 않았다.

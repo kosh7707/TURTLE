@@ -19,8 +19,8 @@ struct Task {
   bool named_flights;
   std::size_t request, greeting, response;
   explicit Task(const Json &config)
-      : name(config.at("scenario")), auth(config.at("auth")),
-        role(config.at("measured_role")), recording(config.at("recording")),
+      : name(config.at("scenario").get<std::string>()), auth(config.at("auth").get<std::string>()),
+        role(config.at("measured_role").get<std::string>()), recording(config.at("recording").get<std::string>()),
         named_flights(config.value("record_contract", "") ==
                       "flight-boundaries.v1") {
     const auto &app = config.at("application");

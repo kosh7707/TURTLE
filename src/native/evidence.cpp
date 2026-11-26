@@ -9,7 +9,7 @@
 
 namespace turtle::native {
 namespace {
-using J = nlohmann::json;
+using J = turtle::artifact::Json;
 void require(bool valid, const char *reason) {
   if (!valid)
     throw std::invalid_argument(reason);
@@ -38,7 +38,7 @@ J present(const J &e) { return e.is_null() ? J(nullptr) : J(true); }
 J before(const J &a, const J &b) {
   if (a.is_null() || b.is_null())
     return nullptr;
-  return a.at("ns") <= b.at("ns") && a.at("seq") < b.at("seq");
+  return u(a, "ns") <= u(b, "ns") && u(a, "seq") < u(b, "seq");
 }
 struct Trace {
   bool plain_mismatch = false;
@@ -542,21 +542,51 @@ void evaluate(Trace &t, const J &c, J &r) {
   m["peer_task"] = all({prerequisites, peer_task, ordering});
   m["task"] = all({m["peer_task"], timeline});
   J finish = e["hs_complete"];
+  const char *unavailable = "boundary_unobserved";
   if (s == "S1")
     finish = client ? point("CAD", "final_write_accept") : cad_valid;
-  if (s == "S2")
-    finish = client ? point("SAD1", "first_read_return") : greeting;
+  if (s == "S2") {
+    if (!endpoint)
+      finish = client ? point("SAD1", "first_read_return") : greeting;
+    else if (client) {
+      finish = point("SAD1", "last_read_return");
+      unavailable = "greeting_full_read_unobserved";
+    } else {
+      // An application return or a Finished callback cannot identify the
+      // receive boundary of that protected TLS message on the transport.
+      finish = nullptr;
+      unavailable = "cf_transport_receive_unobserved";
+    }
+  }
   if (s == "S3" || s == "S4")
     finish = client ? point("SAD2", "first_read_return")
                     : point("SAD2", "final_write_accept");
   J start = e["hs_begin"], wall = nullptr;
-  if (before(start, finish) == true)
-    wall = u(finish, "ns") - u(start, "ns");
+  const auto delta = [&](const J &end) -> J {
+    if (before(start, end) != true)
+      return nullptr;
+    return u(end, "ns") - u(start, "ns");
+  };
+  wall = delta(finish);
   r["timing"] = {{"begin", start},
                  {"end", finish},
                  {"wall_ns", wall},
                  {"pmu_delta", pmu(start, finish)}};
-  m["timing"] = before(start, finish);
+  if (endpoint && s == "S2")
+    r["timing"][client ? "first_greeting_read_ns" : "greeting_write_accept_ns"] =
+        delta(client ? point("SAD1", "first_read_return") : greeting);
+  if (endpoint && s == "S2" && client && !finish.is_null())
+    r["timing"]["end_label"] = "last_read_return";
+  m["timing"] = wall.is_null() ? before(start, finish) : J(true);
+  if (wall.is_null()) {
+    if (start.is_null())
+      unavailable = "start_unobserved";
+    else if (!finish.is_null()) {
+      unavailable = "invalid_interval";
+      m["timing"] = false;
+    }
+    r["timing"]["unavailable_reason"] = unavailable;
+  }
   r["timing"]["pmu_status"] =
       pmu_status(start, finish, r["timing"]["pmu_delta"]);
   m["pmu"] = r["timing"]["pmu_status"] == "available" ? J(true) : J(nullptr);
@@ -592,24 +622,42 @@ J analyze_evidence(const std::string &data, const J &c) {
             "empty_binding");
     require(data.size() <= 64 * 1024 * 1024, "source_size_limit");
     Trace t;
-    uint64_t pid = 0, count = 0;
+    uint64_t pid = 0, count = 0, version = 0;
+    bool sealed = false;
     for (size_t off = 0; off < data.size();) {
       auto end = data.find('\n', off);
       require(end != std::string::npos && end - off < 3 * 1024 * 1024,
               "invalid_evidence_frame");
-      auto ev = J::parse(data.begin() + off, data.begin() + end);
+      auto ev = J::parse(std::string_view(data).substr(off, end - off));
       off = end + 1;
-      require(u(ev, "v") == 1 && u(ev, "seq") == ++count && count <= 100000,
-              "invalid_sequence");
+      const auto kind = ev.at("kind").get<std::string>();
+      require(kind != "observer_loss",
+              "observer_recording_incomplete");
+      const auto v = u(ev, "v");
+      require(v == 1 || v == buffered_evidence_version,
+              "unsupported_observer_version");
+      if (!version)
+        version = v;
+      require(v == version, "mixed_observer_versions");
       for (auto key : {"run_id", "connection_id", "role"})
         require(ev.at(key) == c.at(key), "wrong_evidence_binding");
-      require(u(ev, "ns") && u(ev, "tid") && u(ev, "pid"),
-              "missing_event_origin");
+      const auto origin = u(ev, "pid");
+      require(origin > 0, "missing_event_origin");
       if (c.contains("pid"))
         require(ev.at("pid") == c.at("pid"), "wrong_measured_process");
+      if (kind == "observer_complete") {
+        require(version == buffered_evidence_version && ev.size() == 7 &&
+                    count > 0 && u(ev, "count") == count && origin == pid,
+                "invalid_observer_seal");
+        require(off == data.size(), "trailing_observer_evidence");
+        sealed = true;
+        break;
+      }
+      require(u(ev, "seq") == ++count && count <= 100000, "invalid_sequence");
+      require(u(ev, "ns") && u(ev, "tid"), "missing_event_origin");
       if (!pid)
-        pid = u(ev, "pid");
-      require(u(ev, "pid") == pid, "process_changed");
+        pid = origin;
+      require(origin == pid, "process_changed");
       require(ev.at("pmu").is_null() || ev.at("pmu").is_object(),
               "invalid_pmu_snapshot");
       if (ev.at("kind") == "plain")
@@ -624,6 +672,10 @@ J analyze_evidence(const std::string &data, const J &c) {
       }
       r["events"].push_back(std::move(ev));
     }
+    require(version != buffered_evidence_version || sealed,
+            "observer_recording_incomplete");
+    if (version)
+      r["observer_stream"] = sealed ? "complete" : "legacy_unsealed";
     r["negotiated"] = t.identity.is_object() ? t.identity : J::object();
     r["facts"] = t.facts;
     bool peer_conflict = false;
@@ -693,7 +745,7 @@ J analyze_evidence(const std::string &data, const J &c) {
   } catch (const std::exception &ex) {
     r["status"] = "invalid";
     r["errors"].push_back(ex.what());
-    for (auto &metric : r["metrics"])
+    for (auto &[key, metric] : r["metrics"].items())
       metric = nullptr;
   }
   return r;

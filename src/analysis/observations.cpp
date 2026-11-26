@@ -14,7 +14,7 @@ bool link_header_events(Json &records, const Json &headers,
     return false;
   for (std::size_t i = 0; i < records.size(); ++i) {
     const auto begin = stream.begin() + integer(records[i].at("wire_begin"));
-    if (headers[i].value("header", Json(nullptr)) != Bytes(begin, begin + 5))
+    if (headers[i].value("header", Json(nullptr)) != Json::array(Json::Array(begin, begin + 5)))
       return false;
   }
   for (std::size_t i = 0; i < records.size(); ++i)

@@ -1,4 +1,5 @@
 #include "native/evidence.hpp"
+#include <cstring>
 #include "native/stream.hpp"
 #include <algorithm>
 #include <cerrno>
@@ -6,13 +7,14 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <turtle/observe.h>
 #include <unistd.h>
 
-using J = nlohmann::json;
+using J = turtle::artifact::Json;
 namespace {
 void ck(bool p, const char *reason) {
   if (!p)
@@ -59,7 +61,7 @@ void produce() {
   plain("write_accepted", "pong");
   event("end");
 }
-J capture(const char *self, const char *mode = "produce") {
+J capture_legacy_fixture(const char *self, const char *mode = "produce") {
   char path[] = "/tmp/turtle-evidence-XXXXXX";
   int fd = mkstemp(path);
   ck(fd > 2, "mkstemp");
@@ -81,10 +83,16 @@ J capture(const char *self, const char *mode = "produce") {
   close(fd);
   std::ifstream f(path);
   unlink(path);
-  std::string line;
-  J events = J::array();
-  while (std::getline(f, line))
-    events.push_back(J::parse(line));
+  const std::string raw((std::istreambuf_iterator<char>(f)), {});
+  auto observed = turtle::native::analyze_evidence(raw, context());
+  ck(observed.at("status") == "verified" &&
+         observed.at("observer_stream") == "complete",
+     "live observer did not produce a complete stream");
+  // These fixtures deliberately edit/delete/reorder events to test record
+  // semantics independently of the writer's seal and sequence.
+  auto events = observed.at("events");
+  for (auto &e : events)
+    e["v"] = 1;
   return events;
 }
 J local_report(J events, const J &c) {
@@ -111,7 +119,8 @@ auto find(auto &es, const std::string &n) {
 }
 void lifecycle_tests(const J &events) {
   auto r = run(events);
-  ck(r["status"] == "verified", "complete evidence");
+  ck(r["status"] == "verified" && r["observer_stream"] == "legacy_unsealed",
+     "historical evidence remains readable without claiming completeness");
   ck(r["metrics"]["pmu"].is_null(), "no counterfeit PMU");
   ck(r["metrics"]["transport_counts"].is_null(), "absent hooks not counts");
   ck(r["timeline"]["SAD1"]["final_write_accept"]["offset"] == 2,
@@ -283,6 +292,15 @@ void submission_composite_greeting_test(const J &events) {
          report["metrics"]["timing"].is_null() &&
          report["timing"]["end"].is_null(),
      "composite S2 does not substitute the accept return for greeting timing");
+  observed.erase(find(observed, "read_return"), observed.end());
+  observed.push_back(end);
+  const auto measured = run(observed, c);
+  ck(measured["metrics"]["peer_task"] == true &&
+         measured["timing"]["end"].is_null() &&
+         measured["timing"]["unavailable_reason"] == "cf_transport_receive_unobserved" &&
+         measured["timing"]["greeting_write_accept_ns"].is_number_unsigned() &&
+         measured["lifecycle"]["peer_finished_message"].is_object(),
+     "S2 server: greeting acceptance and a processed CF do not prove transport arrival");
 }
 void endpoint_first_read_test(const J &events) {
   auto c = context();
@@ -293,7 +311,8 @@ void endpoint_first_read_test(const J &events) {
   auto add = [&](const char *name, const char *bytes = nullptr) {
     J row = *find(events, name);
     row["role"] = "client";
-    row["ns"] = es.size() + 100;
+    // Delay only the second greeting fragment; first-byte time cannot move.
+    row["ns"] = es.size() + 100 + (es.size() >= 3 ? 20'000'000 : 0);
     if (bytes) {
       row["hex"] = bytes;
       row["length"] = std::strlen(bytes) / 2;
@@ -305,7 +324,8 @@ void endpoint_first_read_test(const J &events) {
   es.back()["first_operation"] = "read_plain";
   add("read_return", "6865");
   auto partial = run(es, c);
-  ck(partial["timing"]["end"]["seq"] == 3 && partial["metrics"]["timing"] == true &&
+  ck(partial["timing"]["end"].is_null() && partial["metrics"]["timing"].is_null() &&
+         partial["timing"]["first_greeting_read_ns"] == 1 &&
          partial["metrics"]["task"].is_null() &&
          partial["timeline"]["SAD1"]["validated"].is_null(),
      "first usable bytes survive even an incomplete greeting");
@@ -316,7 +336,9 @@ void endpoint_first_read_test(const J &events) {
   add("end");
   auto r = run(es, c);
   ck(r["status"] == "verified" && r["metrics"]["s2_read_first"] == true &&
-         r["timing"]["end"]["seq"] == 3 &&
+         r["timing"]["end"]["seq"] == 4 &&
+         r["timing"]["wall_ns"] == 20'000'002 &&
+         r["timing"]["first_greeting_read_ns"] == 1 &&
          r["timeline"]["SAD1"]["validated"]["seq"] == 5 &&
          r["lifecycle"]["hs_complete"]["seq"] == 6 &&
          r["metrics"]["ordinary_server_first"].is_null(),
@@ -327,7 +349,7 @@ void endpoint_first_read_test(const J &events) {
   auto unproven = run(late_tag, c);
   ck(unproven["metrics"]["s2_read_first"].is_null() &&
          unproven["metrics"]["task"].is_null() &&
-         unproven["timing"]["end"]["seq"] == 3,
+         unproven["timing"]["end"]["seq"] == 4,
      "a later reported read cannot identify the first TLS operation");
   auto unconfirmed = es;
   unconfirmed[5].erase("confirmed_by");
@@ -341,7 +363,7 @@ void endpoint_first_read_test(const J &events) {
   for (std::size_t i = 0; i < reordered.size(); ++i)
     reordered[i]["ns"] = 100 + i;
   ck(run(reordered, c)["metrics"]["s2_read_first"] == false &&
-         run(reordered, c)["timing"]["end"]["seq"] == 4,
+         run(reordered, c)["timing"]["end"]["seq"] == 5,
      "confirmation before first bytes contradicts read-first sequencing");
   reordered[1].erase("first_operation");
   reordered[2].erase("confirmed_by");
@@ -367,12 +389,13 @@ void endpoint_first_read_test(const J &events) {
      "TLS may finish processing or accept policy within the ordinary read");
   es[3]["hex"] = "0000"; // corrupt only the later fragment
   auto wrong_tail = run(es, c);
-  ck(wrong_tail["timing"]["end"]["seq"] == 3 &&
+  ck(wrong_tail["timing"]["end"].is_null() &&
+         wrong_tail["timing"]["first_greeting_read_ns"] == 1 &&
          wrong_tail["timeline"]["SAD1"]["validated"].is_null() &&
          wrong_tail["metrics"]["task"] == false,
      "wrong later bytes cannot erase a known matching first return or validate SAD");
   es[2]["hex"] = "0000";
-  ck(run(es, c)["timing"]["end"].is_null(),
+  ck(run(es, c)["timing"]["first_greeting_read_ns"].is_null(),
      "a mismatching first chunk cannot qualify as first SAD");
 }
 void write_pair_tests(const J &base) {
@@ -609,7 +632,7 @@ void named_tests(const J &es) {
     c["peer_full_handshake_auth"] = peer;
     auto report = run(data, c);
     auto &group = report["wire"]["flights"]["server_protected_flight"];
-    ck(report["metrics"]["tls_flights"] == peer && group["end"] > group["begin"] &&
+    ck(report["metrics"]["tls_flights"] == peer && group["end"].get<uint64_t>() > group["begin"].get<uint64_t>() &&
            group["anchor"].is_object() && !group.contains("conceptual_members") &&
            report["metrics"]["timed_records"] == true,
        "unproven peer handshake cannot name protected members");
@@ -903,7 +926,7 @@ void pmu_tests(const J &es) {
                 {"read_end_ns", ns}};
   };
   auto &a = *find(data, "hs_begin");
-  auto it = std::find_if(data.rbegin(), data.rend(), [](auto &e) {
+  auto it = std::find_if(data.elements().rbegin(), data.elements().rend(), [](auto &e) {
     return e.value("name", "") == "write_accepted";
   });
   attach(a, 1);
@@ -977,7 +1000,7 @@ int main(int argc, char **argv) try {
     ck(errno == ERANGE, "observer modified errno");
     return 0;
   }
-  auto es = capture(argv[0]);
+  auto es = capture_legacy_fixture(argv[0]);
   // Exercise the exact predicate shared by the scheduling and replay paths.
   // Unavailable required metrics stay unavailable; only otherwise valid
   // decision-required warmups may be bypassed for a fresh observation.
@@ -1014,11 +1037,11 @@ int main(int argc, char **argv) try {
   source_tests(es);
   combined_tests(es);
   pmu_tests(es);
-  auto cycles = capture(argv[0], "cycles-only");
+  auto cycles = capture_legacy_fixture(argv[0], "cycles-only");
   if (cycles.front().at("pmu_status") == "partial") {
     auto report = run(cycles);
     ck(report["timing"]["pmu_status"] == "partial" &&
-           report["timing"]["pmu_delta"]["cycles"] > 0 &&
+           report["timing"]["pmu_delta"]["cycles"].get<uint64_t>() > 0 &&
            cycles.front().at("pmu_errno") == EMFILE &&
            cycles.front().at("pmu_reason") == "instructions_open_failed",
        "live one-member group");

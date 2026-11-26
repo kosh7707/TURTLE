@@ -38,7 +38,22 @@ Bytes read_bytes(const std::filesystem::path &p) {
   auto s = read_text(p);
   return {s.begin(), s.end()};
 }
-Json load(const std::filesystem::path &p) { return Json::parse(read_text(p)); }
+Json load(const std::filesystem::path &p) {
+  std::ifstream f(p, std::ios::binary);
+  if (!f)
+    throw std::runtime_error("cannot_read:" + p.string());
+  std::string data;
+  char block[8192];
+  while (f.read(block, sizeof(block)) || f.gcount()) {
+    const auto size = static_cast<std::size_t>(f.gcount());
+    if (size > Json::max_text_bytes - data.size())
+      throw Json::Invalid("JSON input size limit: " + p.string());
+    data.append(block, size);
+  }
+  if (f.bad() || !f.eof())
+    throw std::runtime_error("cannot_read:" + p.string());
+  return Json::parse(data);
+}
 void require_only_fields(const Json &object,
                          std::initializer_list<std::string_view> allowed) {
   if (!object.is_object())

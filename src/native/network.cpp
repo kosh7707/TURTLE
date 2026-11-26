@@ -94,7 +94,7 @@ void NetworkTrial::start(const Json &p) {
       try {
         capture->start(topology_ ? topology_->prefix(who) : process::Args{},
                        fs::canonical("/proc/self/exe"),
-                       impaired_ ? "eth0" : "lo", record_.at("port"), cancel_);
+                       impaired_ ? "eth0" : "lo", record_.at("port").get<unsigned>(), cancel_);
       } catch (const std::exception &e) {
         // An optional missing capture cannot prevent the native application
         // exchange; required metrics are still checked on replay.

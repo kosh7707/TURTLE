@@ -2,12 +2,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <initializer_list>
-#include <nlohmann/json.hpp>
+#include "artifact/json_value.hpp"
 #include <string>
 #include <string_view>
 #include <vector>
 namespace turtle::artifact {
-using Json = nlohmann::json;
 using Bytes = std::vector<unsigned char>;
 Json load(const std::filesystem::path &);
 void require_only_fields(const Json &object,

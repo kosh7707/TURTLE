@@ -5,6 +5,8 @@
 #include <turtle/observe.h>
 
 namespace turtle::native::detail {
+// Publish preparation diagnostics before READY, without ending observation.
+void flush_preparation();
 // Private endpoint-only observations. The sequence returned by the full offer
 // identifies immutable bytes on this connection, not configured test data.
 uint64_t full_offer(const void *data, size_t length);

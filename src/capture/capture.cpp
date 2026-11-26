@@ -132,6 +132,12 @@ std::uint64_t length(const Ranges &ranges) {
 }
 #endif
 } // namespace
+Json range_rows(const Ranges &ranges) {
+  Json rows = Json::array();
+  for (const auto &[begin, end] : ranges)
+    rows.push_back(Json::array({begin, end}));
+  return rows;
+}
 Ranges overlap(const Ranges &ranges, std::uint64_t a, std::uint64_t b) {
   Ranges r;
   for (auto [x, y] : ranges)
@@ -328,7 +334,7 @@ Json analyze(const std::filesystem::path &path,
       ips += integer(row.at("ip_bytes"));
       if (!bytes.empty()) {
         auto dup = overlap(seen, a, b);
-        row["retransmitted_ranges"] = dup;
+        row["retransmitted_ranges"] = range_rows(dup);
         row["retransmitted_record_ranges"] = Json::array();
         for (const auto &[lo, hi] : dup)
           for (const auto &part : mapping(frame_list, lo, hi))

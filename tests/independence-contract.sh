@@ -1,9 +1,40 @@
 #!/bin/sh
-# Check the real default all products and installed SDK, not target names alone.
-# Usage: tests/independence-contract.sh CLEAN_RELEASE_BUILD
+# Check the explicitly enabled stock peer and installed SDK, not target names alone.
+# Usage: tests/independence-contract.sh CLEAN_RELEASE_BUILD | --default-configure
 set -eu
 export LC_ALL=C
-build=$(cd "${1:?supply a clean, built default peer-on Ninja tree with BUILD_TESTING=OFF}" && pwd)
+
+check_default_configure() (
+    # Pick a new tree, not a prior cache carrying the optional peer setting.
+    root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+    work=$(mktemp -d)
+    trap 'rm -rf -- "$work"' EXIT
+    if ! cmake -S "$root" -B "$work/default" -DBUILD_TESTING=OFF \
+            -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=TRUE \
+            -DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=TRUE >"$work/configure.log" 2>&1; then
+        cat "$work/configure.log" >&2
+        exit 1
+    fi
+    grep -q '^TURTLE_BUILD_REFERENCE:BOOL=OFF$' "$work/default/CMakeCache.txt"
+    grep -q '^TURTLE_WITH_PCAP:STRING=OFF$' "$work/default/CMakeCache.txt"
+    grep -q '^TURTLE_WITH_PMU:STRING=AUTO$' "$work/default/CMakeCache.txt"
+    if grep -Eq '^TURTLE_PCAP_(INCLUDE_DIR|LIBRARY):' "$work/default/CMakeCache.txt"; then
+        echo 'the default build unexpectedly searches for libpcap' >&2
+        exit 1
+    fi
+    if cmake --build "$work/default" --target turtle-reference >"$work/target.log" 2>&1; then
+        echo 'the default build unexpectedly supplies a stock TLS peer' >&2
+        exit 1
+    fi
+    test ! -e "$work/default/turtle-reference"
+    echo 'PASS: default framework has no libpcap discovery, JSON package, OpenSSL development requirement or stock peer'
+)
+if [ "${1:-}" = --default-configure ]; then
+    check_default_configure
+    exit
+fi
+
+build=$(cd "${1:?supply a clean Ninja build with BUILD_TESTING=OFF and TURTLE_BUILD_REFERENCE=ON}" && pwd)
 root=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$build/CMakeCache.txt")
 grep -qx 'BUILD_TESTING:BOOL=OFF' "$build/CMakeCache.txt"
 grep -qx 'TURTLE_BUILD_REFERENCE:BOOL=ON' "$build/CMakeCache.txt"
@@ -23,7 +54,7 @@ for role in client server; do
 done
 echo 'PASS: installed reference accepts valid client and server configurations'
 
-# Include uninstalled default products. Inspect imported and defined symbols,
+# Include uninstalled framework products. Inspect imported and defined symbols,
 # including static executables (a renamed DUT must still fail).
 find "$build" "$work/sdk/bin" -name CMakeFiles -prune -o -type f -perm /111 -print >"$work/files"
 while IFS= read -r f; do

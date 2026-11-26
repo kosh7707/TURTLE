@@ -1,5 +1,5 @@
 #pragma once
-#include <nlohmann/json.hpp>
+#include "artifact/json_value.hpp"
 namespace turtle::native {
-void evaluate_wire(const nlohmann::json &context, nlohmann::json &report);
+void evaluate_wire(const turtle::artifact::Json &context, turtle::artifact::Json &report);
 }

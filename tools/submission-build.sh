@@ -11,13 +11,14 @@ submission=$root/implementations
 [ -f "$submission/build.sh" ] && [ -x "$submission/build.sh" ] &&
     [ -f "$submission/implementation.cpp" ] ||
     fail 2 'Missing executable implementations/build.sh or implementations/implementation.cpp'
-for input in submission-client.o submission-server.o libturtle_observe.so; do
+for input in submission-client.o submission-server.o libturtle_observe.so.1 \
+             turtle turtle-submission-job turtle-issue-test-leaves.sh; do
     [ -f "$framework/$input" ] || fail 2 "Missing framework build input: $framework/$input"
 done
 actual_submission=$(realpath -e -- "$submission")
 case "$job/" in "$actual_submission/"*) fail 2 'The build output cannot be inside implementations/';; esac
 mkdir -p -- "$job"
-exec 9>"$job/lock"
+exec 9>>"$job/lock"
 flock -n 9 || fail 2 "Submission build is already running: $job"
 fingerprint() {
     cmake "-DTREE=$1" "-DRECORD=$2" -P "$root/tools/submission-fingerprint.cmake"
@@ -59,6 +60,22 @@ else
     fingerprint "$prefix" "$job/prefix.sha256"
     touch -- "$job/native.ok"
 fi
+if [ -e "$job/reuse.sha256" ] || [ -L "$job/reuse.sha256" ]; then
+    [ -z "${TURTLE_USE_MODULE-}" ] || [ "$TURTLE_USE_MODULE" = "$(cat "$job/module.txt")" ] ||
+        fail 2 "The build is already linked for a different module; select with --use in a fresh build job"
+    sh "$root/tools/submission-receipt.sh" verify "$job"
+    exit
+fi
 scan=$(mktemp -d -- "$job/link.XXXXXXXX")
+mkdir -- "$scan/runtime"
+for input in turtle turtle-submission-job turtle-issue-test-leaves.sh libturtle_observe.so.1; do
+    cp -pL -- "$framework/$input" "$scan/runtime/"
+done
+# Unsealed previous selection attempts can safely receive a fresh snapshot.
+if [ -e "$job/runtime" ] || [ -L "$job/runtime" ]; then
+    mv -T -- "$job/runtime" "$scan/previous-runtime"
+fi
+mv -T -- "$scan/runtime" "$job/runtime"
 unset CPATH CPLUS_INCLUDE_PATH C_INCLUDE_PATH LIBRARY_PATH LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT LD_DEBUG LD_DEBUG_OUTPUT
 cmake "-DROOT=$root" "-DFRAMEWORK=$framework" "-DJOB=$job" "-DSCAN=$scan" -P "$root/tools/submission-link.cmake"
+sh "$root/tools/submission-receipt.sh" seal "$job"

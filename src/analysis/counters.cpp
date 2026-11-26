@@ -90,7 +90,7 @@ Json counters(const std::filesystem::path &root, const Endpoint &ep) {
     result.update({{"availability", source.at("availability")},
                    {"reason", source.at("reason")},
                    {"errno", source.at("errno")}});
-    std::string availability = source.at("availability");
+    const auto availability = source.at("availability").get<std::string>();
     Json reason = source.at("reason");
     if (strict && (source.at("collector") != "linux_perf_event_open_group" ||
                    source.at("inherit") != false || source.at("exclude_kernel") != true ||

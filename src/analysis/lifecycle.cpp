@@ -455,7 +455,7 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled,
         const auto &prop = roles.at(role).at("negotiated").at(k);
         require(available(prop) && prop.at("value").is_string(),
                 "negotiation_not_observed");
-        return canonical(prop.at("value"));
+        return canonical(prop.at("value").get<std::string>());
       };
       if (combined && !expected.contains(k)) {
         const auto &c = roles.at("client").at("negotiated").at(k);
@@ -465,7 +465,7 @@ Json assess(const fs::path &dir, const Json &config, const Json &scheduled,
       auto actual = get("client");
       require(!actual.empty() && actual == get("server"),
               "peer_negotiation_mismatch");
-      require(!expected.contains(k) || actual == canonical(expected.at(k)),
+      require(!expected.contains(k) || actual == canonical(expected.at(k).get<std::string>()),
               "requested_negotiation_mismatch");
     }
     require(ep.summary.at("recording") == t.recording &&
@@ -614,14 +614,14 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
   const auto &spec = manifest.at("spec");
   std::map<std::string, Json> configs;
   for (const auto &c : spec.at("configurations"))
-    require(configs.emplace(c.at("id"), c).second, "duplicate_configuration");
+    require(configs.emplace(c.at("id").get<std::string>(), c).second, "duplicate_configuration");
   bool valid = (manifest.at("status") == "complete" || manifest.at("status") == "decision_required") &&
                manifest.value("blocked", Json::object()).empty();
   Json diagnostics = Json::array(), attempts = Json::array();
   std::set<std::string> ids, dirs;
   using Slot = std::tuple<std::string, std::string, std::uint64_t>;
   auto slot = [](const Json &a) -> Slot {
-    return {a.at("configuration"), a.at("purpose"),
+    return {a.at("configuration").get<std::string>(), a.at("purpose").get<std::string>(),
             integer(a.value("repeat", Json(0)))};
   };
   std::set<Slot> planned, seen;
@@ -670,7 +670,7 @@ bool regenerate_lifecycle(const fs::path &root, const Json &manifest) {
     auto d = a.at("directory").get<std::string>();
     const auto attempt_slot = slot(a);
     require(planned.contains(attempt_slot) && seen.insert(attempt_slot).second &&
-                ids.insert(a.at("run_id")).second && dirs.insert(d).second,
+                ids.insert(a.at("run_id").get<std::string>()).second && dirs.insert(d).second,
             "duplicate_or_unscheduled_attempt");
     auto planned_pos = std::find_if(
         order.begin() + position, order.end(),

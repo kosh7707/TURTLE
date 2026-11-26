@@ -101,7 +101,7 @@ cell() {
             .application_exchange=="verified" and .participants.server.metrics.ordinary_server_first==true and
             (.participants.client | .metrics.s2_read_first==null and .metrics.task!=true and
                 .metrics.transport_counts==true and .metrics.authentication==true and .metrics.timed_records==true and
-                .timing.end.seq==.timeline.SAD1.first_read_return.seq and .timing.end.seq>.lifecycle.hs_complete.seq and
+                .timing.end.seq==.timeline.SAD1.last_read_return.seq and .timing.end.seq>.lifecycle.hs_complete.seq and
                 .timing.wall_ns>0 and .timing.pmu_delta.running_ns>0))' "$j" >/dev/null || reject "$name handshake-first diagnostic"
     elif [ "$role" = server ] && { [ "$scenario" = S2 ] || [ "$scenario" = S4 ]; }; then
         jq -e '.eligible_measurements==0 and all(.attempts[]|select(.purpose=="sample"); .application_exchange=="verified" and .participants.server.metrics.ordinary_server_first==false and .separate_capability_proof!=true)' "$j" >/dev/null || reject "$name late greeting or bogus proof"

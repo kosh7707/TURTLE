@@ -7,6 +7,7 @@ using artifact::Bytes;
 using artifact::Json;
 using Range = std::pair<std::uint64_t, std::uint64_t>;
 using Ranges = std::vector<Range>;
+artifact::Json range_rows(const Ranges &);
 Ranges overlap(const Ranges &, std::uint64_t, std::uint64_t);
 void merge(Ranges &, std::uint64_t, std::uint64_t);
 Json records(std::span<const unsigned char> wire);

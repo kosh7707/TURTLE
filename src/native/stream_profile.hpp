@@ -93,7 +93,7 @@ public:
     auto meta = artifact::load(dir / "profile.json");
     if (meta.at("status") != "collected")
       return;
-    process::Args argv = {meta.at("perf"),
+    process::Args argv = {meta.at("perf").get<std::string>(),
                           "script",
                           "-i",
                           (dir / "perf.data").string(),
@@ -105,8 +105,8 @@ public:
                           "-F",
                           "pid,tid,time,event,period,ip,sym,dso"};
     auto r = process::command(argv, 60, profiling::environment(dir));
-    artifact::write_text(dir / "samples.txt", r.at("stdout"));
-    artifact::write_text(dir / "script.stderr", r.at("stderr"));
+    artifact::write_text(dir / "samples.txt", r.at("stdout").get<std::string>());
+    artifact::write_text(dir / "script.stderr", r.at("stderr").get<std::string>());
     meta["decode_argv"] = argv;
     meta["decode_returncode"] = r.at("returncode");
     artifact::save(dir / "profile.json", meta);

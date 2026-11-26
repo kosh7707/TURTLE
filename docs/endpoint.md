@@ -26,7 +26,9 @@ The [OpenSSL example](../tests/endpoint-integration/consumer.c) implements these
 
 Handle waits and retries inside each callback. On successful I/O, return `TURTLE_OK` with a positive count no greater than the requested length. Partial I/O is normal. Return `TURTLE_CLOSED` for premature EOF, `TURTLE_UNSUPPORTED` for an unavailable operation and `TURTLE_ERROR` for other failures. Unused read/write callbacks may be null.
 
-For a qualified sample, attach a socket or TLS-library I/O hook on the **measured role** before calling the SDK. Keep both directions covered through the measured end. Report actual call intervals, direction, requested length and result via the [observation API](../src/include/turtle/observe.h).
+For a qualified sample, attach a socket or TLS-library I/O hook on the **measured role** before calling the SDK. Keep both directions covered through the measured end. Report actual call intervals, direction, requested length and result via the [observation API](../src/include/turtle/observe.h). The SDK buffers timed observations and finalizes them on orderly exit. If the caller stays alive or uses `_exit()`, call `turtle_observe_flush()` after **all** observations, outside measurement and with no concurrent callbacks. No later callbacks add evidence.
+
+Buffered NDJSON event rows use `v:2` and need a final `observer_complete` control row binding their count, run, connection, role and PID. The control row is not an event. A present `end` event does not replace the seal. A preparation prefix can still diagnose cancellation before TLS, but cannot qualify a sample. Replay still understands historical `v:1` observations (`observer_stream: legacy_unsealed`); those archives cannot prove that a line-aligned suffix was not lost.
 
 ## Message abbreviations
 
@@ -61,4 +63,4 @@ All five tasks use a fresh, certificate-based TLS 1.3 handshake. With applicatio
 
 A server write does not prove that the client received `SAD₁` before it sent `CF`.
 
-**Timing** starts before the measured role's first TLS call. In S0 it ends at local handshake success; in S1, at final `CAD` write acceptance (client) or full `CAD` validation (server). For S2, S3 and S4, the client ends at the first plaintext read return and the server at final write acceptance for **`SAD₁` in S2** or **`SAD₂` in S3/S4**.
+**Timing** starts before the measured role's first TLS call. In S0 it ends at local handshake success; in S1, at final `CAD` write acceptance (client) or full `CAD` validation (server). In S2, the client ends at the read return that completes `SAD₁`; the first read is reported separately. On the S2 server the intended endpoint is receipt of client Finished on the transport. The current SDK does not attribute that protected message to a receive boundary, so the main interval is unavailable (`cf_transport_receive_unobserved`); greeting write acceptance is a separate secondary interval. In S3/S4, the client ends at the first `SAD₂` read return and the server at final `SAD₂` write acceptance. These are local application/TLS boundaries, not wire timestamps.

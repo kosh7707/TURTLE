@@ -43,7 +43,7 @@ void resolve_participants(Json &p, const fs::path &base, const fs::path &self) {
       require(a.is_string() && a.get_ref<const std::string &>().find('\0') ==
                                    std::string::npos,
               "invalid_argument");
-    std::string exe = av.front();
+    auto exe = av.front().get<std::string>();
     require(!exe.empty(), "empty_executable");
     if (exe.find('/') != exe.npos)
       exe = (base / exe).string();
@@ -126,7 +126,7 @@ void resolve_metrics(Json &p) {
     require(m.is_array(), "metrics_array_required");
     for (auto &v : m) {
       require(v.is_string(), "invalid_metric");
-      require(selected.insert(canonical_metric_name(v)).second,
+      require(selected.insert(canonical_metric_name(v.get<std::string>())).second,
               "duplicate_metric:" + v.get<std::string>());
     }
     p[key] = m;

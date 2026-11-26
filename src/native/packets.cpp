@@ -263,8 +263,8 @@ Json analyze_packets(const fs::path &dir, const Json &raw,
             "capture_precision_mismatch");
       auto path = dir / (std::string(site) + ".pcap");
       file(path, 16 * 1024 * 1024);
-      auto loc = capture::analyze(path, streams, required, c.at("local_ip"),
-                                  s.at("local_ip"), true);
+      auto loc = capture::analyze(path, streams, required, c.at("local_ip").get<std::string>(),
+                                  s.at("local_ip").get<std::string>(), true);
       auto isn = verify_flow(loc, c, s);
       check(integer(h.at("packets_written")) >=
                 integer(loc.at(forward).at("packet_count")) +

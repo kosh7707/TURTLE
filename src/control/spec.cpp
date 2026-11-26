@@ -52,9 +52,8 @@ Json resolve_application(Json app) {
   static const std::map<std::string, std::string> defaults{
       {"greeting", "helo"}, {"request", "ping"}, {"response", "pong"}};
   require(app.is_object(), "invalid_application");
-  for (const auto &field : app.items())
-    require(defaults.contains(field.key()),
-            "unknown_application_field:" + field.key());
+  for (const auto &[key, value] : app.items())
+    require(defaults.contains(key), "unknown_application_field:" + key);
   for (const auto &[key, fallback] : defaults) {
     auto value = string_arg(app.value(key, Json(fallback)));
     require(!value.empty() && value.size() <= 16384,
@@ -205,19 +204,19 @@ Json resolve_spec(Json spec) {
 }
 process::Args endpoint_args(const Json &c, const std::string &role,
                             const std::string &purpose, process::Args flags) {
-  process::Args a = {c.at(role).at("binary"),
+  process::Args a = {c.at(role).at("binary").get<std::string>(),
                      "--role",
                      role,
                      "--purpose",
                      purpose,
                      "--scenario",
-                     c.at("scenario"),
+                     c.at("scenario").get<std::string>(),
                      "--auth",
-                     c.at("auth"),
+                     c.at("auth").get<std::string>(),
                      "--measured-role",
-                     c.at("measured_role"),
+                     c.at("measured_role").get<std::string>(),
                      "--recording",
-                     c.at("recording"),
+                     c.at("recording").get<std::string>(),
                      "--app-chunk",
                      c.at("app_chunk").dump(),
                      "--io-chunk",
@@ -247,12 +246,16 @@ Json preflight(const Json &spec, int cancel) {
           flags.push_back("--perf-counters");
         auto r = process::command(
             endpoint_args(c, role, "measurement", flags),
-            spec.at("timeout_seconds"),
+            spec.at("timeout_seconds").get<double>(),
             c.at(role).value("env", process::Environment{}), cancel);
         if (c.contains("image_contract") &&
             std::string_view(role) == "server" && server_first(c)) {
-          const auto ep = Json::parse(
-              r.at("stdout").get_ref<const std::string &>(), nullptr, false);
+          Json ep;
+          try {
+            ep = Json::parse(r.at("stdout").get_ref<const std::string &>());
+          } catch (const Json::Invalid &) {
+            // An invalid preflight report is not evidence of explicit lack of support.
+          }
           if (ep.is_object() && ep.contains("server_first") &&
               ep.at("server_first") == false &&
               (ep.value("ready", false) || ep.value("reason", std::string{}) ==

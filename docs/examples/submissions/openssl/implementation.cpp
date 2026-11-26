@@ -16,16 +16,38 @@ struct turtle_tls {
 
 static bool present(const char *s) { return s && *s; }
 
+static bool transfers(const turtle_transport_hooks &h) {
+  return h.coverage && h.transfer_begin && h.transfer_end;
+}
+
 static long observe(BIO *bio, int op, const char *data, size_t size, int, long,
                     int ret, size_t *done) {
   auto *tls = reinterpret_cast<turtle_tls *>(BIO_get_callback_arg(bio));
-  if (tls && data) {
-    auto &h = tls->hooks;
-    auto *bytes = reinterpret_cast<const unsigned char *>(data);
-    if (op == BIO_CB_WRITE && h.before_send && size)
+  const bool returning = (op & BIO_CB_RETURN) != 0;
+  op &= ~BIO_CB_RETURN;
+  if (!tls || (op != BIO_CB_READ && op != BIO_CB_WRITE))
+    return ret;
+  auto &h = tls->hooks;
+  auto *bytes = reinterpret_cast<const unsigned char *>(data);
+  const bool sent = op == BIO_CB_WRITE;
+  if (transfers(h)) {
+    if (!returning)
+      h.transfer_begin(h.context, sent, size);
+    else {
+      // The return flag is a status; only *done describes accepted/returned
+      // bytes. Never pass the requested length as an actual transfer.
+      if (ret > 0 && (!done || *done > size || *done > PTRDIFF_MAX))
+        h.coverage(h.context, -1);
+      else {
+        const ptrdiff_t result = ret > 0 ? static_cast<ptrdiff_t>(*done)
+                                        : (ret < 0 ? -1 : 0);
+        h.transfer_end(h.context, sent, size, result, bytes);
+      }
+    }
+  } else if (bytes) {
+    if (!returning && sent && h.before_send && size)
       h.before_send(h.context, bytes, size);
-    if (op == (BIO_CB_READ | BIO_CB_RETURN) && h.after_recv && ret > 0 &&
-        done && *done)
+    if (returning && !sent && h.after_recv && ret > 0 && done && *done)
       h.after_recv(h.context, bytes, *done);
   }
   return ret;
@@ -108,10 +130,14 @@ turtle_status turtle_tls_set_hooks(turtle_tls *t,
   auto *bio = SSL_get_rbio(t->ssl);
   if (!bio || bio != SSL_get_wbio(t->ssl))
     return TURTLE_TLS_UNSUPPORTED;
+  if (transfers(t->hooks))
+    t->hooks.coverage(t->hooks.context, 0);
   t->hooks = h ? *h : turtle_transport_hooks{};
   BIO_set_callback_arg(bio, h ? reinterpret_cast<char *>(t) : nullptr);
   BIO_set_callback_ex(bio, h ? observe : nullptr);
   SSL_set_msg_callback(t->ssl, h ? finished_message : nullptr);
+  if (transfers(t->hooks))
+    t->hooks.coverage(t->hooks.context, 1);
   return TURTLE_TLS_OK;
 }
 

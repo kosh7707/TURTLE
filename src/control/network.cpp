@@ -40,7 +40,7 @@ std::string Topology::invoke(const Args &args, bool check, bool cleanup) {
   if (check && r.at("returncode") != 0)
     throw std::runtime_error("network_command_failed:" +
                              r.at("stderr").get<std::string>());
-  return r.at("stdout");
+  return r.at("stdout").get<std::string>();
 }
 std::string Topology::inside(const std::string &role, const Args &args,
                              bool cleanup) {

@@ -13,9 +13,8 @@ using artifact::integer;
 const Json missing = nullptr;
 
 const Json &field(const Json &object, std::string_view key) {
-  if (object.is_object())
-    if (auto it = object.find(key); it != object.end())
-      return *it;
+  if (object.contains(key))
+    return object.at(key);
   return missing;
 }
 
@@ -68,8 +67,8 @@ Json before(const Json &a, const Json &b) {
     return nullptr;
   if (a.at("role") != b.at("role"))
     throw std::logic_error("cross-role event comparison");
-  return a.at("sequence") < b.at("sequence") &&
-         a.at("monotonic_ns") <= b.at("monotonic_ns");
+  return integer(a.at("sequence")) < integer(b.at("sequence")) &&
+         integer(a.at("monotonic_ns")) <= integer(b.at("monotonic_ns"));
 }
 
 Json app_span(const Json &a, const Json &b) {

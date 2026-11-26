@@ -11,7 +11,7 @@ using artifact::Json;
 // Describe an observed obstacle, not a new qualification policy. The JSON
 // remains the source of truth, including for replay of historical attempts.
 inline std::string exclusion_hint(const Json &row, const std::string &task, const std::string &role) {
-  const std::string q = row.value("warmup_assessment", row.at("qualification"));
+  const std::string q = row.value("warmup_assessment", row.at("qualification").get<std::string>());
   if (q == "transport_hook_unconfirmed") {
     const auto &reason = row.at("measured_transport_hook").at("reason");
     return "target transport hook unconfirmed (" + reason.get<std::string>() +
@@ -33,7 +33,9 @@ inline std::string exclusion_hint(const Json &row, const std::string &task, cons
   }
   if (row.at("prepared_start").at("verified") != true)
     return "prepared start unconfirmed; check both roles' READY before TLS entry";
-  for (const auto &m : row.at("requested_metrics")) {
+  if (q == "cf_transport_receive_unobserved")
+    return "S2 server CF receive not observed; greeting or handshake completion cannot substitute";
+  for (const auto &[key, m] : row.at("requested_metrics").items()) {
     if (m.at("required") == true && m.at("available") != true && m.at("metric") != "pmu")
       return "required metric " + m.at("metric").get<std::string>() +
              (m.at("available") == false ? " contradicted" : " not confirmed") +
@@ -46,18 +48,18 @@ inline std::string exclusion_hint(const Json &row, const std::string &task, cons
   if (pmu == "unsupported" || pmu == "partial" || pmu == "missing") {
     const auto &timing = row.at("participants").at(role).at("timing");
     for (const char *edge : {"begin", "end"}) {
-      auto stamp = timing.find(edge);
-      if (stamp == timing.end() || !stamp->is_object())
+      auto stamp = timing.find_member(edge);
+      if (!stamp || !stamp->is_object())
         continue;
-      const auto reason = stamp->find("pmu_reason");
-      if (reason == stamp->end())
+      const auto reason = stamp->find_member("pmu_reason");
+      if (!reason)
         continue;
       if (pmu == "unsupported" && *reason == "pmu_not_built")
         return "PMU unsupported (not built); install a PMU-enabled TURTLE SDK for the measured role";
-      const auto error = stamp->find("pmu_errno");
+      const auto error = stamp->find_member("pmu_errno");
       const bool counter_failure = *reason == "cycles_open_failed" || *reason == "instructions_open_failed" ||
                                    *reason == "group_setup_failed" || *reason == "counter_group_read_failed";
-      if (counter_failure && error != stamp->end() && (*error == EACCES || *error == EPERM))
+      if (counter_failure && error && (*error == EACCES || *error == EPERM))
         return "PMU " + pmu + " (access denied); check perf-event access for the measured process";
     }
   }
@@ -82,7 +84,7 @@ inline void print_example(std::ostream &out, const Json &row, const std::string 
     if (end.value("message", Json(nullptr)).is_string())
       out << end.at("message").get<std::string>() << '.';
     if (name == "read_return")
-      out << "first_read_return";
+      out << timing.value("end_label", "first_read_return");
     else if (name == "write_accepted")
       out << "final_write_accept";
     else

@@ -30,6 +30,20 @@ typedef struct {
   void *context;
   turtle_io_hook before_send;
   turtle_io_hook after_recv;
+  /* For an instrumented bridge, use this trio INSTEAD of the two legacy
+   * callbacks, and call it from the same connection thread as TLS. Coverage
+   * begins on successful hook install (active=1 before handshake), ends on
+   * detach (active=0 after the measured operation), or is marked incomplete
+   * (active=-1 whenever a call cannot be paired faithfully).
+   * Report every actual byte-transport call:
+   * signed result is the transferred length, 0 for no transfer or EOF, or
+   * negative for failure; only the positive returned range is read. Preserve
+   * the native result/retry semantics. If this trio cannot be honored, use
+   * the legacy hooks; do not claim continuous actual transfer coverage. */
+  void (*coverage)(void *context, int active);
+  void (*transfer_begin)(void *context, int sent, size_t requested);
+  void (*transfer_end)(void *context, int sent, size_t requested,
+                       ptrdiff_t result, const unsigned char *bytes);
 } turtle_transport_hooks;
 
 turtle_tls *turtle_tls_setup(const turtle_tls_config *config, int connected_fd);

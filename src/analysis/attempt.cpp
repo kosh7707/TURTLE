@@ -47,9 +47,9 @@ std::string unit(const std::string &name) {
 }
 void measurements(Json &result) {
   Json rows = Json::array();
-  bool success = result.at("success"),
-       ordinary = result.at("ordinary_timing_sample"),
-       phase_complete = result.at("phase_complete");
+  bool success = result.at("success").get<bool>(),
+       ordinary = result.at("ordinary_timing_sample").get<bool>(),
+       phase_complete = result.at("phase_complete").get<bool>();
   auto row = [&](const std::string &role, const std::string &group,
                  const std::string &scope, const std::string &name, Json m,
                  bool eligible, const std::string &exclusion) {

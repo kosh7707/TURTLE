@@ -40,7 +40,6 @@ verify_inputs() (
     cd "$inputs"
     sha256sum --check - <<'HASHES'
 7e2d258071f5db9620aa7ff34259331d004f7beafa3eb18560cfaf60acfbf02a  gnutls-3.8.14.tar.xz
-42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa  json-3.12.0.tar.xz
 915a1844aea2c0ff3c15f16572fe110ff3840af0aa675f5e83c95b5ae85f4cc4  openssl-2d1c10a592677ff34cdf60bd59c431d835a1fc26.tar.gz
 7256bfc89b183a75183806c7debfa203443873b0b4a562e1b80d68e01b45ac57  wolfssl-5.9.4.tar.gz
 HASHES
@@ -168,11 +167,6 @@ case $1 in
         matrix=$(realpath -m -- "$4")
         mkdir -- "$matrix"
         verify_inputs > "$matrix/input-checksums.log" 2>&1
-        mkdir -p "$matrix/deps/cache"
-        cp -- "$inputs/json-3.12.0.tar.xz" "$matrix/deps/cache/"
-        cmake "-DDEPS_DIR=$matrix/deps" -DNAME=json -DVERSION=3.12.0 -DOFFLINE=ON \
-            -P "$source/tools/dependencies.cmake" > "$matrix/json-bootstrap.log" 2>&1
-        export CMAKE_PREFIX_PATH=$matrix/deps/prepared/json-3.12.0/install
         unset TURTLE_USE_MODULE
         run_contracts > "$matrix/contracts-verification.log" 2>&1 & pids=$!
         for vendor in openssl wolfssl gnutls; do

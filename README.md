@@ -1,109 +1,43 @@
 # TURTLE
 
-Measure one side of a TLS 1.3 connection on Linux. The default entry point builds **both** roles from the TLS implementation you submit. Pick the client or server to measure; the other executable from the same build is its peer.
+Linux에서 **내 TLS 1.3 구현의 클라이언트 또는 서버를 계측**합니다. TLS 소스와 두 제출 파일을 주면 TURTLE이 양쪽 실행 파일을 빌드합니다. 양쪽 중 지정한 역할만 계측합니다. 이미 빌드한 앱에 계측을 붙이려면 [별도 SDK 가이드](docs/sdk-guide.ko.md)를 보세요.
 
-## Build and run a submission
+> 기존 체크아웃을 업데이트한다면 먼저 [무시되던 두 제출 파일 백업](implementations/README.md#기존-작업-트리를-업데이트한다면)을 확인하세요.
 
-**Upgrading an existing checkout?** Older versions ignored `implementations/build.sh` and `implementation.cpp`. A normal pull or branch switch can replace those local files **even when `git status` is clean**. Before updating, use a new checkout or back up and verify both files outside this tree. For an in-place fast-forward, use `git fetch && git merge --ff-only --no-overwrite-ignore '@{upstream}'`; stop if Git refuses. [Upgrade instructions (한국어)](implementations/README.md#기존-작업-트리를-업데이트한다면).
+## 제출 구현으로 첫 실행
 
-```text
-TURTLE/
-├── src/                 framework and public headers (src/include/turtle/)
-├── tests/               regression and integration tests
-├── tools/               build tools, validation, and optional reference peer
-├── docs/                contracts, worked examples, and validation report
-└── implementations/
-    ├── <your-source-tree>/  (you choose the name; TURTLE does not inspect it)
-    ├── build.sh             (build and stage the native library)
-    └── implementation.cpp   (implement TURTLE's declarations)
-```
+**준비:** Linux, C 컴파일러와 C++20 컴파일러, CMake 3.20+, Make 또는 Ninja, `pkg-config`, GNU coreutils/binutils, `flock`. 자동 테스트 인증서에는 `openssl` **명령**이 필요합니다. 예시로 쓸 OpenSSL **소스**의 빌드에는 Perl과 Make도 필요합니다. 소스 아카이브를 풀 때는 `tar`를 사용합니다. TURTLE 기본 빌드와 CSV 읽기에는 외부 JSON 라이브러리·`jq`·시스템 OpenSSL 개발 헤더가 필요 없습니다. 다른 TLS 구현의 빌드 의존성은 [예시 표](docs/examples/submissions/README.md)에서 확인하세요.
 
-**First time here? [첫 제출 안내 (한국어)](implementations/README.md).** You get two editable starters: [the build recipe](implementations/build.sh) and [the seven-function bridge](implementations/implementation.cpp). Supply your native source tree and edit both files. With either untouched, `./bench.sh` tells you what is missing and exits 2 **before** building or creating results; the starters do not simulate TLS.
+1. [예시 표의 검증된 OpenSSL 소스](docs/examples/submissions/README.md)에 맞춰 원본을 `implementations/openssl/`에 둡니다. 아래는 **새 슬롯**에만 예시를 선택합니다. 수정한 파일은 덮어쓰지 않습니다. 직접 제출할 때는 예시 선택 대신 [두 시작 파일](implementations/README.md)을 편집합니다.
+2. 저장소 루트에서 아래를 실행합니다. S0은 앱 데이터 없이 TLS 핸드셰이크만 확인합니다.
 
-Already have an OpenSSL source tree at `implementations/openssl/`? Run `tools/init-submission-example.sh openssl` to select that [example](docs/examples/submissions/README.md) instead of writing both files. It refuses to replace your edits and never downloads or modifies the native source. For another library use the [build contract](docs/build-contract.ko.md); no vendor registration is needed.
+   ```sh
+   work=$(mktemp -d)
+   tools/init-submission-example.sh openssl &&
+     ./bench.sh --build-only --out "$work/build" &&
+     ./bench.sh --run-from "$work/build" --scenario S0 --role client \
+       --auth server --warmups 0 --repetitions 1 --out "$work/s0"
+   ```
 
-From a populated checkout, check the build without opening a connection:
+3. 케이스 판정과 연결별 시간·사이클을 읽습니다. 마지막 줄은 상태·수치처럼 쉼표가 없는 정해진 앞 열만 출력합니다. 오류 이유와 로그 경로까지 볼 때는 파일 전체를 읽습니다.
 
-```sh
-./bench.sh --build-only
-```
+   ```sh
+   cat "$work/s0/cases.csv"
+   cut -d, -f1-13 "$work/s0/results.csv"
+   ```
 
-The printed results directory contains `build/bin/client` and `build/bin/server`, not a benchmark report. To benchmark, run `./bench.sh` directly (no prior build needed), or pass that directory to `./bench.sh --resume`. The default is S3 client, one doctor, one warmup and two samples. See [runtime contract and results](docs/submission.md). To select both roles explicitly:
+   예를 들어 `cases.csv` 앞 여섯 열이 `server,S0,client,passed,1,1`이면 서버 인증 S0의 클라이언트 본 시도 1건이 검증된 것입니다.
 
-```sh
-./bench.sh --scenario S3 --role both --auth mtls --repetitions 10
-```
+   `purpose=sample`이 본 시도입니다. `wall_ns`는 경과 시간(ns), `cycles`는 계측 스레드의 CPU cycle이며 **빈칸은 관측 불가이지 0이 아닙니다.** `evidence_state`와 `performance_qualified`는 별도 판정입니다. `wall_status`·`pmu_status`·`qualification_reason`으로 이유를 확인하세요. 실행 오류는 같은 행의 `client_stderr`·`server_stderr` 파일을, 빌드 오류는 `"$work/build/build/native.log"`를 먼저 봅니다. [각 열과 판정의 의미](docs/submission.md#results).
+4. 같은 빌드에서 **S3(요청→응답)**을 새 결과 폴더로 실행합니다. 기존 결과나 TLS 빌드는 바뀌지 않습니다. 장기 보존할 실험은 처음부터 영구 경로에 만들고, 재사용할 빌드 폴더는 옮기지 않습니다.
 
-By default, runs go under `~/.local/share/turtle/runs/`; each checkout has a separate framework build under `~/.cache/turtle/`. Absolute `XDG_DATA_HOME` and `XDG_CACHE_HOME` replace those base directories. Use `--out NEW_DIRECTORY` for a named run, or set `TURTLE_OUTPUT_DIR` and `TURTLE_BUILD_DIR` explicitly. Existing jobs stay where they are.
+   ```sh
+   ./bench.sh --run-from "$work/build" --scenario S3 --role client \
+     --auth server --tcp-nodelay on --warmups 0 --repetitions 1 --out "$work/s3"
+   cat "$work/s3/cases.csv"
+   ```
 
-Source-tree consumers that used `-I<checkout>/include` should now use `-I<checkout>/src/include`. Installed SDK headers still live under `include/turtle/`; the `#include <turtle/…>` names and CMake targets are unchanged.
+`--role both`는 역할마다 다른 연결을 실행하고, `--auth mtls`는 상호 인증을 선택합니다. `--tcp-nodelay`의 기본값은 양쪽에 `on`이며 `off`와는 실험 조건이 다릅니다. 예열과 본 시도는 각각 새 프로세스·새 연결입니다. 결과 폴더를 생략하면 `~/.local/share/turtle/runs/` 아래 새 위치를 출력합니다. `TURTLE_OUTPUT_DIR`과 `TURTLE_BUILD_DIR`로 기본 결과·프레임워크 캐시 위치를 바꿀 수 있습니다.
 
-## Alternative: measure a separately built SDK application
-
-These [client](docs/examples/openssl-client-s0.json) and [server](docs/examples/openssl-server-s0.json) profiles measure **full handshake latency** (S0): TLS 1.3, X25519, server authentication, loopback. The measured executable is a [standalone C app](tests/endpoint-integration/consumer.c) linked to OpenSSL, **not** TURTLE's reference peer. Each role runs one warmup and ten measured connections.
-
-You need Linux, Git, CMake 3.20+, C11/C++20 compilers, Make or Ninja, GNU `sha256sum`, and OpenSSL 3.5+ headers, libraries and CLI. The following SDK walkthrough uses a pinned release, not the editable starter slot above. Run in one shell:
-
-```sh
-git clone --depth 1 --branch v1.0.0 https://github.com/kosh7707/TURTLE.git
-cd TURTLE
-work=$(mktemp -d)
-```
-
-<details>
-<summary>System OpenSSL older than 3.5?</summary>
-
-Build the pinned version locally (requires Perl and Make); leave the system installation alone.
-
-```sh
-cmake -DNAME=openssl -DVERSION=3.5.9 -P tools/dependencies.cmake
-export OPENSSL_ROOT_DIR="$PWD/.deps/prepared/openssl-3.5.9/install"
-export PATH="$OPENSSL_ROOT_DIR/bin:$PATH"
-export LD_LIBRARY_PATH="$OPENSSL_ROOT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-```
-
-</details>
-
-```sh
-# Skip the download if nlohmann_json 3.12+ is already installed.
-cmake -DNAME=json -DVERSION=3.12.0 -P tools/dependencies.cmake
-cmake -S . -B "$work/turtle" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-cmake --build "$work/turtle" --parallel 2
-cmake --install "$work/turtle" --prefix "$work/sdk"
-
-# The measured app uses its own build, against the installed SDK.
-cmake -S tests/endpoint-integration -B "$work/app" \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$work/sdk"
-cmake --build "$work/app" --parallel 2
-export PATH="$work/app:$PATH"
-
-for role in client server; do
-  "$work/sdk/bin/turtle" run "docs/examples/openssl-$role-s0.json" "$work/$role-s0"
-done
-printf 'Results: %s\n' "$work"
-```
-
-## Read the result
-
-**Task success and sample qualification are separate.** A host that denies hardware-counter access can complete all ten handshakes but qualify none. The CLI gives the exclusion reason. Its example duration is one connection, not an average.
-
-With `jq`, print the qualifying client samples as **attempt, wall milliseconds, user-space thread cycles, instructions**. No rows means no qualified samples. S0 spans the first local TLS call to successful handshake return; it excludes TCP setup.
-
-```sh
-jq -r '.measured_role as $r | .attempts[] | select(.purpose == "sample" and .qualified) |
-  .participants[$r].timing.pmu_delta as $cpu |
-  [.directory, (.benchmark_timing_ns / 1000000), $cpu.cycles, $cpu.instructions] | @tsv' \
-  "$work/client-s0/analysis.json"
-```
-
-Keep the whole result directory. Replay without launching TLS: `"$work/sdk/bin/turtle" analyze "$work/client-s0"`.
-
-## Use your own already-built app with a profile
-
-In this explicit profile mode, keep the app's existing build. Link `turtle::endpoint`, supply the [callbacks and transport hooks](docs/endpoint.md), and set `target.argv` to your command. This path does not use the submission directory. A [plain stdin/stdout app](docs/examples/one-sided-s3.json) can run without the SDK but cannot supply missing TLS timings.
-
-Set `scenario` to one of the [five tasks (S0–S4)](docs/endpoint.md#tasks) and `auth` to `server` or `mtls`. The [message abbreviations](docs/endpoint.md#message-abbreviations) are shared by all five tasks. For S1–S4 performance use your app's normal I/O: the example limits application reads and writes to two bytes; S0 uses neither. For an impaired network, e.g. 16 ms added RTT and 20% client-to-server loss, add `"network":"netem","netem":{"additional_rtt_ms":16,"client_to_server":{"loss_pct":20}}` on a host with network-namespace and netem permissions.
-
-## Design decisions
-
-Start with the [build and S0–S4 validation report (한국어)](docs/scenario-validation.ko.md) for reproducible commands, the 20-case matrix, and the path to each connection. The [assignment](task.md) defines the gates; the [build-study migration](docs/build-study-migration.ko.md) and [handoff](docs/handoff/README.ko.md) preserve their provenance. The [decision log](docs/design-decisions.md) records older discussions; it is not the current build contract.
+- [직접 포팅·결과 읽기](docs/submission.md) · [빌드 및 재사용 계약](docs/build-contract.ko.md) · [S0–S4 시나리오](docs/endpoint.md#tasks)
+- 시스템 OpenSSL 개발 패키지를 사용하는 참조 피어는 기본 CMake 빌드에서 제외합니다. 내 소스 대신 참조 쌍을 실행하는 `./bench.sh --pair`가 필요할 때만 사용하세요.

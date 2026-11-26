@@ -37,11 +37,11 @@ CpuSamples cpu_sample_status(bool required, const Json &diagnostic) {
 
 void apply_cpu_samples(Json &sample, const CpuSamples &cpu) {
   auto &metrics = sample.at("requested_metrics");
-  auto request = metrics.find("cpu_samples");
-  if (request == metrics.end())
+  if (!metrics.contains("cpu_samples"))
     return;
-  (*request)["available"] = cpu.available ? Json(true) : Json(nullptr);
-  (*request)["reason"] = cpu.reason;
+  auto &request = metrics.at("cpu_samples");
+  request["available"] = cpu.available ? Json(true) : Json(nullptr);
+  request["reason"] = cpu.reason;
   if (cpu.required && !cpu.available) {
     sample["ordinary_qualified_without_diagnostic"] = sample.at("eligible");
     // Keep the specific reason if ordinary evidence already excluded this row.
