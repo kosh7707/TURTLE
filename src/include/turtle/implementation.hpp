@@ -2,6 +2,7 @@
 #define TURTLE_IMPLEMENTATION_HPP
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,27 +42,33 @@ typedef struct {
   void (*greeting_written)(void *context, const unsigned char *bytes, size_t size);
 } turtle_tls_config;
 
-typedef void (*turtle_io_hook)(void *, const unsigned char *, size_t);
 typedef struct {
   void *context;
-  turtle_io_hook before_send;
-  turtle_io_hook after_recv;
-  /* Use this trio on the same connection thread as TLS. Coverage starts at
-   * hook install (active=1), ends on detach (active=0), or is marked incomplete
-   * (active=-1). Pair every real encrypted transport call; report the native
-   * result (positive byte count, zero for no transfer/EOF, negative on error).
-   * The two one-sided callbacks above are retained for source compatibility;
-   * they do not supply paired transfer evidence. */
+  /* Use all three callbacks on the same connection thread as TLS. Coverage
+   * starts at hook install (active=1), ends on detach (active=0), or is marked
+   * incomplete (active=-1). Pair every real encrypted transport call; report
+   * the native result (positive byte count, zero for no transfer/EOF, negative
+   * on error). For a positive result, bytes addresses the transferred bytes
+   * for the duration of transfer_end. */
   void (*coverage)(void *context, int active);
   void (*transfer_begin)(void *context, int sent, size_t requested);
   void (*transfer_end)(void *context, int sent, size_t requested,
                        ptrdiff_t result, const unsigned char *bytes);
+  /* Optional, supplied only for measured S2 servers. After native
+   * authentication of the initial client Finished and before accept returns,
+   * report once the exclusive end offset of the inbound TLS record carrying
+   * its final byte. Count from the first inbound TLS byte, and report only
+   * after the corresponding transport return has been observed. */
+  void (*client_finished_record)(void *context, uint64_t end_offset);
 } turtle_transport_hooks;
 
 /* Prepare the session only. Neither setup nor hook installation may send or
  * receive TLS bytes, start a handshake, or report a completed session. */
 turtle_tls *turtle_tls_setup(const turtle_tls_config *config, int connected_fd);
 void turtle_tls_free(turtle_tls *tls);
+/* NULL detaches. A non-NULL binding missing any required callback (coverage,
+ * transfer_begin, transfer_end) is unsupported and leaves any existing
+ * binding in place. */
 turtle_status turtle_tls_set_hooks(turtle_tls *tls,
                                    const turtle_transport_hooks *hooks);
 turtle_status turtle_tls_connect(turtle_tls *tls);

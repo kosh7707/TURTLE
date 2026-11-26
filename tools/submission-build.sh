@@ -11,7 +11,7 @@ submission=$root/implementations
 [ -f "$submission/build.sh" ] && [ -x "$submission/build.sh" ] &&
     [ -f "$submission/implementation.cpp" ] ||
     fail 2 'Missing executable implementations/build.sh or implementations/implementation.cpp'
-for input in submission-client.o submission-server.o libturtle_measure.a \
+for input in submission-client.o submission-server.o submission-cycles.o \
              turtle-submission-job turtle-issue-test-leaves.sh; do
     [ -f "$framework/$input" ] || fail 2 "Missing framework build input: $framework/$input"
 done

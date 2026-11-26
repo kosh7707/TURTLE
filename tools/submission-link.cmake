@@ -233,7 +233,7 @@ function(consume name record)
             -Xlinker -Map -Xlinker "${dir}/${role}.map"
             -Xlinker --as-needed -Xlinker --disable-new-dtags
             -Xlinker -rpath -Xlinker "${rpath_link}" -Xlinker -rpath-link -Xlinker "${rpath_link}"
-            "${FRAMEWORK}/libturtle_measure.a" ${inputs} -o "${binary}")
+            "${FRAMEWORK}/submission-cycles.o" ${inputs} -o "${binary}")
         if(NOT rc EQUAL 0)
             missing_symbols(missing "${rc}" "${output}" "${diagnostics}")
             if(missing)

@@ -24,11 +24,11 @@ int main(){perf_event_attr a{}; return syscall(SYS_perf_event_open,&a,0,-1,-1,0)
     endif()
 endif()
 
-add_library(turtle_measure STATIC src/measure/perf.cpp)
-target_include_directories(turtle_measure PRIVATE src)
-target_compile_options(turtle_measure PRIVATE -Wall -Wextra -Wpedantic)
+add_library(turtle-submission-cycles OBJECT src/measure/perf.cpp)
+target_include_directories(turtle-submission-cycles PRIVATE src)
+target_compile_options(turtle-submission-cycles PRIVATE -Wall -Wextra -Wpedantic)
 if(TURTLE_WITH_PMU STREQUAL "OFF" OR NOT TURTLE_PMU_INTERFACE)
-    target_compile_definitions(turtle_measure PRIVATE TURTLE_NO_PMU)
+    target_compile_definitions(turtle-submission-cycles PRIVATE TURTLE_NO_PMU)
 endif()
 
 foreach(role client server)
@@ -36,13 +36,18 @@ foreach(role client server)
     target_include_directories(turtle-submission-${role} PRIVATE src/include src)
     target_compile_options(turtle-submission-${role} PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_definitions(turtle-submission-${role} PRIVATE TURTLE_SUBMISSION_SERVER=$<STREQUAL:${role},server>)
-    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/submission-${role}.o"
-        COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_OBJECTS:turtle-submission-${role}>" "${CMAKE_CURRENT_BINARY_DIR}/submission-${role}.o"
-        DEPENDS turtle-submission-${role} $<TARGET_OBJECTS:turtle-submission-${role}>
-        VERBATIM)
 endforeach()
-add_custom_target(turtle-submission-roles ALL DEPENDS turtle_measure
-    "${CMAKE_CURRENT_BINARY_DIR}/submission-client.o" "${CMAKE_CURRENT_BINARY_DIR}/submission-server.o")
+
+set(submission_objects "")
+foreach(part client server cycles)
+    set(object "${CMAKE_CURRENT_BINARY_DIR}/submission-${part}.o")
+    add_custom_command(OUTPUT "${object}"
+        COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_OBJECTS:turtle-submission-${part}>" "${object}"
+        DEPENDS turtle-submission-${part} $<TARGET_OBJECTS:turtle-submission-${part}>
+        VERBATIM)
+    list(APPEND submission_objects "${object}")
+endforeach()
+add_custom_target(turtle-submission-roles ALL DEPENDS ${submission_objects})
 
 add_executable(turtle-submission-job src/submission/job.cpp src/submission/network.cpp)
 target_include_directories(turtle-submission-job PRIVATE src)

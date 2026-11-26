@@ -115,13 +115,10 @@ if [ -n "$run_from" ]; then
         { echo '--run-from does not accept --build-only, --resume, --use or native build arguments' >&2; exit 2; }
     old=$(realpath -e -- "$run_from") ||
         { echo "Build job does not exist: $run_from" >&2; exit 2; }
-    # Runtime scratch and local retry receipts must not mutate a prior run.
-    for external in "${TMPDIR:-/tmp}" "${XDG_STATE_HOME:-${HOME:+$HOME/.local/state}}"; do
-        [ -n "$external" ] || continue
-        case "$(realpath -m -- "$external")/" in
-            "$old/"*) echo 'Runtime scratch/state must be outside the original build job' >&2; exit 2;;
-        esac
-    done
+    # Keep temporary files created by tools outside the reused build.
+    case "$(realpath -m -- "${TMPDIR:-/tmp}")/" in
+        "$old/"*) echo 'Runtime scratch must be outside the original build job' >&2; exit 2;;
+    esac
     lock_build "$old/build"
     slot=$(realpath -m -- "$root/implementations")
     if [ -n "$out" ]; then

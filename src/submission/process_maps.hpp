@@ -26,8 +26,8 @@ inline bool write_process_maps(std::istream &in, std::ostream &out) {
          bool(out << maps_trailer << rows << '\n');
 }
 
-// This checks post-task pathnames, not the file identities of the live images;
-// the independent prepared image receipt supplies that evidence when available.
+// Match post-task mappings to the paths in the selected build. A pathname
+// match is not a second, independent check of the live image's contents.
 inline MapsState process_maps(std::istream &in, const std::filesystem::path &exe,
                               const std::vector<std::filesystem::path> &libs) {
   if (!in)

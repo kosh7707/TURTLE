@@ -52,20 +52,45 @@ inline void check_application(const fs::path &path, const std::string &scenario,
            reads == (server ? from_client : from_server) && verified == reads, "application transcript mismatch");
   if (server && reply) evidence(first_reply, "missing gated server reply");
 }
-inline void check_transport(const fs::path &path) {
+inline uint64_t check_transport(const fs::path &path, uint64_t cf_record_end = 0) {
   CsvInput file(path);
   Record row;
   bool sent = false, received = false;
+  uint64_t received_bytes = 0, receipt_time = 0, last_end = 0;
   while (file.next(row)) {
     auto start = number<uint64_t>(row.at("start_ns")), end = number<uint64_t>(row.at("end_ns"));
     auto requested = number<uint64_t>(row.at("requested"));
     auto written = number<int64_t>(row.at("result"));
     const auto &dir = row.at("direction");
+    const auto &mark = row.at("cf_record_end");
     evidence(start && end >= start && (dir == "send" || dir == "recv") &&
              (written <= 0 || static_cast<uint64_t>(written) <= requested), "invalid transport return");
-    if (written > 0) (dir == "send" ? sent : received) = true;
+    if (cf_record_end) {
+      evidence(last_end <= end, "non-monotonic client Finished transport trace");
+      last_end = end;
+    }
+    if (!mark.empty())
+      evidence(cf_record_end && !receipt_time && written > 0 && dir == "recv" &&
+               number<uint64_t>(mark) == cf_record_end, "invalid client Finished transport marker");
+    if (written <= 0) continue;
+    if (dir == "send") {
+      sent = true;
+    } else {
+      received = true;
+      if (!cf_record_end) continue;
+      const auto bytes = static_cast<uint64_t>(written);
+      evidence(bytes <= UINT64_MAX - received_bytes, "transport receive offset overflow");
+      const auto after = received_bytes + bytes;
+      if (!mark.empty()) {
+        evidence(received_bytes < cf_record_end && cf_record_end <= after,
+                 "client Finished offset outside marked transport return");
+        receipt_time = end;
+      }
+      received_bytes = after;
+    }
   }
   evidence(sent && received, "missing successful bidirectional transport");
+  return receipt_time;
 }
 inline Result assess(const Case &c, const fs::path &dir, const std::string &id,
                      const fs::path &build, const std::vector<fs::path> &libs,
@@ -103,17 +128,29 @@ inline Result assess(const Case &c, const fs::path &dir, const std::string &id,
       evidence(server.at("server_first") == "1", "server-first greeting path not confirmed");
     evidence(p.at("wall_status") == "not_collected" && p.at("pmu_status") == "not_collected" &&
              p.at("transport_status") == "not_collected" && p.at("wall_ns").empty() && p.at("cycles").empty() &&
+             p.at("start_ns").empty() && p.at("end_ns").empty() && p.at("cf_record_end").empty() &&
              !fs::exists(base(c.role == "client" ? "server" : "client") + ".transport.csv"),
              "unexpected instrumentation on unmeasured role");
     evidence(m.at("transport_status") == "complete", "continuous transport coverage not confirmed");
-    check_transport(base(c.role) + ".transport.csv");
     result.end_event = m.at("end_event");
     evidence(result.end_event == end_event(c.scenario.back(), c.role == "server"), "wrong local timing endpoint");
+    const bool receipt = c.scenario == "S2" && c.role == "server";
+    const auto &record_end = m.at("cf_record_end");
+    uint64_t receipt_offset = 0;
+    if (receipt && m.at("wall_status") == "available") {
+      receipt_offset = number<uint64_t>(record_end);
+      evidence(receipt_offset != 0, "invalid client Finished record offset");
+    } else {
+      evidence(record_end.empty() && (!receipt || m.at("end_ns").empty()),
+               "unexpected client Finished receipt evidence");
+    }
+    const auto receipt_time = check_transport(base(c.role) + ".transport.csv", receipt_offset);
     result.wall_status = m.at("wall_status");
     if (result.wall_status == "available") {
-      evidence(result.end_event != "cf_transport_receive", "unsupported client Finished receipt claim");
       const auto b = number<uint64_t>(m.at("start_ns")), e = number<uint64_t>(m.at("end_ns"));
       evidence(b && e >= b && e-b == number<uint64_t>(m.at("wall_ns")), "invalid role-local elapsed interval");
+      if (receipt)
+        evidence(receipt_time && receipt_time == e, "client Finished record does not match transport return");
       result.start = m.at("start_ns"); result.end = m.at("end_ns"); result.wall = m.at("wall_ns");
     } else if (!m.at("wall_ns").empty()) throw std::runtime_error("unexpected unavailable elapsed value");
     result.pmu_status = m.at("pmu_status"); result.pmu_reason = m.at("pmu_reason");
@@ -124,7 +161,7 @@ inline Result assess(const Case &c, const fs::path &dir, const std::string &id,
       (void)number<uint64_t>(m.at("cycles")); result.cycles = m.at("cycles");
     }
     if (result.wall.empty()) {
-      result.reason = c.scenario == "S2" && c.role == "server" ? "client_finished_transport_receipt_unobserved" : "task_end_unobserved";
+      result.reason = receipt ? "client_finished_transport_receipt_unobserved" : "task_end_unobserved";
     } else result.state = "passed";
   } catch (const std::exception &e) {
     if (result.wall.empty()) result.wall_status = "unavailable";

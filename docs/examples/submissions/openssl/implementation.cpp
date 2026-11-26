@@ -6,6 +6,18 @@
 #include <openssl/x509v3.h>
 #include <turtle/implementation.hpp>
 
+// OpenSSL 2d1c10a592677ff34cdf60bd59c431d835a1fc26 reads precisely the
+// outstanding header or body bytes on this socket path. Correlate native
+// callbacks against the BIO receive count; the runner checks raw framing.
+struct incoming_records {
+  uint64_t received;
+  uint64_t end;
+  uint64_t finished_end;
+  unsigned char outer;
+  bool inner_handshake;
+  bool active;
+};
+
 struct turtle_tls {
   SSL_CTX *ctx;
   SSL *ssl;
@@ -13,13 +25,72 @@ struct turtle_tls {
   void *context;
   decltype(turtle_tls_config::report_session) report_session;
   decltype(turtle_tls_config::greeting_written) greeting_written;
+  incoming_records incoming;
+  bool started;
   bool reported;
 };
 
 static bool present(const char *s) { return s && *s; }
 
-static bool transfers(const turtle_transport_hooks &h) {
-  return h.coverage && h.transfer_begin && h.transfer_end;
+static bool valid_record(int type, int version, size_t length) {
+  switch (type) {
+  case SSL3_RT_HANDSHAKE:
+    return (version == TLS1_VERSION || version == TLS1_2_VERSION) &&
+           length && length <= SSL3_RT_MAX_PLAIN_LENGTH;
+  case SSL3_RT_CHANGE_CIPHER_SPEC:
+    return version == TLS1_2_VERSION && length == 1;
+  case SSL3_RT_APPLICATION_DATA:
+    return version == TLS1_2_VERSION && length &&
+           length <= SSL3_RT_MAX_TLS13_ENCRYPTED_LENGTH;
+  default:
+    return false;
+  }
+}
+
+static void observe_message(int sent, int version, int type, const void *data,
+                            size_t n, SSL *ssl, void *arg) {
+  if (sent || !arg)
+    return;
+  auto &r = static_cast<turtle_tls *>(arg)->incoming;
+  if (!r.active)
+    return;
+  const auto *p = static_cast<const unsigned char *>(data);
+  if (type == SSL3_RT_HEADER) {
+    if (!p || n != SSL3_RT_HEADER_LENGTH || r.received < r.end ||
+        r.received - r.end != n ||
+        (r.outer == SSL3_RT_APPLICATION_DATA && !r.inner_handshake)) {
+      r.active = false;
+      return;
+    }
+    const size_t length = (p[3] << 8) | p[4];
+    if (length > UINT64_MAX - r.received ||
+        version != ((p[1] << 8) | p[2]) ||
+        !valid_record(p[0], version, length)) {
+      r.active = false;
+      return;
+    }
+    r.outer = p[0];
+    r.inner_handshake = false;
+    r.end = r.received + length; // received includes this record's header.
+  } else if (type == SSL3_RT_INNER_CONTENT_TYPE) {
+    if (!p || n != 1 || version != TLS1_3_VERSION || r.received != r.end ||
+        r.outer != SSL3_RT_APPLICATION_DATA || r.inner_handshake ||
+        p[0] != SSL3_RT_HANDSHAKE) {
+      r.active = false;
+      return;
+    }
+    r.inner_handshake = true;
+  } else if (type == SSL3_RT_HANDSHAKE && p && n && p[0] == SSL3_MT_FINISHED) {
+    // OpenSSL emits this after fragment collection, but BEFORE verifying
+    // Finished. The most recent inner handshake record supplied its last byte.
+    if (version != TLS1_3_VERSION || SSL_get_state(ssl) != TLS_ST_SR_FINISHED ||
+        r.finished_end || r.received != r.end ||
+        r.outer != SSL3_RT_APPLICATION_DATA || !r.inner_handshake) {
+      r.active = false;
+      return;
+    }
+    r.finished_end = r.end;
+  }
 }
 
 static long observe(BIO *bio, int op, const char *data, size_t size, int, long,
@@ -32,27 +103,35 @@ static long observe(BIO *bio, int op, const char *data, size_t size, int, long,
   auto &h = tls->hooks;
   auto *bytes = reinterpret_cast<const unsigned char *>(data);
   const bool sent = op == BIO_CB_WRITE;
-  if (transfers(h)) {
-    if (!returning)
-      h.transfer_begin(h.context, sent, size);
-    else {
-      // The return flag is a status; only *done describes accepted/returned
-      // bytes. Never pass the requested length as an actual transfer.
-      if (ret > 0 && (!done || *done > size || *done > PTRDIFF_MAX))
-        h.coverage(h.context, -1);
-      else {
-        const ptrdiff_t result = ret > 0 ? static_cast<ptrdiff_t>(*done)
-                                        : (ret < 0 ? -1 : 0);
-        h.transfer_end(h.context, sent, size, result, bytes);
-      }
+  const int saved_errno = errno;
+  if (!returning) {
+    h.transfer_begin(h.context, sent, size);
+  } else if (ret > 0 && (!done || *done > size || *done > PTRDIFF_MAX)) {
+    h.coverage(h.context, -1);
+    tls->incoming.active = false;
+  } else {
+    // A positive BIO status is not a byte count; only *done is.
+    const ptrdiff_t result = ret > 0 ? static_cast<ptrdiff_t>(*done) : ret;
+    h.transfer_end(h.context, sent, size, result, bytes);
+    auto &r = tls->incoming;
+    if (!sent && result > 0 && r.active) {
+      const auto n = static_cast<uint64_t>(result);
+      if (!bytes || n > UINT64_MAX - r.received || r.finished_end)
+        r.active = false;
+      else
+        r.received += n;
     }
-  } else if (bytes) {
-    if (!returning && sent && h.before_send && size)
-      h.before_send(h.context, bytes, size);
-    if (returning && !sent && h.after_recv && ret > 0 && done && *done)
-      h.after_recv(h.context, bytes, *done);
   }
+  errno = saved_errno;
   return ret;
+}
+
+static void stop_observing_messages(turtle_tls *t) {
+  if (t->hooks.client_finished_record) {
+    SSL_set_msg_callback(t->ssl, nullptr);
+    SSL_set_msg_callback_arg(t->ssl, nullptr);
+  }
+  t->incoming = {};
 }
 
 void turtle_tls_free(turtle_tls *tls) {
@@ -122,15 +201,27 @@ turtle_tls *turtle_tls_setup(const turtle_tls_config *c, int fd) {
 
 turtle_status turtle_tls_set_hooks(turtle_tls *t,
                                    const turtle_transport_hooks *h) {
+  if (h && (!h->coverage || !h->transfer_begin || !h->transfer_end))
+    return TURTLE_TLS_UNSUPPORTED;
   auto *bio = SSL_get_rbio(t->ssl);
   if (!bio || bio != SSL_get_wbio(t->ssl))
     return TURTLE_TLS_UNSUPPORTED;
-  if (transfers(t->hooks))
+  if (t->hooks.coverage)
     t->hooks.coverage(t->hooks.context, 0);
+  stop_observing_messages(t);
   t->hooks = h ? *h : turtle_transport_hooks{};
   BIO_set_callback_arg(bio, h ? reinterpret_cast<char *>(t) : nullptr);
   BIO_set_callback_ex(bio, h ? observe : nullptr);
-  if (transfers(t->hooks))
+  if (h && h->client_finished_record && !t->started && SSL_is_server(t->ssl) &&
+      BIO_method_type(bio) == BIO_TYPE_SOCKET && !BIO_next(bio) &&
+      !(SSL_get_options(t->ssl) & SSL_OP_ENABLE_KTLS) && !BIO_get_ktls_recv(bio) &&
+      !SSL_get_read_ahead(t->ssl) && !SSL_get_max_early_data(t->ssl) &&
+      SSL_set_max_pipelines(t->ssl, 1) == 1 &&
+      SSL_set_msg_callback_arg(t->ssl, t) == 1) {
+    t->incoming.active = true;
+    SSL_set_msg_callback(t->ssl, observe_message);
+  }
+  if (h)
     t->hooks.coverage(t->hooks.context, 1);
   return TURTLE_TLS_OK;
 }
@@ -156,14 +247,17 @@ static turtle_status failed(const char *operation) {
 
 static turtle_status finish(turtle_tls *tls) {
   auto *ssl = tls->ssl;
+  tls->started = true;
   int rc;
   do {
     ERR_clear_error();
     errno = 0;
     rc = SSL_do_handshake(ssl);
   } while (rc <= 0 && again(ssl, rc));
-  if (rc != 1 || !SSL_is_init_finished(ssl))
+  if (rc != 1 || !SSL_is_init_finished(ssl)) {
+    tls->incoming.active = false;
     return failed("handshake");
+  }
   if (tls->reported)
     return TURTLE_TLS_OK;
   const bool resumed = SSL_session_reused(ssl);
@@ -174,9 +268,17 @@ static turtle_status finish(turtle_tls *tls) {
   const bool verified = verify && peer_cert && present(peer_name) &&
                         SSL_get_verify_result(ssl) == X509_V_OK;
   if (SSL_version(ssl) != TLS1_3_VERSION || resumed || early ||
-      (verify && !verified))
+      (verify && !verified)) {
+    tls->incoming.active = false;
     return failed("session validation");
+  }
+  const bool observed = tls->incoming.active &&
+                        SSL_get_early_data_status(ssl) == SSL_EARLY_DATA_NOT_SENT;
+  const uint64_t finished_end = observed ? tls->incoming.finished_end : 0;
+  stop_observing_messages(tls);
   tls->reported = true;
+  if (finished_end)
+    tls->hooks.client_finished_record(tls->hooks.context, finished_end);
   if (tls->report_session) {
     const turtle_session_info facts{1, resumed, early, peer_cert, verified};
     tls->report_session(tls->context, &facts);
@@ -188,6 +290,7 @@ turtle_status turtle_tls_connect(turtle_tls *t) { return finish(t); }
 
 turtle_status turtle_tls_accept(turtle_tls *t, const unsigned char *greeting,
                                 size_t len) {
+  t->started = true;
   if (len) {
     if (!greeting)
       return TURTLE_TLS_ERROR;
@@ -225,6 +328,7 @@ turtle_status turtle_tls_accept(turtle_tls *t, const unsigned char *greeting,
 }
 
 ptrdiff_t turtle_app_send(turtle_tls *t, const unsigned char *p, size_t size) {
+  t->started = true;
   size_t n = 0;
   int rc;
   do {
@@ -236,6 +340,7 @@ ptrdiff_t turtle_app_send(turtle_tls *t, const unsigned char *p, size_t size) {
 }
 
 ptrdiff_t turtle_app_recv(turtle_tls *t, unsigned char *p, size_t size) {
+  t->started = true;
   size_t n = 0;
   int rc;
   do {

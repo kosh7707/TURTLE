@@ -263,9 +263,11 @@ class Trial {
       throw Outcome{"failed", "session_policy"};
   }
 
-  void handshake(turtle_tls *tls, bool greet = false) {
+  void handshake(turtle_tls *tls, bool greet, TransportTrace *client_finished) {
     accepting_greeting_ = greet;
     errno = 0;
+    if (client_finished)
+      client_finished->accepting_client_finished(true);
     begin();
     const auto rc = server
         ? turtle_tls_accept(tls, greet ? reinterpret_cast<const unsigned char *>(sad1.data()) :
@@ -273,6 +275,8 @@ class Trial {
         : turtle_tls_connect(tls);
     if (scenario_ == '0' && rc == TURTLE_TLS_OK)
       interval_.stop();
+    if (client_finished)
+      client_finished->accepting_client_finished(false);
     check(rc);
     accepting_greeting_ = false;
     if (invalid_report_ || (greeting_accepted_ && greeting_accepted_ != sad1.size()))
@@ -353,8 +357,16 @@ class Trial {
 public:
   Trial(char scenario, bool mutual, bool measured)
       : scenario_(scenario), mutual_(mutual),
-        interval_(measured, turtle::submission::end_event(scenario, server),
-                  !server || scenario != '2') {}
+        interval_(measured, turtle::submission::end_event(scenario, server)) {}
+
+  Interval &receipt_interval() noexcept { return interval_; }
+
+  bool receipt_session_proved() const noexcept {
+    return !invalid_report_ && greeting_accepted_ == sad1.size() && session_ &&
+           session_->tls13 == 1 && session_->resumed == 0 &&
+           session_->early_data == 0 &&
+           (!mutual_ || (session_->peer_cert_present == 1 && session_->peer_verified == 1));
+  }
 
   static void report_session(void *context, const turtle_session_info *info) noexcept {
     auto &t = *static_cast<Trial *>(context);
@@ -388,13 +400,13 @@ public:
     t.log("write_accepted", "SAD1", accepted);
   }
 
-  void run(turtle_tls *tls) {
+  void run(turtle_tls *tls, TransportTrace *client_finished) {
     const bool request = scenario_ == '1' || scenario_ == '3' || scenario_ == '4';
     const bool greeting = scenario_ == '2' || scenario_ == '4';
     const bool reply = scenario_ == '3' || scenario_ == '4';
     if (!server && scenario_ == '2')
       receive(tls, sad1, "SAD1");
-    handshake(tls, server && greeting);
+    handshake(tls, server && greeting, client_finished);
     if constexpr (server) {
       if (request)
         receive(tls, cad, "CAD");
@@ -453,8 +465,11 @@ struct Role {
 
   bool attempt(const std::string &id) {
     const auto path = (output / (id + "." + role)).string();
-    auto trace = measured ? std::make_unique<TransportTrace>() : nullptr;
     Trial trial(scenario, mutual, measured);
+    const bool collect_receipt = measured && server && scenario == '2';
+    auto trace = measured ? std::make_unique<TransportTrace>(
+                                collect_receipt ? &trial.receipt_interval() : nullptr)
+                          : nullptr;
     const turtle_tls_config cfg{server ? TURTLE_SERVER : TURTLE_CLIENT,
                                 mutual ? TURTLE_MUTUAL_AUTH : TURTLE_SERVER_AUTH,
                                 ca.c_str(), cert.empty() ? nullptr : cert.c_str(),
@@ -491,7 +506,7 @@ struct Role {
       const auto go = command();
       try {
         if (go == "GO")
-          trial.run(tls.get());
+          trial.run(tls.get(), collect_receipt ? trace.get() : nullptr);
         else if (go == "ABORT" || go == "QUIT") {
           keep_running = go != "QUIT";
           result = {"aborted", "controller_abort"};
@@ -515,7 +530,10 @@ struct Role {
     } catch (const Outcome &e) {
       result = e;
     }
-    if (result.status != string_view("passed"))
+    const bool passed = result.status == string_view("passed");
+    const uint64_t cf_record_end = passed && collect_receipt && trial.receipt_session_proved()
+                                       ? trace->finish_client_finished() : 0;
+    if (!passed)
       std::fprintf(stderr, "%s %s: %s (%s)\n", role, id.c_str(), result.status,
                    result.reason);
     try {
@@ -527,7 +545,7 @@ struct Role {
       publish(path + ".csv", [&](std::ostream &out) {
         out << "status,reason,pid,tcp_nodelay,local_port,remote_port,wall_ns,wall_status,start_ns,"
                "end_ns,end_event,cycles,pmu_status,pmu_reason,pmu_enabled_ns,pmu_running_ns,"
-               "tls13,resumed,early_data,peer_cert_present,peer_verified,server_first,transport_status\n";
+               "tls13,resumed,early_data,peer_cert_present,peer_verified,server_first,transport_status,cf_record_end\n";
         out << result.status << ',' << result.reason << ',' << getpid() << ',';
         if (effective >= 0)
           out << effective;
@@ -542,7 +560,10 @@ struct Role {
         out << ',';
         trial.write_session(out);
         out << ',' << (trace ? trace->complete() ? "complete" : "incomplete"
-                             : "not_collected") << '\n';
+                             : "not_collected") << ',';
+        if (cf_record_end)
+          out << cf_record_end;
+        out << '\n';
       });
     } catch (const std::exception &e) {
       std::fprintf(stderr, "%s %s: evidence: %s\n", role, id.c_str(), e.what());
